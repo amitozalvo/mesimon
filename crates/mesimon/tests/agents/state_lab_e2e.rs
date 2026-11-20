@@ -71,10 +71,7 @@ fn later_hook_connection_cannot_overtake_a_partial_earlier_frame() {
     );
     // A late SessionStart schedules idle after 1.5s in the old implementation.
     std::thread::sleep(Duration::from_secs(2));
-    assert_eq!(
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
-        SessionState::Running
-    );
+    assert_eq!(client.record(sid).state, SessionState::Running);
 }
 
 #[test]
@@ -86,7 +83,7 @@ fn timed_out_hook_releases_following_events_and_continued_stop_moves() {
     hook_send(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", "{}");
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
+        client.record(sid).state,
         SessionState::Running,
         "feed: {}",
         std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default()
@@ -140,10 +137,7 @@ fn explicit_abort_clears_a_held_permission_without_completion_movement() {
         r#"{"tool_name":"Bash"}"#,
     );
     wait_until(Duration::from_secs(5), "permission visible", || {
-        matches!(
-            client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
-            SessionState::RequiresAction { .. }
-        )
+        matches!(client.record(sid).state, SessionState::RequiresAction { .. })
     });
     std::thread::sleep(Duration::from_secs(3));
     // Capture-derived 2.1.266 spelling, intentionally without interruptedMessageId.
@@ -188,19 +182,12 @@ fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
         r#"{"tool_name":"Bash"}"#,
     );
     wait_until(Duration::from_secs(5), "permission visible", || {
-        matches!(
-            client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
-            SessionState::RequiresAction { .. }
-        )
+        matches!(client.record(sid).state, SessionState::RequiresAction { .. })
     });
-    let since =
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state_changed_at.unwrap();
+    let since = client.record(sid).state_changed_at.unwrap();
     write_status("waiting", since);
     std::thread::sleep(Duration::from_secs(3));
-    assert!(matches!(
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
-        SessionState::RequiresAction { .. }
-    ));
+    assert!(matches!(client.record(sid).state, SessionState::RequiresAction { .. }));
     write_status("busy", since + 3000);
     wait_until(Duration::from_secs(8), "approved tool is running before completion", || {
         let board = client.board();
@@ -256,8 +243,7 @@ fn background_liveness_reclassifies_and_restart_drops_the_registry() {
         r#"{"agent_id":"parent","tool_name":"Agent","tool_response":{"agentId":"orphan","status":"async_launched"}}"#,
     );
     wait_until(Duration::from_secs(5), "nested agent makes parked work active", || {
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
-            == SessionState::Idle { stop_reason: StopReason::Background }
+        client.record(sid).state == SessionState::Idle { stop_reason: StopReason::Background }
     });
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
@@ -272,8 +258,7 @@ fn background_liveness_reclassifies_and_restart_drops_the_registry() {
     send("UserPromptSubmit", "{}");
     send("Stop", r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#);
     wait_until(Duration::from_secs(5), "fresh Stop reclassifies shell after restart", || {
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
-            == SessionState::Idle { stop_reason: StopReason::Monitoring }
+        client.record(sid).state == SessionState::Idle { stop_reason: StopReason::Monitoring }
     });
     // An ambient artifact watch alone is a finished turn (T-408): Claude
     // Code lists it as a running `monitor` no tool armed.
@@ -283,8 +268,7 @@ fn background_liveness_reclassifies_and_restart_drops_the_registry() {
         r#"{"background_tasks":[{"id":"sart","type":"monitor","status":"running","description":"live updates for artifact plan (comments)"}]}"#,
     );
     wait_until(Duration::from_secs(5), "an unarmed monitor is not a park", || {
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
-            == SessionState::Idle { stop_reason: StopReason::EndTurn }
+        client.record(sid).state == SessionState::Idle { stop_reason: StopReason::EndTurn }
     });
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
@@ -301,7 +285,7 @@ fn a_background_command_parks_the_lead_through_a_nested_stop() {
     let mut client = h.client("bg-command");
     let sid = spawn(&mut client, "Release in the background");
     let send = |event, body: &str| hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
-    let mut record = || client.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    let mut record = || client.record(sid);
     send("SessionStart", r#"{"source":"startup"}"#);
     send("UserPromptSubmit", "{}");
     send(
@@ -342,7 +326,7 @@ fn a_task_the_person_kills_leaves_the_card_and_the_last_ends_the_park() {
     let mut client = h.client("bg-killed");
     let sid = spawn(&mut client, "Two builds in the background");
     let send = |event, body: &str| hook_send(&h.paths.hook_sock(), &sid.to_string(), event, body);
-    let mut record = || client.board().sessions.into_iter().find(|s| s.id == sid).unwrap();
+    let mut record = || client.record(sid);
     send("SessionStart", r#"{"source":"startup"}"#);
     send("UserPromptSubmit", "{}");
     for id in ["birttthoq", "bo47y1ii2"] {

@@ -660,55 +660,54 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // a step quieter, the band's context rather than its body. A
     // description of one row has nothing to give up, so it neither folds
     // nor wears the hint.
-    let render_desc = |cap: usize| -> Vec<Line<'static>> {
-        ticket
-            .description()
-            .and_then(|m| Some((m, app.note_text(m)?)))
-            .map(|(meta, text)| {
-                let surface = if theme.selected_bg.is_some() {
-                    crate::rich::Surface::Elevated
-                } else {
-                    crate::rich::Surface::Ground
-                };
-                let width = (area.width as usize).saturating_sub(4);
-                let newline = Newline::of_note(meta);
-                let mut cache = app.description_cache.borrow_mut();
-                if let Some(d) = cache.as_ref().filter(|d| {
-                    d.id == meta.id
-                        && d.rev == meta.rev
-                        && d.width == width
-                        && d.cap == cap
-                        && d.flavor == theme.flavor
-                        && d.profile == theme.profile
-                        && d.newline == newline
-                }) {
-                    return d.rows.clone();
-                }
-                let rows = crate::rich::render_on(text, width, cap, theme, surface, newline);
-                *cache = Some(super::Description {
-                    id: meta.id,
-                    rev: meta.rev,
-                    width,
-                    cap,
-                    flavor: theme.flavor,
-                    profile: theme.profile,
-                    newline,
-                    rows: rows.clone(),
-                });
-                rows
-            })
-            .unwrap_or_default()
-    };
+    //
     // The fold is the ticket's whatever row the rail holds: on a note row
     // the band gives its rows up (T-344) and the rail must stay where it
     // was, so only the key and its hint stand down there.
-    let mut desc = render_desc(DESC_MAX_ROWS.min(body_rows / 3).max(1));
+    let desc_w = (area.width as usize).saturating_sub(4);
+    let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
+    let mut desc: Vec<Line<'static>> = ticket
+        .description()
+        .and_then(|m| Some((m, app.note_text(m)?)))
+        .map(|(meta, text)| {
+            let surface = if theme.selected_bg.is_some() {
+                crate::rich::Surface::Elevated
+            } else {
+                crate::rich::Surface::Ground
+            };
+            let newline = Newline::of_note(meta);
+            let mut cache = app.description_cache.borrow_mut();
+            if let Some(d) = cache.as_ref().filter(|d| {
+                d.id == meta.id
+                    && d.rev == meta.rev
+                    && d.width == desc_w
+                    && d.cap == cap
+                    && d.flavor == theme.flavor
+                    && d.profile == theme.profile
+                    && d.newline == newline
+            }) {
+                return d.rows.clone();
+            }
+            let rows = crate::rich::render_on(text, desc_w, cap, theme, surface, newline);
+            *cache = Some(super::Description {
+                id: meta.id,
+                rev: meta.rev,
+                width: desc_w,
+                cap,
+                flavor: theme.flavor,
+                profile: theme.profile,
+                newline,
+                rows: rows.clone(),
+            });
+            rows
+        })
+        .unwrap_or_default();
     let can_fold = desc.len() > 1;
     let folds = can_fold && !reading_note;
     app.set_page_desc_folds(folds);
     if can_fold && !app.prefs.page_description {
         desc.truncate(1);
-        crate::rich::mark_cut(&mut desc, (area.width as usize).saturating_sub(4), theme);
+        crate::rich::mark_cut(&mut desc, desc_w, theme);
         for row in &mut desc {
             for span in &mut row.spans {
                 span.style = span.style.fg(ink.dim2);
@@ -722,15 +721,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let fold_hint = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::FoldDescription, &ctx)
         .filter(|_| folds);
     if let (Some(b), Some(first)) = (fold_hint, desc.first_mut()) {
-        let width = (area.width as usize).saturating_sub(4);
         let mut hint = vec![Span::styled(" ∙ ".to_string(), Style::default().fg(ink.dim3))];
-        hint.extend(chrome::hint_spans(&[b], &ctx, ink, width));
+        hint.extend(chrome::hint_spans(&[b], &ctx, ink, desc_w));
         let hint_w = super::spans_width(&hint);
-        if super::spans_width(&first.spans) + hint_w > width {
-            crate::rich::clip(&mut first.spans, width.saturating_sub(hint_w + 1));
+        if super::spans_width(&first.spans) + hint_w > desc_w {
+            crate::rich::clip(&mut first.spans, desc_w.saturating_sub(hint_w + 1));
             first.spans.push(Span::styled("~".to_string(), Style::default().fg(ink.dim2)));
         }
-        if super::spans_width(&first.spans) + hint_w <= width {
+        if super::spans_width(&first.spans) + hint_w <= desc_w {
             first.spans.extend(hint);
         }
     }
@@ -2732,8 +2730,8 @@ pub(super) fn fit_title(head: &str, title: &str, room: usize) -> String {
     /// The least of a title a shortened head keeps, its marker included.
     const TITLE_FLOOR: usize = 12;
     let over = head.width().saturating_sub(room);
-    let times = if title.is_empty() { 0 } else { head.matches(title).count() };
-    if over == 0 || times == 0 {
+    let times = if over == 0 || title.is_empty() { 0 } else { head.matches(title).count() };
+    if times == 0 {
         return truncate(head, room);
     }
     let keep = title.width().saturating_sub(over.div_ceil(times)).max(TITLE_FLOOR);
@@ -2802,9 +2800,9 @@ pub(super) fn ink_message(
 }
 
 /// A message's first row in the zone's conversation: who, when, and at the
-/// right the steps that followed it (the dialog's head, at the zone's
-/// width).
-fn message_head(
+/// right the steps that followed it. The transcript dialog draws the same
+/// head at its own width.
+pub(super) fn message_head(
     theme: &crate::theme::Theme,
     kind: SessionKind,
     m: &crate::transcript::Message,

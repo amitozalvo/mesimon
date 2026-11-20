@@ -118,9 +118,10 @@ def pr_json(number, branch, head, state, checks, mergeable="MERGEABLE", at="2026
             f'"statusCheckRollup":{checks}}}')
 
 
-def write_prs_file(d, prs):
-    """The stub forge's prs.json under `d`, whole or not at all."""
-    path = os.path.join(d, "prs.json")
+def write_prs_file(d, prs, name="prs.json"):
+    """The stub forge's prs.json (or another list of PRs, `name`) under `d`,
+    whole or not at all."""
+    path = os.path.join(d, name)
     with open(path + ".tmp", "w") as f:
         f.write("[" + ",".join(prs) + "]")
     os.replace(path + ".tmp", path)
@@ -502,16 +503,24 @@ def keyed_calls(rows, tool, key):
             if (c.name or "").endswith(f"__{tool}") and c.input.get("key") == key and c.result]
 
 
+def prompts_naming(rows, key):
+    """(index, text) for each of the crown's prompts in `rows` that names
+    `key` as the board's sentences do: the key, then its quoted title."""
+    for i, row in enumerate(rows):
+        if row.get("type") != "user" or row.get("isMeta"):
+            continue
+        said = "\n".join(texts(row)).strip()
+        if f'{key} "' in said:
+            yield i, said
+
+
 def hand_wake(rows, key):
     """(sentence, reads) for the crown's first prompt saying `key` raised its
     hand (T-1266): the board's sentence, and the crown's `get_ticket` and
     `read_note` calls keyed to the ticket from that prompt on. `("", [])`
     with no such prompt."""
-    for i, row in enumerate(rows):
-        if row.get("type") != "user" or row.get("isMeta"):
-            continue
-        said = "\n".join(texts(row)).strip()
-        if f'{key} "' in said and " raised its hand" in said:
+    for i, said in prompts_naming(rows, key):
+        if " raised its hand" in said:
             return said, [c.tool for c in calls(rows[i:])
                           if c.tool in ("get_ticket", "read_note") and c.key == key]
     return "", []
@@ -533,14 +542,10 @@ def wake_said(rows, key, words):
     """(ok, observed) for the board's sentences to the crown about `key`
     (T-1278): some prompt of the crown's naming the ticket holds `words`."""
     seen = []
-    for row in rows:
-        if row.get("type") != "user" or row.get("isMeta"):
-            continue
-        said = "\n".join(texts(row)).strip()
-        if f'{key} "' in said:
-            seen.append(said[:240])
-            if words in said:
-                return True, said[:240]
+    for _, said in prompts_naming(rows, key):
+        seen.append(said[:240])
+        if words in said:
+            return True, said[:240]
     return False, f"woken with {seen}" if seen else "no prompt names the ticket"
 
 
@@ -549,14 +554,7 @@ def wake_count(rows, key, words):
     `words` (T-1278): the sentences it was given, where the feed's
     `crown_wake` lines count wakes owed, some of which a later act took
     back before they went in."""
-    n = 0
-    for row in rows:
-        if row.get("type") != "user" or row.get("isMeta"):
-            continue
-        said = "\n".join(texts(row)).strip()
-        if f'{key} "' in said and words in said:
-            n += 1
-    return n
+    return sum(words in said for _, said in prompts_naming(rows, key))
 
 
 def tool_calls(rows):
@@ -872,6 +870,15 @@ def compaction_frames(hook_lines):
             or (l.get("event") == "SessionStart" and l.get("reason") == "compact")]
 
 
+def compaction_window(hook_lines):
+    """(pre, post): the `at_ms` of a session's first `PreCompact` and of the
+    `PostCompact` that closed it, each None when it never came."""
+    pre = next((l["at_ms"] for l in hook_lines if l.get("event") == "PreCompact"), None)
+    post = next((l["at_ms"] for l in hook_lines if l.get("event") == "PostCompact"
+                 and pre is not None and l["at_ms"] >= pre), None)
+    return pre, post
+
+
 def held_by_compaction(hook_lines, queued_ms, prompts, words):
     """T-1069: (ok, observed) for words a person queued while the session's
     compaction window was open: queued after its first `PreCompact` and
@@ -879,9 +886,7 @@ def held_by_compaction(hook_lines, queued_ms, prompts, words):
     entered at the close or after (a second's slack, as `held`: the hook's
     exec). `prompts` is `user_prompts(rows, at=True)`. Words queued outside
     the window prove nothing about the hold and fail."""
-    pre = next((l["at_ms"] for l in hook_lines if l.get("event") == "PreCompact"), None)
-    post = next((l["at_ms"] for l in hook_lines if l.get("event") == "PostCompact"
-                 and pre is not None and l["at_ms"] >= pre), None)
+    pre, post = compaction_window(hook_lines)
     if pre is None or post is None:
         return False, f"no closed window: PreCompact at {pre}, PostCompact at {post}"
     if queued_ms is None:
@@ -904,9 +909,7 @@ def sent_in_compaction(hook_lines, board_lines, ticket):
     after its first `PreCompact` and before the `PostCompact` that closed
     it. `held_by_compaction` then says Claude Code ran them after it; this
     says the board did not hold them."""
-    pre = next((l["at_ms"] for l in hook_lines if l.get("event") == "PreCompact"), None)
-    post = next((l["at_ms"] for l in hook_lines if l.get("event") == "PostCompact"
-                 and pre is not None and l["at_ms"] >= pre), None)
+    pre, post = compaction_window(hook_lines)
     if pre is None or post is None:
         return False, f"no closed window: PreCompact at {pre}, PostCompact at {post}"
     sent = [l["at_ms"] for l in board_lines if l.get("kind") == "board"
@@ -3604,10 +3607,7 @@ Reply with the single word ready and end your turn."""
                 return False
             d = self.forge_stub()
             self.forge_branch = branch
-            path = os.path.join(d, "prs.json")
-            with open(path + ".tmp", "w") as f:
-                f.write("[]")
-            os.replace(path + ".tmp", path)
+            write_prs_file(d, [])
             env = self.forge_env(d)
             self.wire.set_merge_into("pull_requests")
             if not self.restart(env):
@@ -3689,10 +3689,7 @@ Reply with the single word ready and end your turn."""
             d = self.forge_stub()
             row = pr_json(42, self.forge_branch, self.tip(self.forge_branch), "MERGED",
                           ROLLUPS["passed"])
-            path = os.path.join(d, "merged.json")
-            with open(path + ".tmp", "w") as f:
-                f.write("[" + row + "]")
-            os.replace(path + ".tmp", path)
+            write_prs_file(d, [row], "merged.json")
             return True
         if what == "forge_merge":
             # PR 42 merges on the forge at the branch's tip (T-757): the
@@ -3826,10 +3823,7 @@ Reply with the single word ready and end your turn."""
             # the stub forge with no PR: what the board says of a branch
             # nobody has opened one from yet.
             d = self.forge_stub()
-            path = os.path.join(d, "prs.json")
-            with open(path + ".tmp", "w") as f:
-                f.write("[]")
-            os.replace(path + ".tmp", path)
+            write_prs_file(d, [])
             self.wire.set_merge_into("pull_requests")
             if not self.restart(self.forge_env(d)):
                 record["failures"].append("the daemon would not restart with the stub forge")

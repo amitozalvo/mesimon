@@ -71,6 +71,29 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+/// The card's reply, through the draw cache: the highest-precedence
+/// session that has a transcript (bash never does), and a stale activity
+/// row dropped on anything that is not running. Shared by the board's
+/// cards and the search preview.
+pub(super) fn card_peek(
+    app: &App,
+    sessions: &[&SessionRecord],
+) -> Option<std::rc::Rc<crate::peek::Peek>> {
+    // `min_by_key` keeps the first of equal keys, as the stable sort did.
+    let s = sessions
+        .iter()
+        .filter(|s| crate::peek::preview_path(s).is_some())
+        .min_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id))?;
+    let pk = app.peek_cache.displayed(s)?;
+    // The activity row is a claim about NOW: a parked, finished or waiting
+    // session's last tool call is history.
+    Some(if s.state == SessionState::Running || pk.activity.is_none() {
+        pk
+    } else {
+        std::rc::Rc::new(crate::peek::Peek { activity: None, ..(*pk).clone() })
+    })
+}
+
 fn ticket_sessions(app: &App, ticket: ulid::Ulid) -> Vec<&SessionRecord> {
     app.board.sessions.iter().filter(|s| s.ticket == ticket && s.state.is_live()).collect()
 }
@@ -230,22 +253,7 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
         // Under its transcript dialog the card stays as it was, open or
         // not, as under the note reader (T-1145).
         let open = !bare && (app.peek_all || (shown && app.peek_showing(t.id)));
-        // Transcript peek: the cursor card's highest-precedence session that
-        // has a transcript (bash never does) — read through the draw cache.
-        let peek_of = || {
-            let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
-            ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
-            ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
-                let pk = app.peek_cache.displayed(s)?;
-                // The activity row is a claim about NOW: a parked, finished
-                // or waiting session's last tool call is history.
-                Some(if s.state == SessionState::Running || pk.activity.is_none() {
-                    pk
-                } else {
-                    std::rc::Rc::new(crate::peek::Peek { activity: None, ..(*pk).clone() })
-                })
-            })
-        };
+        let peek_of = || card_peek(app, &sessions);
         // The pointer's card opens in place too, as `p` opens the cursor's
         // — and only with a reply to read: open, a card with none says
         // nothing it did not say closed.
@@ -536,6 +544,85 @@ fn column_groups(app: &App, ci: usize, name: &str, width: u16, row: bool) -> (Ve
     (groups, count)
 }
 
+/// A ticket's card as laid out in a view's flat lines, before the scroll:
+/// what its spots and the mouse's targets are made from once the window is
+/// known.
+struct Placed {
+    next_frame: Option<std::time::Duration>,
+    start: usize,
+    end: usize,
+    id: ulid::Ulid,
+    /// A moved card's trail where it stood (T-544), not the card.
+    trail: bool,
+    /// The pull-request brief's flat line, x offset and width (T-759).
+    prs_at: Option<(usize, (u16, u16))>,
+    /// On the holder, the crown mark's column.
+    mark: Option<u16>,
+}
+
+/// Where each placed card landed on screen in the window `lo..hi` of flat
+/// lines, `row_of` turning a shown line into its screen row: the dialog's
+/// card (T-817), the mouse's card and brief targets (T-716, T-759) and the
+/// crown's bolt spots (T-544). A card scrolled out of the window has none.
+fn record_cards(
+    app: &App,
+    area: Rect,
+    placed: &[Placed],
+    (lo, hi): (usize, usize),
+    row_of: impl Fn(usize) -> u16,
+) {
+    let shown = |line: usize| line >= lo && line < hi;
+    let mut spots = app.spots.borrow_mut();
+    let mut hits = app.hits.borrow_mut();
+    for p in placed {
+        let (top, bottom) = (p.start.max(lo), p.end.min(hi));
+        // The card a dialog is about, whole on screen, is what the dialog
+        // hangs from (T-817).
+        if !p.trail && p.start >= lo && p.end <= hi && app.dialog_card() == Some(p.id) {
+            spots.about = Some(Rect {
+                x: area.x,
+                y: row_of(p.start),
+                width: area.width,
+                height: (p.end - p.start) as u16,
+            });
+        }
+        if let Some(delay) = p.next_frame.filter(|_| top < bottom) {
+            crate::frame_clock::after(delay);
+        }
+        // The card's rows on screen are the mouse's to pick (T-716); a
+        // trail is where the card was, not where it is.
+        if !p.trail && top < bottom {
+            let rect = Rect {
+                x: area.x,
+                y: row_of(top),
+                width: area.width,
+                height: (bottom - top) as u16,
+            };
+            hits.record(rect, crate::mouse::Target::Card(p.id));
+            // The brief is the card's `^h` (T-759), over the card's own.
+            if let Some((line, (x, w))) = p.prs_at.filter(|(line, _)| shown(*line)) {
+                let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };
+                hits.record(rect.intersection(area), crate::mouse::Target::Prs(p.id));
+            }
+        }
+        if shown(p.start) {
+            let spot = crate::strike::CardSpot {
+                id: p.id,
+                x: area.x,
+                y: row_of(p.start),
+                width: area.width,
+                rows: (p.end.min(hi) - p.start) as u16,
+                mark: p.mark.map(|m| area.x + m),
+            };
+            if p.trail {
+                spots.trails.push(spot);
+            } else {
+                spots.cards.push(spot);
+            }
+        }
+    }
+}
+
 fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let theme = &app.theme;
     let is_cursor_col = app.cursor_col == ci;
@@ -557,18 +644,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // card's line range and each card's, for scroll + badges.
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut card_ranges: Vec<(usize, usize, bool)> = Vec::new(); // (start, end, waiting)
-                                                                 // Each card's first flat line, its ticket, on the holder the crown
-                                                                 // mark's column, and whether it is a trail: the bolts' spots once the
-                                                                 // window is known.
-    let mut card_starts: Vec<(
-        usize,
-        usize,
-        ulid::Ulid,
-        Option<u16>,
-        bool,
-        Option<std::time::Duration>,
-    )> = Vec::new();
-    let mut brief_spots: Vec<(usize, ulid::Ulid, (u16, u16))> = Vec::new();
+    let mut placed: Vec<Placed> = Vec::new();
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
     let mut cursor_range: Option<(usize, usize)> = None;
     let mut edit_at: Option<(usize, u16)> = None; // (flat line idx, x offset)
@@ -605,10 +681,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else {
                 None
             };
-            card_starts.push((start, end, id, mark, g.trail, g.next_frame));
-            if let Some((row, at)) = g.prs_at {
-                brief_spots.push((start + row, id, at));
-            }
+            placed.push(Placed {
+                next_frame: g.next_frame,
+                start,
+                end,
+                id,
+                trail: g.trail,
+                prs_at: g.prs_at.map(|(row, at)| (start + row, at)),
+                mark,
+            });
         }
     }
     // No trailing blank after the last card, and nothing for scroll to
@@ -846,69 +927,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // The hardware cursor sits in the edited title (06 §5.7: visible bar in
     // any text input — never a drawn glyph).
     let top_cue_rows = top.map(|_| 2usize).unwrap_or(0);
-    // Where each card's title row landed on screen, for the crown's bolts
-    // (T-544). A card scrolled out of the window has no spot.
-    {
-        let mut spots = app.spots.borrow_mut();
-        let mut hits = app.hits.borrow_mut();
-        let row_of =
-            |line: usize| area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16;
-        for &(start, end, id, mark, trail, next_frame) in &card_starts {
-            // The card's rows on screen are the mouse's to pick (T-716);
-            // a trail is where the card was, not where it is.
-            let (lo, hi) = (start.max(content_start), end.min(content_end));
-            // The card a dialog is about, whole on screen, is what the
-            // dialog hangs from (T-817).
-            if !trail
-                && start >= content_start
-                && end <= content_end
-                && app.dialog_card() == Some(id)
-            {
-                spots.about = Some(Rect {
-                    x: area.x,
-                    y: row_of(start),
-                    width: area.width,
-                    height: (end - start) as u16,
-                });
-            }
-            if let Some(delay) = next_frame.filter(|_| lo < hi) {
-                crate::frame_clock::after(delay);
-            }
-            if !trail && lo < hi {
-                let rect =
-                    Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
-                hits.record(rect, crate::mouse::Target::Card(id));
-            }
-            if let Some(&(line, _, (x, w))) = brief_spots.iter().find(|b| b.1 == id && !trail) {
-                // The brief is the card's `^h` (T-759), over the card's own.
-                if line >= content_start && line < content_end {
-                    let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };
-                    hits.record(rect.intersection(area), crate::mouse::Target::Prs(id));
-                }
-            }
-            if start >= content_start && start < content_end {
-                let spot = crate::strike::CardSpot {
-                    id,
-                    x: area.x,
-                    y: area.y + head_rows as u16 + (top_cue_rows + start - content_start) as u16,
-                    width: area.width,
-                    rows: (end.min(content_end) - start) as u16,
-                    mark: mark.map(|m| area.x + m),
-                };
-                if trail {
-                    spots.trails.push(spot);
-                } else {
-                    spots.cards.push(spot);
-                }
-            }
-        }
-    }
+    let row_of =
+        |line: usize| area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16;
+    record_cards(app, area, &placed, (content_start, content_end), row_of);
     if let Some((line, x)) = edit_at {
         if line >= content_start && line < content_end {
-            let at = (
-                area.x + x.min(area.width.saturating_sub(1)),
-                area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16,
-            );
+            let at = (area.x + x.min(area.width.saturating_sub(1)), row_of(line));
             f.set_cursor_position(at);
             super::field_spot(app, area, at);
         }
@@ -922,7 +946,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     if let Some((cs, ce)) = cursor_range {
         let rect = (cs >= content_start && ce <= content_end).then(|| Rect {
             x: area.x,
-            y: area.y + head_rows as u16 + (top_cue_rows + cs - content_start) as u16,
+            y: row_of(cs),
             width: area.width,
             height: (ce - cs) as u16,
         });
@@ -962,15 +986,6 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
         row: true,
     };
     let crown_glyph = crate::glyphs::crown(theme.glyph_tier());
-    struct Placed {
-        next_frame: Option<std::time::Duration>,
-        start: usize,
-        end: usize,
-        id: ulid::Ulid,
-        trail: bool,
-        prs_at: Option<(usize, (u16, u16))>,
-        mark: Option<u16>,
-    }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut heads: Vec<(usize, usize)> = Vec::new();
     let mut lanes: Vec<(usize, usize, usize)> = Vec::new();
@@ -1093,45 +1108,8 @@ pub(super) fn draw_table(f: &mut Frame, area: Rect, app: &App) {
         hits.record(rect, crate::mouse::Target::Column(ci));
         spots.head_rows.push((cols[ci].clone(), rect));
     }
-    for p in &placed {
-        let (lo, hi) = (p.start.max(scroll), p.end.min(end_vis));
-        if !p.trail && p.start >= scroll && p.end <= end_vis && app.dialog_card() == Some(p.id) {
-            spots.about = Some(Rect {
-                x: area.x,
-                y: row_of(p.start),
-                width: area.width,
-                height: (p.end - p.start) as u16,
-            });
-        }
-        if let Some(delay) = p.next_frame.filter(|_| lo < hi) {
-            crate::frame_clock::after(delay);
-        }
-        if !p.trail && lo < hi {
-            let rect =
-                Rect { x: area.x, y: row_of(lo), width: area.width, height: (hi - lo) as u16 };
-            hits.record(rect, crate::mouse::Target::Card(p.id));
-            if let Some((line, (x, w))) = p.prs_at.filter(|(line, _)| shown(*line)) {
-                let rect = Rect { x: area.x + x, y: row_of(line), width: w, height: 1 };
-                hits.record(rect.intersection(area), crate::mouse::Target::Prs(p.id));
-            }
-        }
-        if shown(p.start) {
-            let spot = crate::strike::CardSpot {
-                id: p.id,
-                x: area.x,
-                y: row_of(p.start),
-                width: area.width,
-                rows: (p.end.min(end_vis) - p.start) as u16,
-                mark: p.mark.map(|m| area.x + m),
-            };
-            if p.trail {
-                spots.trails.push(spot);
-            } else {
-                spots.cards.push(spot);
-            }
-        }
-    }
     drop((spots, hits));
+    record_cards(app, area, &placed, (scroll, end_vis), row_of);
     if let Some((line, x)) = edit_at.filter(|(line, _)| shown(*line)) {
         let at = (area.x + x.min(area.width.saturating_sub(1)), row_of(line));
         f.set_cursor_position(at);
@@ -1357,9 +1335,7 @@ pub(super) fn recede(f: &mut Frame, app: &App, area: Rect) {
                 height: c.rows,
             })
         })
-        .filter(|_| {
-            (crate::frame_clock::phase(app.spin_frame(), LINK_FLASH_FRAMES)).is_multiple_of(2)
-        });
+        .filter(|_| crate::glyphs::lit(app.spin_frame(), LINK_FLASH_FRAMES));
     let theme = &app.theme;
     let buf = f.buffer_mut();
     for y in area.y.saturating_add(1)..area.bottom() {

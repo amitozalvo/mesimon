@@ -120,8 +120,9 @@ export function groupRows(rows) {
 // page held when it was said, one from another conversation (or before
 // any was written) at the top. A line due above what is held waits until
 // the start of the conversation is.
-export function withLines(chat, lines) {
-  const rows = chat?.rows || [];
+// `rows` stand in for the conversation's own (its rows with the hands
+// placed).
+export function withLines(chat, lines, rows = chat?.rows || []) {
   if (!chat || !lines?.length) return rows;
   const due = lines
     .map((line) => ({ kind: "said", line, after: line.conversation === chat.conversation ? line.after ?? Infinity : -1 }))
@@ -192,6 +193,13 @@ const utf8 = new TextEncoder();
 // Words' key, as the host keys the words an act carried (core's
 // `crownact::words_key`, T-1309): FNV-1a over the words joined by one
 // space, sixteen hex digits.
+// A prompt row's key is read once for its life: a row the page keeps is
+// the same object, and its words never change.
+const KEYS = new WeakMap();
+const keyOf = (row) => {
+  if (!KEYS.has(row)) KEYS.set(row, wordsKey(row.text));
+  return KEYS.get(row);
+};
 export function wordsKey(text) {
   let h = 0xcbf29ce484222325n;
   for (const b of utf8.encode((text || "").split(SPACE).filter(Boolean).join(" ")))
@@ -215,17 +223,12 @@ export function withActs(chat, rows) {
   let last = -Infinity;
   const times = rows.map((r) => (r.kind === "said" ? last : (last = r.ms ?? last)));
   const first = times.find((t) => t > -Infinity);
-  const keys = new Map();
-  const keyOf = (i) => {
-    if (!keys.has(i)) keys.set(i, wordsKey(rows[i].text));
-    return keys.get(i);
-  };
   const marks = new Map();
   const at = [];
   acts.forEach((act, n) => {
     if (act.words && !(chat.floor != null && !(first <= act.ms + ACT_SLACK_MS))) {
       const j = rows.findIndex((r, i) => r.kind === "prompt" && !marks.has(i)
-        && (r.ms == null || r.ms + ACT_SLACK_MS >= act.ms) && keyOf(i) === act.words);
+        && (r.ms == null || r.ms + ACT_SLACK_MS >= act.ms) && keyOf(r) === act.words);
       if (j >= 0) return marks.set(j, act);
     }
     if (chat.floor != null && !(first <= act.ms)) return;
@@ -251,9 +254,13 @@ export function withActs(chat, rows) {
 // its mark, its sentence and its time, then the crown's own words where it
 // answered, and what started its turn on a quiet line.
 const capital = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const Stamp = ({ ms }) => html`<time datetime=${new Date(ms).toISOString()}>${clock(ms)}</time>`;
+// An act's head, as its row and the words it carried both draw it.
+const ActHead = ({ act, ms, cls }) =>
+  html`<p class=${cls} dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><${Stamp} ms=${ms} /></p>`;
 function Act({ act }) {
   return html`<div class=${`chat-row chat-act${act.road ? " chat-act-road" : ""}`}>
-    <p dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><time datetime=${new Date(act.ms).toISOString()}>${clock(act.ms)}</time></p>
+    <${ActHead} act=${act} ms=${act.ms} />
     ${act.body && html`<p class="chat-act-body" dir="auto">${act.body}</p>`}
     ${act.cause && html`<p class="chat-act-cause" dir="auto">${capital(act.cause)}</p>`}
   </div>`;
@@ -266,7 +273,7 @@ function Crowned({ row }) {
   const act = row.crown;
   const ms = row.ms ?? act.ms;
   return html`<div class=${`chat-row chat-crowned${act.road ? " chat-crowned-road" : ""}`}>
-    <p class="chat-crowned-head" dir="auto"><${Icon} name=${act.road ? "zap" : "crown"} size=${13} width=${2.2} /><span>${capital(act.text)}</span><time datetime=${new Date(ms).toISOString()}>${clock(ms)}</time></p>
+    <${ActHead} act=${act} ms=${ms} cls="chat-crowned-head" />
     <p class="chat-crowned-body" dir="auto"><${Linked} text=${row.text} /></p>
     ${act.cause && html`<p class="chat-crowned-cause" dir="auto">${capital(act.cause)}</p>`}
   </div>`;
@@ -278,7 +285,7 @@ function Said({ store, line }) {
   const now = line.start ? { ...line, ...startLine(line.start) } : line;
   const offered = !!line.action && Date.now() < line.until;
   return html`<p class=${`chat-row chat-said${now.err ? " chat-said-err" : ""}`} dir="auto"><span>${now.text}</span>${now.tick &&
-    html`<${Tick} state=${now.tick} />`}<time datetime=${new Date(now.at).toISOString()}>${clock(now.at)}</time>${offered &&
+    html`<${Tick} state=${now.tick} />`}<${Stamp} ms=${now.at} />${offered &&
     html`<button type="button" class="chat-said-act" onClick=${() => store.lineAction(line)}>${line.action.label}</button>`}</p>`;
 }
 
@@ -288,7 +295,7 @@ function Said({ store, line }) {
 function Hand({ row, provider }) {
   return html`<div class=${`chat-row chat-hand${row.up ? " chat-hand-up" : ""}`} aria-label=${row.up ? "Raised hand, waiting on you" : "Raised hand"}>
     <p class="chat-hand-head" dir="auto"><${Icon} name="hand" size=${13} width=${2.2} /><span>${provider || "claude"} raised a hand</span>${row.ms != null &&
-      html`<time datetime=${new Date(row.ms).toISOString()}>${clock(row.ms)}</time>`}</p>
+      html`<${Stamp} ms=${row.ms} />`}</p>
     <p class="chat-hand-body" dir="auto"><${Linked} text=${row.text} /></p>
   </div>`;
 }
@@ -313,7 +320,8 @@ function Row({ row }) {
 // Newest at the bottom. Scrolling near the top asks for the page before; a
 // page put on top keeps the rows under the reader's eye where they were.
 // `tail` is drawn after the rows: the dialog waiting on you (T-701).
-export function Chat({ store, entry, doing, hand, provider, tail }) {
+export function Chat({ store, entry, agent, tail }) {
+  const { doing, hand, provider } = agent || {};
   const ref = useRef();
   const seen = useRef({});
   // The runs unfolded by a press, by their first row's key.
@@ -337,8 +345,7 @@ export function Chat({ store, entry, doing, hand, provider, tail }) {
   useLayoutEffect(() => keepAtEnd(ref.current, () => entry?.chatFollowing !== false));
   const held = chat?.rows || [];
   // Away, the hand the board last said is not known to be up.
-  const handed = chat && { ...chat, rows: withHand(held, store.live ? hand : null) };
-  const rows = withActs(chat, withLines(handed, store.linesOf(store.board?.current)));
+  const rows = withActs(chat, withLines(chat, store.linesOf(store.board?.current), withHand(held, store.live ? hand : null)));
   // Away (T-698), the conversation is what this page last held or the
   // shelf's newest page: earlier pages wait for the terminal.
   const away = !store.live;

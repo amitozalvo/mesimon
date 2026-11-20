@@ -1887,17 +1887,6 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
             .any(|p| p.action == mesimon_core::command::PendingAction::CrownWake)
     };
     let bound: u64 = IDLE_MS.parse().unwrap();
-    // The crown's wake rows (T-1320): `cmd` on the crown's ticket, and the
-    // outcome where one is given.
-    let crown_rows = |t: ulid::Ulid, cmd: &str, outcome: Option<&str>| {
-        let (cmd, id) = (format!("\"cmd\":\"{cmd}\""), t.to_string());
-        let outcome = outcome.map(|o| format!("\"outcome\":\"{o}\""));
-        h.feed()
-            .lines()
-            .filter(|l| l.contains(&cmd) && l.contains(&id))
-            .filter(|l| outcome.as_ref().is_none_or(|o| l.contains(o)))
-            .count()
-    };
 
     let a = c.create_ticket("coordinate");
     let w1 = c.create_ticket("mesimon-probe-945 worker");
@@ -1977,10 +1966,15 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     // One row at the hold's start for all the ticks it lasted, and one
     // release with the wake (T-1320).
     wait_until(std::time::Duration::from_secs(10), "the release row", || {
-        crown_rows(a, "crown_wake_released:person", None) == 1
+        feed_count(&h, "crown_wake_released:person", a) == 1
     });
-    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("client_recent")), 1, "{}", h.feed());
-    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("draft")), 0);
+    assert_eq!(
+        feed_count_with(&h, "crown_wake_held:person", a, r#""outcome":"client_recent""#),
+        1,
+        "{}",
+        h.feed()
+    );
+    assert_eq!(feed_count_with(&h, "crown_wake_held:person", a, r#""outcome":"draft""#), 0);
     // The crown's turn on it.
     h.one_turn(&mut c, sa);
     wait_until(std::time::Duration::from_secs(10), "nothing owed", || !owed(&mut c, a));
@@ -2011,10 +2005,15 @@ fn an_attached_client_holds_the_crown_wake_only_while_active() {
     });
     assert_eq!(lines_with("half a thought"), 1, "never joined: {}", read_got());
     wait_until(std::time::Duration::from_secs(10), "the draft's release row", || {
-        crown_rows(a, "crown_wake_released:person", Some("draft")) == 1
+        feed_count_with(&h, "crown_wake_released:person", a, r#""outcome":"draft""#) == 1
     });
-    assert_eq!(crown_rows(a, "crown_wake_held:person", Some("draft")), 1, "{}", h.feed());
-    assert_eq!(crown_rows(a, "crown_wake_released:person", None), 2, "one per wake");
+    assert_eq!(
+        feed_count_with(&h, "crown_wake_held:person", a, r#""outcome":"draft""#),
+        1,
+        "{}",
+        h.feed()
+    );
+    assert_eq!(feed_count(&h, "crown_wake_released:person", a), 2, "one per wake");
     one.kill().unwrap();
     let _ = one.wait();
     two.kill().unwrap();
@@ -3804,16 +3803,7 @@ fn a_hand_merge_wakes_the_crown_that_started_the_worker() {
         Response::Ok
     ));
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-91 merged by hand\"");
     let wait_ahead = |c: &mut TestClient| {
@@ -3931,16 +3921,7 @@ fn a_merge_while_the_daemon_is_down_wakes_the_crown_after_the_restart() {
         Response::Ok
     ));
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-92 merged while down\"");
 
@@ -4622,16 +4603,7 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     let w = c.create_ticket(title);
     let kw = c.key_of(w);
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
@@ -4782,16 +4754,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     let w = c.create_ticket(title);
     let kw = c.key_of(w);
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     let worker = format!("{kw} \"{title}\"");
     let notice = format!("Your branch {branch} has been merged into main");
@@ -7009,16 +6972,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         Response::Ok
     ));
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     // This connection arms the train and keeps it armed.
     assert!(matches!(
@@ -7026,14 +6980,7 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
         Response::Ok
     ));
     let worker = format!("{kw} \"mesimon-probe-92 on the train\"");
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
 
     // ---- 1. delivered and merged by the train: one line, at the merge -----
     commit(&path, "one.txt");
@@ -7145,26 +7092,10 @@ fn the_merged_wake_waits_for_the_notice_turn() {
         Response::Ok
     ));
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-96 notified\"");
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
     let train = |c: &mut TestClient, on: bool| {
         assert!(matches!(
             c.request(Command::SetAutomation { merge_train: on, merge_notice: on }),
@@ -7306,26 +7237,10 @@ fn a_crown_read_mid_notice_turn_keeps_its_end() {
         Response::Ok
     ));
     let sa = crown_idle(&h, &mut c, a);
-    match c.crown_start(sa, &kw, "worktree") {
-        Response::AgentStarted { .. } => {}
-        other => panic!("start_agent: {other:?}"),
-    }
-    let path = std::path::PathBuf::from(wait_attached(&mut c, w).path.expect("a path"));
-    wait_until(std::time::Duration::from_secs(15), "the parked start to land", || {
-        c.board().live_agent(w).is_some()
-    });
-    let ws = c.board().live_agent(w).unwrap().id;
-    let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
+    let (ws, path, branch) = crown_starts_on_worktree(&mut c, sa, w, &kw);
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-1283 notified\"");
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
     assert!(matches!(
         c.request(Command::SetAutomation { merge_train: true, merge_notice: true }),
         Response::Ok
@@ -10474,14 +10389,7 @@ fn the_crown_merges_where_the_train_will_not() {
     let branch = c.agent_read(sa, &kw).unwrap().branch.expect("a branch");
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-97 merged by the crown\"");
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
     let merge = |c: &mut TestClient, key: &str, seen: Option<String>| {
         c.send(
             Principal::Agent { session: sa },
@@ -10833,14 +10741,7 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     assert!(c.board().live_agent(p).unwrap().started_by.is_none());
     settle_for(500);
     let worker = format!("{kw} \"mesimon-probe-98 told by the board\"");
-    let merged = |branch: &str| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = |branch: &str| is_ancestor(&h.repo, branch, "main");
     let wait_ahead = |c: &mut TestClient, id: ulid::Ulid| {
         wait_until(
             std::time::Duration::from_secs(10),
@@ -16258,12 +16159,7 @@ fn a_start_s_receipt_stamp_outlives_its_launch_and_the_board_s_move() {
     // A background task the agent started ends inside that turn (T-1285):
     // Claude Code fires a prompt frame for its `<task-notification>`, which
     // is the agent's own work and no prompt the crown did not send.
-    hook_send(
-        &hook_sock,
-        &ws.to_string(),
-        "UserPromptSubmit",
-        r#"{"prompt":"<task-notification>\n<task-id>b67k5e8hn</task-id>\n<status>completed</status>\n</task-notification>"}"#,
-    );
+    hook_send(&hook_sock, &ws.to_string(), "UserPromptSubmit", TASK_NOTIFICATION);
     settle_for(300);
 
     // The ask with the start's stamp is taken: none of that is news to the
@@ -17249,10 +17145,6 @@ fn a_seat_a_person_woke_between_crowns_is_the_person_s() {
     );
 }
 
-/// A background task's `<task-notification>`, as Claude Code fires it: the
-/// `prompt` of a `UserPromptSubmit` (T-135).
-const TASK_NOTIFICATION: &str = r#"{"prompt":"<task-notification>\n<task-id>bqvffdb91</task-id>\n<status>completed</status>\n<summary>Background command \"cargo ut\" completed (exit code 0)</summary>\n</task-notification>"}"#;
-
 /// T-1287 (T-1196, T-1208 on this board's feed): the worker's own
 /// background command ends inside its turn, and Claude Code fires a prompt
 /// frame for its notification. It is nobody's prompt: the crown's ask queued
@@ -17359,12 +17251,7 @@ fn a_task_notification_inside_the_notice_turn_keeps_it_the_notice_s() {
     commit(&path, "one.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(15), "the train to merge it", || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
+        is_ancestor(&h.repo, &branch, "main")
     });
     wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
         lines_with("has been merged").len() == 1

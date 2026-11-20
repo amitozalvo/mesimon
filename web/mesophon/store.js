@@ -3,7 +3,7 @@
 // requests and the theme attribute. Transport stays in connection.js.
 import { Connection } from "./connection.js";
 import { BoardState, digestOf, refusedBoardWords } from "./board.js";
-import { Sessions, answerBusy, answerWords, dropPictures, landed, receiptTick } from "./sessions.js";
+import { Sessions, answerBusy, answerWords, dropPictures, ghostly, landed, receiptTick } from "./sessions.js";
 import { replacedWords, sendRefused, waitsOnYou } from "./queue.js";
 import { Sent } from "./sent.js";
 import { Mailbox } from "./mailbox.js";
@@ -1670,8 +1670,7 @@ export class Store {
     const receipt = entry?.latest;
     if (!receipt || !this.chatOnScreen(entry.board, entry.ticket)) return;
     const status = receipt.status;
-    const prompt = ["prompt", "send_now"].includes(receipt.op);
-    const shown = status === "awaiting_delivery" || (prompt && ["submitted", "input_sent"].includes(status)) ||
+    const shown = status === "awaiting_delivery" || ghostly(receipt) ||
       (status === "queued" && !receipt.replaced) || receipt.op === "take_back" || receipt.taken;
     if (shown || !entry.delivery) return;
     const err = ["rejected", "unknown"].includes(status);
@@ -1684,8 +1683,14 @@ export class Store {
   // conversation while that is on screen (T-1312).
   refuse(entry, words) {
     entry.delivery = words;
-    if (this.chatOnScreen(entry.board, entry.ticket)) this.addLine({ board: entry.board, ticket: entry.ticket, err: true }, words);
+    this.addLine({ board: entry.board, ticket: entry.ticket, err: true }, words);
     this.sync();
+  }
+  // A picture refused (`entry.error`), said as words that did not go.
+  refuseError(entry) {
+    const words = entry.error;
+    entry.error = "";
+    this.refuse(entry, words);
   }
   linesOf(ticket) {
     const board = this.active?.pin.board;
@@ -1761,11 +1766,7 @@ export class Store {
     if (!entry || !this.canAskPictures) return;
     const placed = await this.readPictures(entry, "draft", files, at, () => this.entry === entry);
     // A picture this browser cannot read is said where the words' news is.
-    if (entry.error) {
-      const words = entry.error;
-      entry.error = "";
-      this.refuse(entry, words);
-    }
+    if (entry.error) this.refuseError(entry);
     return placed;
   }
   removePromptPicture(n) {
@@ -2056,6 +2057,10 @@ export class Store {
   async sendPictures(draft, pictures, ticket, current) {
     const ids = new Map();
     for (const p of pictures) p.up = 0;
+    const settle = () => {
+      draft.sending = "";
+      for (const p of pictures) delete p.up;
+    };
     try {
       for (const [i, p] of pictures.entries()) {
         draft.sending = pictures.length > 1 ? `Sending picture ${i + 1} of ${pictures.length}…` : "Sending picture…";
@@ -2066,16 +2071,14 @@ export class Store {
         }));
       }
     } catch (e) {
-      draft.sending = "";
-      for (const p of pictures) delete p.up;
+      settle();
       if (current()) {
         draft.error = `Picture not sent: ${e.message}.`;
         this.emit();
       }
       return undefined;
     }
-    draft.sending = "";
-    for (const p of pictures) delete p.up;
+    settle();
     return ids;
   }
   // The pictures the words name go up one by one, then the note that
@@ -2785,11 +2788,7 @@ export class Store {
     const words = entry.draft;
     const current = () => this.entry === entry && entry.draft === words;
     const ids = await this.sendPictures(entry, pictures, entry.ticket, current);
-    if (!ids && current() && entry.error) {
-      const words = entry.error;
-      entry.error = "";
-      return this.refuse(entry, words);
-    }
+    if (!ids && current() && entry.error) return this.refuseError(entry);
     this.sync();
     if (!ids || !current()) return;
     this.sendPrompt(entry, linked(words, ids), [...ids.values()], starts);

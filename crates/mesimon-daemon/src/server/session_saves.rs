@@ -16,11 +16,11 @@ pub(super) struct Saves {
     thread: Option<std::thread::JoinHandle<()>>,
     // A failed or superseded write must include every conversation key
     // learned since the last durable snapshot, even if its seat has gone.
-    pub(super) started_revision: u64,
+    started_revision: u64,
     durable: u64,
-    pub(super) requested: u64,
-    pub(super) active: Option<u64>,
-    pub(super) error: Option<String>,
+    requested: u64,
+    active: Option<u64>,
+    error: Option<String>,
     waiting: VecDeque<(u64, AfterSave)>,
 }
 
@@ -48,6 +48,22 @@ impl Saves {
             error: None,
             waiting: VecDeque::new(),
         }
+    }
+
+    /// The revision the board last asked to save: a reply that must wait
+    /// for its call's records compares it before and after the call.
+    pub(super) fn revision(&self) -> u64 {
+        self.requested
+    }
+
+    /// No save is out.
+    pub(super) fn idle(&self) -> bool {
+        self.active.is_none()
+    }
+
+    /// Why the last save failed, while it stands.
+    pub(super) fn last_error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 }
 
@@ -85,6 +101,33 @@ impl Job {
 }
 
 impl Daemon {
+    /// Also the one place `started.json` learns a key (T-441): every change
+    /// of a record's conversation persists the sessions, so folding here
+    /// misses none — and folds before the bar, which is `sessions.json`'s.
+    ///
+    /// Many tick stages persist on a change that touched no record: those
+    /// cost nothing, because a record is only reached for writing through
+    /// `Tracked`'s mark (T-839). A marked one is serialised and still
+    /// compared with the last write, since the mark over-approximates.
+    pub(super) fn persist_sessions(&mut self) {
+        if !self.board.sessions.is_dirty() {
+            return;
+        }
+        self.board.sessions.mark_clean();
+        self.session_saves.requested += 1;
+        let save_keys =
+            crate::started::fold(&mut self.started, &self.board.sessions) && !self.started_barred;
+        if save_keys {
+            self.session_saves.started_revision = self.session_saves.requested;
+        }
+        if self.sessions_barred && !save_keys {
+            return;
+        }
+        if self.session_saves.active.is_none() {
+            self.start_session_save();
+        }
+    }
+
     pub(super) fn start_session_save(&mut self) {
         self.session_saves.active = Some(self.session_saves.requested);
         let job = Job {
@@ -149,13 +192,23 @@ impl Daemon {
         wait: bool,
     ) {
         self.after_session_save(wait, move |_, result| {
-            let (response, told) = match result {
-                Ok(()) => (response, told),
-                Err(message) => (Response::Err { message }, None),
-            };
-            let _ = reply.send(ClientReply { response, told, delivered: None });
+            let _ = reply.send(saved_reply(result, response, told));
         });
     }
+}
+
+/// A reply that waited on a save: the response as it stands when the save
+/// held, its refusal (and no rules told) when it failed.
+pub(super) fn saved_reply(
+    saved: Result<(), String>,
+    response: Response,
+    told: Option<(uuid::Uuid, u64)>,
+) -> ClientReply {
+    let (response, told) = match saved {
+        Ok(()) => (response, told),
+        Err(message) => (Response::Err { message }, None),
+    };
+    ClientReply { response, told, delivered: None }
 }
 
 #[cfg(test)]

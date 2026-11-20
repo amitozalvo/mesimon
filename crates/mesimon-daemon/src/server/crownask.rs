@@ -82,6 +82,16 @@ use super::*;
 use crownwake::Said;
 use serde::{Deserialize, Serialize};
 
+/// What a second ask is while the first is out (`Daemon::steer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Steer {
+    /// A steer: it passes the ask still out.
+    Admits,
+    /// A steer but for a turn the board has not seen since its restart.
+    Unseen,
+    No,
+}
+
 /// Where the crown's last ask to a ticket stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
@@ -894,42 +904,30 @@ impl Daemon {
     /// dialog, a start, an idle with background tasks (words there start a
     /// turn, they steer none) or a parked seat (round 1). Only a steer
     /// passes an ask still out; every other ask keeps the one-ask rule.
-    pub(super) fn steer_admits(&self, seat: &QueuedSeat, deliver: Deliver, sends: bool) -> bool {
-        let QueuedSeat::Pane(id) = seat else { return false };
-        sends
-            && deliver.at_once()
-            && self
-                .board
-                .sessions
-                .iter()
-                .any(|s| s.id == *id && s.state == SessionState::Running && !crownwake::guessed(s))
-    }
-
-    /// Whether an ask would be a steer but for the turn it goes into
+    ///
+    /// `Unseen`: it would be a steer but for the turn it goes into
     /// (T-1282): the board has not heard the agent's own hooks in it since
     /// it restarted, its `Running` the tail's guess or still `Unknown`.
     /// The refusal then names that, and the agent's next tool step, which
     /// re-asserts the turn, as what lifts it.
-    pub(super) fn steer_unseen(&self, seat: &QueuedSeat, deliver: Deliver, sends: bool) -> bool {
-        let QueuedSeat::Pane(id) = seat else { return false };
-        sends
-            && deliver.at_once()
-            && self.board.sessions.iter().any(|s| {
-                s.id == *id
-                    && match s.state {
-                        SessionState::Running => crownwake::guessed(s),
-                        SessionState::Unknown { reason } => {
-                            reason == UnknownReason::DaemonRestarted
-                        }
-                        _ => false,
-                    }
-            })
+    pub(super) fn steer(&self, seat: &QueuedSeat, deliver: Deliver, sends: bool) -> Steer {
+        let QueuedSeat::Pane(id) = seat else { return Steer::No };
+        if !(sends && deliver.at_once()) {
+            return Steer::No;
+        }
+        let Some(s) = self.board.sessions.iter().find(|s| s.id == *id) else { return Steer::No };
+        match s.state {
+            SessionState::Running if !crownwake::guessed(s) => Steer::Admits,
+            SessionState::Running
+            | SessionState::Unknown { reason: UnknownReason::DaemonRestarted } => Steer::Unseen,
+            _ => Steer::No,
+        }
     }
 
     /// The second ask's refusal, while the first is out: the oldest ask
     /// that still blocks is the one it names. `unseen`: a steer refused
     /// for a turn the board has not seen since its restart
-    /// (`steer_unseen`), which the refusal says in place of the first
+    /// (`Steer::Unseen`), which the refusal says in place of the first
     /// ask's wait.
     pub(super) fn crown_ask_blocks(
         &self,
@@ -1671,7 +1669,7 @@ pub(in crate::server) mod ledger_tests {
         let admits = |b: &Bed, deliver: Deliver| {
             let seat = b.d.seat_of(b.worker);
             let sends = b.d.crown_ask_hold(b.crown, b.worker, &seat).is_none();
-            b.d.steer_admits(&seat, deliver, sends)
+            b.d.steer(&seat, deliver, sends) == Steer::Admits
         };
         let set = |b: &mut Bed, state: SessionState, confidence: Confidence| {
             b.d.board.sessions[0].state = state;
@@ -1734,11 +1732,11 @@ pub(in crate::server) mod ledger_tests {
         let verdict = |b: &Bed, deliver: Deliver| {
             let seat = b.d.seat_of(b.worker);
             let sends = b.d.crown_ask_hold(b.crown, b.worker, &seat).is_none();
-            (b.d.steer_admits(&seat, deliver, sends), b.d.steer_unseen(&seat, deliver, sends))
+            b.d.steer(&seat, deliver, sends)
         };
-        assert_eq!(verdict(&b, Deliver::Now), (false, true));
-        assert_eq!(verdict(&b, Deliver::Immediately), (false, true));
-        assert_eq!(verdict(&b, Deliver::Idle), (false, false), "idle is a resend");
+        assert_eq!(verdict(&b, Deliver::Now), Steer::Unseen);
+        assert_eq!(verdict(&b, Deliver::Immediately), Steer::Unseen);
+        assert_eq!(verdict(&b, Deliver::Idle), Steer::No, "idle is a resend");
         let refusal = b.d.crown_ask_blocks(b.worker, "T-2", true).unwrap();
         assert!(refusal.contains("has not seen its turn running since the board restarted"));
         assert!(refusal.contains("next tool step"), "{refusal}");
@@ -1746,9 +1744,9 @@ pub(in crate::server) mod ledger_tests {
         // `Unknown` after a restart reads the same; a stale demotion's does not.
         b.d.board.sessions[0].state =
             SessionState::Unknown { reason: UnknownReason::DaemonRestarted };
-        assert_eq!(verdict(&b, Deliver::Now), (false, true));
+        assert_eq!(verdict(&b, Deliver::Now), Steer::Unseen);
         b.d.board.sessions[0].state = SessionState::Unknown { reason: UnknownReason::NoSignal };
-        assert_eq!(verdict(&b, Deliver::Now), (false, false));
+        assert_eq!(verdict(&b, Deliver::Now), Steer::No);
         b.d.board.sessions[0].state = SessionState::Running;
         let step = |b: &mut Bed, payload: serde_json::Value| {
             b.d.on_mod_hook(HookFrame {
@@ -1762,12 +1760,12 @@ pub(in crate::server) mod ledger_tests {
         };
         step(&mut b, serde_json::json!({ "tool_name": "Bash", "agent_id": "sub-1" }));
         assert_eq!(b.d.board.sessions[0].confidence, Confidence::Low, "a subagent's step");
-        assert_eq!(verdict(&b, Deliver::Now), (false, true));
+        assert_eq!(verdict(&b, Deliver::Now), Steer::Unseen);
         step(&mut b, serde_json::json!({ "tool_name": "Bash" }));
         let rec = &b.d.board.sessions[0];
         assert_eq!((&rec.state, rec.confidence), (&SessionState::Running, Confidence::High));
-        assert_eq!(verdict(&b, Deliver::Now), (true, false), "the agent's own step proves it");
-        assert_eq!(verdict(&b, Deliver::Immediately), (true, false));
+        assert_eq!(verdict(&b, Deliver::Now), Steer::Admits, "the agent's own step proves it");
+        assert_eq!(verdict(&b, Deliver::Immediately), Steer::Admits);
     }
 
     /// A watch ends at the merge (T-712), and a branch an earlier PR merged

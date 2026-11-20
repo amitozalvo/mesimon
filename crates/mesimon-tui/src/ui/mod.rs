@@ -171,20 +171,7 @@ fn draw_screen(f: &mut Frame, app: &App) {
     // the screen. The picker reaches it either way.
     if let (Mode::Editor(ed), false) = (&app.mode, matches!(app.screen, Screen::Board)) {
         editor::draw(f, app, ed);
-        if app.tag_armed.is_some() {
-            let area = f.area();
-            tagpicker::draw(f, area, app);
-            chrome::draw_footer(
-                f,
-                ratatui::layout::Rect {
-                    x: area.x,
-                    y: area.y + area.height - 1,
-                    width: area.width,
-                    height: 1,
-                },
-                app,
-            );
-        }
+        draw_tag_picker(f, app, last_row(f.area()));
         if app.help {
             help::draw(f, app);
         }
@@ -192,41 +179,12 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     if let Screen::Ticket { ticket, rail_idx } = &app.screen {
         ticket::draw(f, app, *ticket, *rail_idx);
-        // `^t` is bound on this screen too, so the panel has to reach it —
-        // the footer already flips to the chord's hints, and a footer naming
-        // keys over a grid that is not drawn is worse than no picker at all.
-        if app.tag_armed.is_some() {
-            let area = f.area();
-            tagpicker::draw(f, area, app);
-            chrome::draw_footer(
-                f,
-                ratatui::layout::Rect {
-                    x: area.x,
-                    y: area.y + area.height - 1,
-                    width: area.width,
-                    height: 1,
-                },
-                app,
-            );
-        }
-        if let Mode::Links { links, idx, ticket } = &app.mode {
-            dialog::draw_links(f, app, *ticket, links, *idx);
-        }
-        if let Mode::Summary { ticket, idx } = &app.mode {
-            dialog::draw_summary(f, app, *ticket, *idx);
-        }
-        if let Mode::PullRequests { ticket, idx } = &app.mode {
-            prs::draw(f, app, *ticket, *idx);
-        }
+        // `^t` is bound on this screen too, so the panel has to reach it.
+        draw_tag_picker(f, app, last_row(f.area()));
         // `,` opens Settings here as on the board (T-717), so its dialogs
         // are drawn here too: a mode open and not drawn takes keys unseen
         // (T-1265).
         draw_app_dialogs(f, app);
-        // The merge dialog (T-431): the m flow's question, wait and answer,
-        // over the page whose branch it is about.
-        if let Some(d) = &app.merge_dialog {
-            dialog::draw_merge(f, app, d);
-        }
         if app.help {
             help::draw(f, app);
         }
@@ -294,34 +252,17 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
     // Over the board, above the footer: the picker is a panel because the
     // vocabulary is the user's own and a one-line hint cannot show it.
-    if app.tag_armed.is_some() {
-        tagpicker::draw(f, f.area(), app);
-        chrome::draw_footer(f, outer[5], app);
-    }
+    draw_tag_picker(f, app, outer[5]);
     if let Mode::External { idx } = &app.mode {
         dialog::draw_drawer(f, app, *idx);
     }
     if let Mode::Archived { idx } = &app.mode {
         dialog::draw_archived(f, app, *idx);
     }
-    if let Mode::Links { links, idx, ticket } = &app.mode {
-        dialog::draw_links(f, app, *ticket, links, *idx);
-    }
-    if let Mode::Summary { ticket, idx } = &app.mode {
-        dialog::draw_summary(f, app, *ticket, *idx);
-    }
     if matches!(app.mode, Mode::Transcript { .. }) {
         transcript::draw(f, app);
     }
-    if let Mode::PullRequests { ticket, idx } = &app.mode {
-        prs::draw(f, app, *ticket, *idx);
-    }
     draw_app_dialogs(f, app);
-    // The merge dialog, over the card whose branch it is about (T-697): the
-    // ticket page's, the same frame and words.
-    if let Some(d) = &app.merge_dialog {
-        dialog::draw_merge(f, app, d);
-    }
     // The search picker, over the board it is a view of (T-349). Last of the
     // dialogs and before the overlay: it is the biggest surface here, and
     // nothing else may be open at the same time.
@@ -337,11 +278,37 @@ fn draw_screen(f: &mut Frame, app: &App) {
     }
 }
 
-/// The dialogs a mode opens over whichever screen it was opened from: the
-/// menu, Settings and everything one level under it (T-1265). The board and
-/// the ticket page both draw them, so no mode takes keys under a page that
+/// The `^t` picker over the whole screen, with the footer redrawn on
+/// `footer` over it: the footer flips to the chord's hints, and a footer
+/// naming keys over a grid that is not drawn is worse than no picker.
+fn draw_tag_picker(f: &mut Frame, app: &App, footer: ratatui::layout::Rect) {
+    if app.tag_armed.is_some() {
+        tagpicker::draw(f, f.area(), app);
+        chrome::draw_footer(f, footer, app);
+    }
+}
+
+/// The screen's last row, where the footer sits.
+fn last_row(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect { y: area.y + area.height - 1, height: 1, ..area }
+}
+
+/// The dialogs a mode opens over whichever screen it was opened from: a
+/// card's links, summary and pull requests, the menu, Settings and
+/// everything one level under it (T-1265), then the merge dialog (T-431,
+/// T-697) over the card or page whose branch it is about. The board and the
+/// ticket page both draw them, so no mode takes keys under a page that
 /// hides it.
 fn draw_app_dialogs(f: &mut Frame, app: &App) {
+    if let Mode::Links { links, idx, ticket } = &app.mode {
+        dialog::draw_links(f, app, *ticket, links, *idx);
+    }
+    if let Mode::Summary { ticket, idx } = &app.mode {
+        dialog::draw_summary(f, app, *ticket, *idx);
+    }
+    if let Mode::PullRequests { ticket, idx } = &app.mode {
+        prs::draw(f, app, *ticket, *idx);
+    }
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
     }
@@ -380,6 +347,10 @@ fn draw_app_dialogs(f: &mut Frame, app: &App) {
     }
     if matches!(app.mode, Mode::Setup) {
         setup::draw(f, app);
+    }
+    // The m flow's question, wait and answer: not a mode, so over any open.
+    if let Some(d) = &app.merge_dialog {
+        dialog::draw_merge(f, app, d);
     }
 }
 

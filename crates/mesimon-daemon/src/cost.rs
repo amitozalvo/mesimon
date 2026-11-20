@@ -298,15 +298,21 @@ impl Ledger {
         model: &str,
         tokens: Tokens,
     ) -> bool {
-        let t = Arc::make_mut(self.tickets.entry(ticket).or_default());
-        if t.fence(path).is_none() {
+        // The entry stays inserted on every path, as before; only a write
+        // unshares the ledger from a save in flight.
+        let entry = self.tickets.entry(ticket).or_default();
+        if entry.fence(path).is_none() {
             if subagent {
                 return false;
             }
-            let c = t.conversations.entry(path.to_string()).or_default();
+            let c = Arc::make_mut(entry).conversations.entry(path.to_string()).or_default();
             Arc::make_mut(c).by_mod_since = Some(at_ms);
             return true;
         }
+        if tokens.is_empty() {
+            return false;
+        }
+        let t = Arc::make_mut(entry);
         let mut tokens = tokens;
         if t.hint.writes_1h == Some(true) {
             tokens.write_1h += std::mem::take(&mut tokens.write_5m);
@@ -316,9 +322,6 @@ impl Ledger {
         } else {
             model.to_string()
         };
-        if tokens.is_empty() {
-            return false;
-        }
         t.check.by_mod += tokens.total();
         t.hours.entry(at_ms / 3_600_000).or_default().entry(model).or_default().add(&tokens);
         true
@@ -382,6 +385,7 @@ impl Ledger {
     }
 
     /// Every known transcript, for the worker to read what grew.
+    #[cfg(test)]
     pub fn jobs(&self) -> Vec<Job> {
         self.jobs_for(|_| true)
     }

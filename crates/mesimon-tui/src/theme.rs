@@ -2023,7 +2023,7 @@ impl Theme {
     /// cursor treatment there; its reversed surface already marks the grab.
     pub fn move_blink(&self, frame: usize) -> Style {
         const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
-        let dark = self.has_colour() && (crate::frame_clock::phase(frame, PHASE_FRAMES)) % 2 == 1;
+        let dark = self.has_colour() && !crate::glyphs::lit(frame, PHASE_FRAMES);
         let fg = if dark { self.sel.dim3 } else { self.sel.base };
         Style::default().fg(fg).add_modifier(Modifier::BOLD)
     }
@@ -2043,7 +2043,7 @@ impl Theme {
     /// red `err` (2026-09-03): on the first amber the flash was amber.
     pub fn delete_lit(&self, frame: usize) -> bool {
         const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
-        !self.has_colour() || (crate::frame_clock::phase(frame, PHASE_FRAMES)).is_multiple_of(2)
+        !self.has_colour() || crate::glyphs::lit(frame, PHASE_FRAMES)
     }
 
     /// The pending-archive card (T-545, "like delete, but different. maybe
@@ -2058,7 +2058,7 @@ impl Theme {
     /// MOVE ghost does, and the footer carries the arming alone.
     pub fn archive_faded(&self, frame: usize) -> bool {
         const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
-        self.has_colour() && (crate::frame_clock::phase(frame, PHASE_FRAMES)).is_multiple_of(2)
+        self.has_colour() && crate::glyphs::lit(frame, PHASE_FRAMES)
     }
 
     pub fn delete_row(&self) -> Style {
@@ -2534,7 +2534,11 @@ impl Theme {
     /// cannot mix, the drag selection's inversion, still.
     pub fn link_pick(&self, now_ms: u64, cells: usize, cell: usize) -> Style {
         let Some((ground, crest, letters)) = self.pick_inks() else { return self.selection() };
-        crate::frame_clock::after_ms(100);
+        // The rest between crossings lights no cell (`pick_crest`): its next
+        // change is the next crossing's first frame.
+        let cycle = PICK_SHIMMER_MS + PICK_SHIMMER_REST_MS;
+        let at = now_ms % cycle;
+        crate::frame_clock::after_ms(if at >= PICK_SHIMMER_MS { cycle - at } else { 100 });
         let k = pick_crest(now_ms, cells, cell);
         Style::default().bg(mix(crest, ground, k)).fg(letters)
     }

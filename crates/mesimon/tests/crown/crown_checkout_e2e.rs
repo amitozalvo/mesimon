@@ -88,45 +88,33 @@ fn a_parked_done_worker_releases_a_non_git_checkout_without_archive() {
 
 #[test]
 fn a_failed_reap_keeps_the_checkout_until_pane_absence_is_confirmed() {
-    use std::os::unix::fs::PermissionsExt;
-    struct Scratch(std::path::PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let scratch = Scratch(std::env::temp_dir().join(format!("msmn-reap-{}", uuid::Uuid::new_v4())));
-    std::fs::create_dir_all(&scratch.0).unwrap();
-    let failed = scratch.0.join("fail-kill");
-    let unknown = scratch.0.join("fail-list");
-    let attempts = scratch.0.join("attempts");
-    let wrapper = scratch.0.join("tmux.sh");
-    let tmux_bin = mesimon_backend_tmux::tmux_bin();
-    std::fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\nfor arg in \"$@\"; do\n\
-         if [ \"$arg\" = kill-session ] && [ -e '{}' ]; then echo attempt >> '{}'; exit 1; fi\n\
-         if [ \"$arg\" = list-panes ] && [ -e '{}' ]; then exit 1; fi\n\
-         done\nexec '{}' \"$@\"\n",
-            failed.display(),
-            attempts.display(),
-            unknown.display(),
-            tmux_bin.display(),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     // The worker really survives SIGTERM; a Sleeping badge is not proof
     // that it stopped. Its private tmux session must still be removed.
     const STUB: &str = "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n";
-    let Some(h) = Harness::boot_with_env(
-        "crown-reap-failure",
-        Some(STUB),
-        &[("MESIMON_TMUX_BIN", wrapper.to_str().unwrap())],
-    ) else {
+    // A marker that fails `kill-session`, one that fails `list-panes`, and
+    // the failed kills' log.
+    let files = |dir: &std::path::Path| {
+        (dir.join("fail-kill"), dir.join("fail-list"), dir.join("attempts"))
+    };
+    let Some(h) =
+        Harness::boot_staged("crown-reap-failure", Some(&claude_stub(STUB)), &[], |f, _| {
+            let (failed, unknown, attempts) = files(&f.dir);
+            let script = format!(
+                "#!/bin/sh\nfor arg in \"$@\"; do\n\
+         if [ \"$arg\" = kill-session ] && [ -e '{}' ]; then echo attempt >> '{}'; exit 1; fi\n\
+         if [ \"$arg\" = list-panes ] && [ -e '{}' ]; then exit 1; fi\n\
+         done\nexec '{}' \"$@\"\n",
+                failed.display(),
+                attempts.display(),
+                unknown.display(),
+                mesimon_backend_tmux::tmux_bin().display(),
+            );
+            stage_tmux(f, &script);
+        })
+    else {
         return;
     };
+    let (failed, unknown, attempts) = files(&h.dir);
     let mut c = h.client("crown-reap-failure");
     let crown_ticket = c.create_ticket("coordinate");
     let worker = c.create_ticket("worker");

@@ -37,14 +37,14 @@ pub(super) struct Receipt {
     stamp: String,
     superseded: Vec<String>,
     owner: Option<uuid::Uuid>,
-    words: String,
-    /// The parts at the mint, for a refusal's words; their `pane` is also
-    /// what an ordinary chain holds the seat to (T-1277).
+    /// The parts at the mint, for a refusal's words; their words and moves
+    /// by hand are what anyone's edit changes (T-1035), and their `pane`
+    /// is what an ordinary chain holds the seat to (T-1277).
     parts: Parts,
     /// The live seat the receipt saw (T-1035, second commit).
     seat: Option<uuid::Uuid>,
     /// This chain set work in motion; its normal end and automatic moves
-    /// may outlive `full`, but never a change to `words` or a revocation.
+    /// may outlive `full`, but never a change to its words or a revocation.
     active: bool,
     /// Identified prompts still owed by writes in this receipt chain.
     next: Vec<Prompt>,
@@ -78,7 +78,8 @@ impl Daemon {
     /// the news a seat can carry (a person's prompt, a dialog, a failure,
     /// a later turn) revokes the receipt as it lands, in `receipt_state`.
     fn receipt_current(&self, id: ulid::Ulid, r: &Receipt) -> bool {
-        r.words == self.words_token(id)
+        r.parts.words == self.word_parts(id)
+            && r.parts.moves == self.moved_by_hand.get(&id).copied().unwrap_or_default()
             && self.seat_holds(id, r.seat)
             && (r.active || r.parts.pane == self.seat_pane(id))
     }
@@ -205,7 +206,6 @@ impl Daemon {
         self.receipts_revoked.retain(|t, _| board.ticket(*t).is_some());
         self.moved_by_hand.retain(|t, _| board.ticket(*t).is_some());
         self.moved_by.retain(|t, _| board.ticket(*t).is_some());
-        let words = self.words_token(target);
         let parts = self.parts(target);
         let owner = self.receipt_owner();
         let prior = self.receipts.remove(&target).filter(|r| {
@@ -234,7 +234,6 @@ impl Daemon {
                 stamp: stamp.clone(),
                 superseded,
                 owner,
-                words,
                 parts,
                 seat,
                 active,
@@ -817,7 +816,6 @@ mod tests {
                 stamp: "own-write".into(),
                 superseded: vec![],
                 owner: None,
-                words: String::new(),
                 parts: Parts::default(),
                 seat: Some(id),
                 active: true,

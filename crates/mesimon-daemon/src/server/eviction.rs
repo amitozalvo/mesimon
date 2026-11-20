@@ -245,10 +245,9 @@ impl Daemon {
                     self.tearing_down.insert(id);
                     let root = self.paths.worktrees_root();
                     let repo = self.paths.repo_root.clone();
-                    let tx = self.tx.clone();
-                    std::thread::spawn(move || {
+                    self.off_writer(move || {
                         let outcome = worktree::evict(&repo, &root, id, &b, &legs);
-                        let _ = tx.send(Msg::ColumnEvicted { ticket: id, outcome });
+                        Msg::ColumnEvicted { ticket: id, outcome }
                     });
                 }
             }

@@ -19,6 +19,9 @@ impl ReadKey {
     }
 }
 
+/// The status when `App::submission_pending` keeps a draft.
+pub(super) const SUBMISSION_PENDING: &str = "previous submission is still pending ∙ draft kept";
+
 #[derive(Default)]
 pub(super) struct Reads([Option<(ReadKey, Receiver<Result<Response>>)>; 4]);
 
@@ -87,15 +90,29 @@ impl App {
             }
             Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("submission reply lost")),
         };
-        let response = match result {
+        let response = self.answer(result);
+        (submission.finish)(self, response)?;
+        Ok(true)
+    }
+
+    /// A reply as the board reads it: a transport failure becomes an
+    /// ordinary Err response carrying the outage status, and flags the
+    /// reconnect cadence.
+    pub(super) fn answer(&mut self, result: Result<Response>) -> Response {
+        match result {
             Ok(response) => response,
             Err(e) => {
                 self.note_daemon_down(crate::client::outage(&e));
                 Response::Err { message: self.status.clone() }
             }
-        };
-        (submission.finish)(self, response)?;
-        Ok(true)
+        }
+    }
+
+    /// A save, send or file that would race the one still on the wire, or
+    /// the draft a reply is holding back, keeps its draft instead
+    /// (`SUBMISSION_PENDING`).
+    pub(super) fn submission_pending(&self) -> bool {
+        self.submission.is_some() || self.created_follow.is_some() || self.write_recovery.is_some()
     }
 
     pub(super) fn recover_submission(&mut self, mode: Mode) {
@@ -211,13 +228,7 @@ impl App {
             let prior = asked.clone();
             self.background_reads.0[slot] = None;
             if current {
-                return Some(match result {
-                    Ok(response) => response,
-                    Err(e) => {
-                        self.note_daemon_down(crate::client::outage(&e));
-                        Response::Err { message: self.status.clone() }
-                    }
-                });
+                return Some(self.answer(result));
             }
             // A note for a previous selection still belongs in the cache if
             // its revision is current. Otherwise summaries and the visible
@@ -236,19 +247,12 @@ impl App {
                 }
             }
         }
-        self.background_reads.0[slot] =
-            Some((key.clone(), self.client.read_detached(command.clone())));
+        self.background_reads.0[slot] = Some((key, self.client.read_detached(command)));
         // Fakes and already available answers preserve immediate cached frames.
         let (_, rx) = self.background_reads.0[slot].as_ref().expect("just asked");
         if let Ok(result) = rx.try_recv() {
             self.background_reads.0[slot] = None;
-            return Some(match result {
-                Ok(response) => response,
-                Err(e) => {
-                    self.note_daemon_down(crate::client::outage(&e));
-                    Response::Err { message: self.status.clone() }
-                }
-            });
+            return Some(self.answer(result));
         }
         None
     }
@@ -273,6 +277,10 @@ impl App {
         true
     }
 
+    /// The focus road every attach takes: GATE (D20) — prove the unfocus key
+    /// once before the first real focus — then the command that grants the
+    /// attach argv, parked for the main loop's handover with the target it
+    /// holds the token on, so `after_handover` knows what to release.
     pub(super) fn begin_focus(&mut self, target: FocusTarget, grant: Command) {
         if self.focus_ask.is_some() {
             return;

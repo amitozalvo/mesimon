@@ -25,13 +25,13 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use mesimon_core::command::Notice;
 use mesimon_core::forge::{self, Facts, Forge, Pipeline, Pr, PrState, Remote, Review};
 use serde::{Deserialize, Serialize};
 
-use crate::paths::Paths;
+use crate::paths::{FileStamp, Paths};
 
 /// How long one CLI call may take before its group is killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -803,8 +803,7 @@ impl RemoteRefs {
             }
             let refs = self.repos.entry(leg.repo.clone()).or_insert_with(|| Self::read(&leg.repo));
             let refs = refs.as_ref()?;
-            let oids: HashSet<&str> = log.iter().map(|m| m.oid.as_str()).collect();
-            for oid in oids {
+            for oid in log.iter().map(|m| m.oid.as_str()) {
                 if let Some(names) = refs.get(oid) {
                     out.extend(names.iter().map(|name| format!("{} {name} {oid}", leg.repo_path)));
                 }
@@ -1701,39 +1700,21 @@ pub struct Moved {
     pub wrote: bool,
 }
 
-/// The identity and version of a files-backend HEAD reflog. A replacement
-/// (e.g. reflog expiry) can have the same size as the file it replaces.
-#[derive(Debug, PartialEq, Eq)]
-struct LogStamp {
-    dev: u64,
-    ino: u64,
-    modified: SystemTime,
-    len: u64,
-}
-
-impl LogStamp {
-    fn of(dir: &Path) -> Option<Self> {
-        use std::os::unix::fs::MetadataExt;
-        let dot = dir.join(".git");
-        let gitdir = if dot.is_file() {
-            let pointer = std::fs::read_to_string(&dot).ok()?;
-            dir.join(pointer.trim_end_matches(['\r', '\n']).strip_prefix("gitdir: ")?)
-        } else {
-            dot
-        };
-        let file = std::fs::metadata(gitdir.join("logs/HEAD")).ok()?;
-        Some(Self {
-            dev: file.dev(),
-            ino: file.ino(),
-            modified: file.modified().ok()?,
-            len: file.len(),
-        })
-    }
+/// The stamp of a worktree's files-backend HEAD reflog.
+fn reflog_stamp(dir: &Path) -> Option<FileStamp> {
+    let dot = dir.join(".git");
+    let gitdir = if dot.is_file() {
+        let pointer = std::fs::read_to_string(&dot).ok()?;
+        dir.join(pointer.trim_end_matches(['\r', '\n']).strip_prefix("gitdir: ")?)
+    } else {
+        dot
+    };
+    FileStamp::of(&gitdir.join("logs/HEAD"))
 }
 
 #[derive(Debug)]
 struct SavedReflog {
-    stamp: LogStamp,
+    stamp: FileStamp,
     moves: Arc<[Moved]>,
 }
 
@@ -1751,7 +1732,7 @@ impl ReflogCache {
         }
         // Stamp before running git. A concurrent append invalidates this
         // entry on the next read. Missing stamps and failed reads retry.
-        let stamp = LogStamp::of(dir);
+        let stamp = reflog_stamp(dir);
         if let Some(hit) = saved().as_ref().filter(|r| Some(&r.stamp) == stamp.as_ref()) {
             return Arc::clone(&hit.moves);
         }

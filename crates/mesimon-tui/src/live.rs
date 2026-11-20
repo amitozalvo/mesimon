@@ -1084,17 +1084,9 @@ impl Live {
     /// socket, nothing to undo.
     #[cfg(test)]
     pub(crate) fn fixed(session: uuid::Uuid, shot: Shot) -> Self {
-        let (_tx, rx) = channel();
-        Live {
-            session,
-            shot: Some(Rc::new(shot)),
-            started: Instant::now(),
-            rx,
-            ask: None,
-            wished: Cell::new(None),
-            reader: None,
-            cancelled: Arc::new(AtomicBool::new(false)),
-        }
+        let mut live = Self::waiting(session, Instant::now());
+        live.shot = Some(Rc::new(shot));
+        live
     }
 
     /// A window started at `started` whose first capture has not landed,

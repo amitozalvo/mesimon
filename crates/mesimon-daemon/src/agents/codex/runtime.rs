@@ -32,6 +32,7 @@ const MAX_BUFFERED: usize = 256;
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 // The daemon holds a seat whose last heartbeat is over five seconds old.
 const HEARTBEAT: Duration = Duration::from_secs(1);
+const _: () = assert!(HEARTBEAT.as_millis() as u64 * 5 <= super::Snapshot::STALE_MS);
 const DESCENDANT_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 

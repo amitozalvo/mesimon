@@ -14,11 +14,11 @@
 use crate::common;
 use common::*;
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::time::Duration;
 
 use mesimon_core::board::SessionKind;
-use mesimon_core::command::{Command, Envelope, Response};
+use mesimon_core::command::{Command, Response};
 use mesimon_core::road::Road;
 use mesimon_core::Principal;
 
@@ -147,12 +147,6 @@ fn a_ping_crosses_the_whole_road_and_survives_a_restart_and_a_dead_bridge() {
     assert_eq!(received(&h, sid).len(), 3);
 }
 
-/// One raw line on a connection, without waiting for the answer.
-fn write(c: &mut TestClient, principal: Principal, command: Command) {
-    let env = Envelope { principal, command };
-    writeln!(c.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-}
-
 /// The next answer on a connection, or `None` when none comes in `within`.
 fn read(c: &mut TestClient, within: Duration) -> Option<Response> {
     c.read.get_ref().set_read_timeout(Some(within)).unwrap();
@@ -190,7 +184,7 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
     err_containing(c.send(agent.clone(), Command::ModPing { session: sid }), "not available");
 
     let mut person = h.client("person");
-    write(&mut person, Principal::Local, Command::ModPing { session: sid });
+    person.post(Principal::Local, Command::ModPing { session: sid });
     let mut a = h.client("a");
     let first =
         frames(a.send(agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] }));
@@ -206,7 +200,7 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
     assert_eq!(again[0]["id"], id.as_str());
 
     // Acked, so the next poll waits.
-    write(&mut b, agent.clone(), Command::ModNext { ack: Some(id), pane: None, speaks: vec![] });
+    b.post(agent.clone(), Command::ModNext { ack: Some(id), pane: None, speaks: vec![] });
     assert!(read(&mut b, Duration::from_millis(400)).is_none(), "parked");
 
     // A poll from another pane is refused and takes nothing.
@@ -222,7 +216,7 @@ fn the_ledger_resends_until_acked_and_one_poll_holds_the_seat() {
 
     // A newer poll takes the seat; the older is told.
     let mut newer = h.client("newer");
-    write(&mut newer, agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] });
+    newer.post(agent.clone(), Command::ModNext { ack: None, pane: None, speaks: vec![] });
     err_containing(read(&mut b, Duration::from_secs(5)).expect("superseded"), "superseded");
 
     // Nobody answered the ping: its sender hears so.

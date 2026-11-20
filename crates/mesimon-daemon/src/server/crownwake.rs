@@ -697,11 +697,7 @@ impl Daemon {
             return;
         }
         held.seen.push(hold);
-        let cmd = format!("crown_wake_held:{cmd}");
-        match kind {
-            Some(kind) => self.feed.board_outcome("automation", &cmd, Some(crown), kind),
-            None => self.feed.board("automation", &cmd, Some(crown)),
-        }
+        self.wake_hold_row("held", crown, cmd, kind);
     }
 
     /// The crown's owed wake went (T-1320): a wait that met a hold writes
@@ -713,7 +709,12 @@ impl Daemon {
         else {
             return;
         };
-        let cmd = format!("crown_wake_released:{cmd}");
+        self.wake_hold_row("released", crown, cmd, kind);
+    }
+
+    /// One hold row, `crown_wake_<verb>:<hold>`, with the hold's kind.
+    fn wake_hold_row(&mut self, verb: &str, crown: ulid::Ulid, hold: &str, kind: Option<&str>) {
+        let cmd = format!("crown_wake_{verb}:{hold}");
         match kind {
             Some(kind) => self.feed.board_outcome("automation", &cmd, Some(crown), kind),
             None => self.feed.board("automation", &cmd, Some(crown)),
@@ -1126,6 +1127,11 @@ pub(super) fn found_dead_at_launch(was_live: bool, rec: &SessionRecord) -> bool 
         && rec.unsent.as_ref().is_some_and(|u| u.brief)
         && super::never_prompted(rec)
         && crate::agents::adapter(rec.kind).is_some_and(|a| a.history_missing(rec))
+}
+
+/// A parked worker's `Finished` is the park's echo, no news.
+fn unparked(cause: Option<WakeCause>, parked: bool) -> Option<WakeCause> {
+    cause.filter(|c| !parked || *c != WakeCause::Finished)
 }
 
 /// What a turn's end says about the worker, and why. `before` is the
@@ -1791,20 +1797,8 @@ impl Look {
                 // The root's default branch for a single-repo leg; a
                 // workspace leg carries its own, so a folder root with no
                 // branch is looked at all the same (T-754).
-                let base = base.or_else(|| {
-                    repo.join(".git")
-                        .exists()
-                        .then(|| worktree::default_branch(&repo).ok())
-                        .flatten()
-                });
-                for q in &mut queries {
-                    if q.base.is_empty() {
-                        if let Some(b) = &base {
-                            q.base = b.clone();
-                        }
-                    }
-                }
-                queries.retain(|q| !q.base.is_empty());
+                let base = base.or_else(|| super::root_default_branch(&repo));
+                super::sample_terms(&mut queries, base.as_ref(), &Default::default());
                 if queries.is_empty() {
                     return Found::Unknown;
                 }
@@ -2270,6 +2264,7 @@ impl Daemon {
             ProbeWhy::Baseline => (None, false, false, None),
         };
         let answered = asked.and_then(TurnAsk::crown) == Some(p.crown);
+        let parked = self.crown_heard.get(&p.worker).is_some_and(|h| h.parked);
         let said = AskSaid::of(asked);
         let merge_step = asked == Some(TurnAsk::Merge);
         // A PR the forge says merged at this tip is a merge the git road may
@@ -2294,10 +2289,7 @@ impl Daemon {
                 // nothing to merge — but an answer is still an answer, and
                 // a finished turn still finished.
                 let cause =
-                    verdict(None, &Told::default(), answered, merge_step, fresh).filter(|c| {
-                        *c != WakeCause::Finished
-                            || !self.crown_heard.get(&p.worker).is_some_and(|h| h.parked)
-                    });
+                    unparked(verdict(None, &Told::default(), answered, merge_step, fresh), parked);
                 if let Due::Wake(cause) = due(cause, None, &self.pending_on(p.worker, None)) {
                     if self.crown_claims(p.worker, p.crown, cause) {
                         let end = Owed { ask: said, tasks, ..Owed::default() };
@@ -2327,9 +2319,7 @@ impl Daemon {
         if restart && !fresh {
             cause = unturned(cause, heard.told.as_ref(), &now);
         }
-        if heard.parked && cause == Some(WakeCause::Finished) {
-            cause = None;
-        }
+        cause = unparked(cause, parked);
         // Work the merged notice's turn left on the branch (T-1203): a fix
         // forward after the merge, which a rebase turn's new tip is not.
         // The crown was told this branch merged, and it is ahead again.
@@ -5068,6 +5058,60 @@ pub(in crate::server) mod tests {
         assert!(wake.says_merge());
     }
 
+    /// A watched worker on a bound worktree cut at `cut` from `main`, its
+    /// one leg `leg`, the sampler not yet answered (T-1311, T-1321).
+    fn upstream_bed(
+        name: &str,
+        leg: crate::worktree::RepoFlags,
+    ) -> crate::server::crownask::ledger_tests::Bed {
+        let mut b = watched_bed(name, None);
+        let w = b.worker;
+        b.d.base_branch = Some("main".into());
+        b.d.worktrees.insert(
+            w,
+            Binding::new(
+                b.d.paths.repo_root.join("wt"),
+                "msmn/worker".into(),
+                "cut".into(),
+                "cut".into(),
+                BindingStatus::Attached,
+            ),
+        );
+        b.d.wt_repos.insert(w, vec![leg]);
+        b.d.wt_answered.insert(w, false);
+        b
+    }
+
+    /// A sample with `origin/main` at `tip` and `w`'s branch there too,
+    /// read merged into it.
+    fn upstream_sample(w: ulid::Ulid, tip: &str, moved_only: bool) -> crate::worktree::RepoSample {
+        crate::worktree::RepoSample {
+            name: String::new(),
+            base: "main".into(),
+            upstream: Some("origin/main".into()),
+            flags: crate::worktree::WtFlags {
+                base: "main".into(),
+                base_tip: tip.into(),
+                counted: "origin/main".into(),
+                flags: vec![crate::worktree::Flags {
+                    ticket: w,
+                    merged: true,
+                    ahead: 0,
+                    needs_rebase: false,
+                    tip: tip.into(),
+                    merged_in: "origin/main".into(),
+                    merged_oid: String::new(),
+                    seen: None,
+                    unchecked: false,
+                    trouble: None,
+                    ff: true,
+                    moved_only,
+                }],
+                conflicts: Vec::new(),
+            },
+        }
+    }
+
     /// T-1311, the simbly crown's case: a worker in its first turn fetched
     /// and moved its untouched branch onto `origin/main`, ahead of the local
     /// base, in one sample window. The sample reads it merged into the
@@ -5077,19 +5121,6 @@ pub(in crate::server) mod tests {
     #[test]
     fn a_branch_moved_onto_its_upstream_wakes_no_delivery() {
         for moved_only in [true, false] {
-            let mut b = watched_bed(&format!("t1311-{moved_only}"), None);
-            let w = b.worker;
-            b.d.base_branch = Some("main".into());
-            b.d.worktrees.insert(
-                w,
-                Binding::new(
-                    b.d.paths.repo_root.join("wt"),
-                    "msmn/worker".into(),
-                    "cut".into(),
-                    "cut".into(),
-                    BindingStatus::Attached,
-                ),
-            );
             let leg = crate::worktree::RepoFlags {
                 base: "main".into(),
                 base_tip: "up0".into(),
@@ -5099,34 +5130,10 @@ pub(in crate::server) mod tests {
                 needs_rebase: true,
                 ..Default::default()
             };
-            b.d.wt_repos.insert(w, vec![leg]);
-            b.d.wt_answered.insert(w, false);
+            let mut b = upstream_bed(&format!("t1311-{moved_only}"), leg);
+            let w = b.worker;
             // The fetch moved the upstream to `up1`, and the branch with it.
-            let sample = crate::worktree::RepoSample {
-                name: String::new(),
-                base: "main".into(),
-                upstream: Some("origin/main".into()),
-                flags: crate::worktree::WtFlags {
-                    base: "main".into(),
-                    base_tip: "up1".into(),
-                    counted: "origin/main".into(),
-                    flags: vec![crate::worktree::Flags {
-                        ticket: w,
-                        merged: true,
-                        ahead: 0,
-                        needs_rebase: false,
-                        tip: "up1".into(),
-                        merged_in: "origin/main".into(),
-                        merged_oid: String::new(),
-                        seen: None,
-                        unchecked: false,
-                        trouble: None,
-                        ff: true,
-                        moved_only,
-                    }],
-                    conflicts: Vec::new(),
-                },
-            };
+            let sample = upstream_sample(w, "up1", moved_only);
             let seq = b.d.wt_seq.wrapping_add(1);
             b.d.absorb_worktree_flags(vec![sample], seq, None);
             let woke = b.d.hear_merges();
@@ -5154,19 +5161,6 @@ pub(in crate::server) mod tests {
     #[test]
     fn a_branch_stacked_on_another_tickets_commit_wakes_no_delivery() {
         for moved_only in [true, false] {
-            let mut b = watched_bed(&format!("t1321-{moved_only}"), None);
-            let w = b.worker;
-            b.d.base_branch = Some("main".into());
-            b.d.worktrees.insert(
-                w,
-                Binding::new(
-                    b.d.paths.repo_root.join("wt"),
-                    "msmn/worker".into(),
-                    "cut".into(),
-                    "cut".into(),
-                    BindingStatus::Attached,
-                ),
-            );
             let leg = crate::worktree::RepoFlags {
                 base: "main".into(),
                 base_tip: "up0".into(),
@@ -5178,37 +5172,13 @@ pub(in crate::server) mod tests {
                 ..Default::default()
             };
             assert!(leg.touched());
-            b.d.wt_repos.insert(w, vec![leg]);
-            b.d.wt_answered.insert(w, false);
+            let mut b = upstream_bed(&format!("t1321-{moved_only}"), leg);
+            let w = b.worker;
             let asked = b.d.wt_queries(false, Some(w));
             let input = asked.iter().flat_map(|q| &q.inputs).find(|i| i.ticket == w);
             assert_eq!(input.expect("the leg is asked").since, "cut", "touched, still asked");
             // The other ticket's MR lands: `origin/main` is now `dep`.
-            let sample = crate::worktree::RepoSample {
-                name: String::new(),
-                base: "main".into(),
-                upstream: Some("origin/main".into()),
-                flags: crate::worktree::WtFlags {
-                    base: "main".into(),
-                    base_tip: "dep".into(),
-                    counted: "origin/main".into(),
-                    flags: vec![crate::worktree::Flags {
-                        ticket: w,
-                        merged: true,
-                        ahead: 0,
-                        needs_rebase: false,
-                        tip: "dep".into(),
-                        merged_in: "origin/main".into(),
-                        merged_oid: String::new(),
-                        seen: None,
-                        unchecked: false,
-                        trouble: None,
-                        ff: true,
-                        moved_only,
-                    }],
-                    conflicts: Vec::new(),
-                },
-            };
+            let sample = upstream_sample(w, "dep", moved_only);
             let seq = b.d.wt_seq.wrapping_add(1);
             b.d.absorb_worktree_flags(vec![sample], seq, None);
             let woke = b.d.hear_merges();

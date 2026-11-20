@@ -15,22 +15,10 @@
 use crate::common;
 use common::*;
 
-use std::path::Path;
-use std::process::Command as Proc;
 use std::time::Duration;
 
 use mesimon_core::board::{MergeInto, SessionState};
 use mesimon_core::command::{AutomationStatus, Command, PendingAction, Response};
-
-fn git_ok(repo: &Path, args: &[&str]) -> bool {
-    Proc::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// Waits for `n` panes on the board's tmux, then half a second more: every
 /// stub reading before anything is pasted.
@@ -100,10 +88,7 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     // Nothing is owed and nothing moves, through several passes.
     std::thread::sleep(Duration::from_millis(3000));
     assert!(pending_of(&mut c, Some(a)).is_empty(), "a manual ticket is owed nothing");
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
-        "merged while off the train"
-    );
+    assert!(!is_ancestor(&repo, &branch_a, "main"), "merged while off the train");
     assert!(!feed().contains("merge_train_merged"));
     assert!(feed().contains("set_manual_merge"), "the gesture is in the feed:\n{}", feed());
     // Setting what is already set writes nothing.
@@ -113,7 +98,7 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     assert!(!c.board().ticket(a).unwrap().manual_merge);
     assert!(!std::fs::read_to_string(&ticket_file).unwrap().contains("manual_merge"));
     wait_until(Duration::from_secs(15), "A to be merged once back on the train", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+        is_ancestor(&repo, &branch_a, "main")
     });
     let _ = c.request(Command::Shutdown);
 }
@@ -171,7 +156,7 @@ fn a_grinding_worktree_does_not_hold_another_tickets_merge() {
 
     // And it merges, with B still running.
     wait_until(Duration::from_secs(15), "A to merge past a grinding B", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+        is_ancestor(&repo, &branch_a, "main")
     });
     assert_eq!(
         c.board().sessions.iter().find(|s| s.id == sb).map(|s| s.state.clone()),
@@ -236,7 +221,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     });
     // Nothing moves before the train is armed.
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "staging"]));
+    assert!(!is_ancestor(&repo, &branch_a, "staging"));
     assert!(!feed().contains("merge_train"));
 
     // Arm: this connection owns the train.
@@ -249,7 +234,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     assert_eq!(automation_of(&mut c).acted_at_ms, 0, "a train that has done nothing");
     // A merges first, and its agent is told.
     wait_until(Duration::from_secs(15), "A to be merged", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "staging"])
+        is_ancestor(&repo, &branch_a, "staging")
     });
     // The feed flushes on the tick, a beat behind git.
     wait_until(Duration::from_secs(5), "the feed to say so", || {
@@ -260,10 +245,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     // REVIEW's `on_merged` (T-1037) closed it in the same step: DONE before
     // its agent hears of the merge, so the notice's turn starts there.
     assert_eq!(c.board().ticket(a).unwrap().column, "DONE");
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
-        "train targets staging without promoting main"
-    );
+    assert!(!is_ancestor(&repo, &branch_a, "main"), "train targets staging without promoting main");
     assert!(feed().contains("\"on_merged\""), "{}", feed());
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
         h.got().contains(&format!("Your branch {branch_a} has been merged into staging"))
@@ -286,7 +268,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     git(&wt_b, &["rebase", "-q", "staging"]);
     h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "staging"])
+        is_ancestor(&repo, &branch_b, "staging")
     });
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(asks(), 1, "asked once per base tip");
@@ -307,22 +289,16 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     });
     assert!(!automation_of(&mut c2).merge_train, "a closed board is a stopped train");
     std::thread::sleep(Duration::from_millis(3000));
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"]),
-        "nothing merged unarmed"
-    );
+    assert!(!is_ancestor(&repo, &branch_c, "main"), "nothing merged unarmed");
     // Re-armed from the new board, it finishes the job.
     assert!(matches!(
         c2.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
     wait_until(Duration::from_secs(15), "C to be merged once re-armed", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "staging"])
+        is_ancestor(&repo, &branch_c, "staging")
     });
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"]),
-        "re-armed train still targets staging"
-    );
+    assert!(!is_ancestor(&repo, &branch_c, "main"), "re-armed train still targets staging");
     let board = c2.board();
     assert!([b, cid].iter().all(|t| board.ticket(*t).unwrap().column == "DONE"));
     std::thread::sleep(Duration::from_millis(1500));
@@ -385,9 +361,7 @@ fn a_finished_turn_is_held_until_the_train_is_done_with_it() {
     git(&wt_a, &["commit", "-qm", "alpha 2"]);
     h.end_turn(&mut c, sa);
     assert!(holding(&mut c).contains(&a), "held from the turn's end");
-    wait_until(Duration::from_secs(15), "A to be merged", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
-    });
+    wait_until(Duration::from_secs(15), "A to be merged", || is_ancestor(&repo, &branch_a, "main"));
     wait_until(Duration::from_secs(10), "A's agent to hear it", || {
         h.got().contains(&format!("Your branch {branch_a} has been merged into main"))
     });
@@ -444,9 +418,7 @@ fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
         Response::Ok
     ));
     // A merges; B and C fall behind; B, first in board order, is asked.
-    wait_until(Duration::from_secs(15), "A to be merged", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
-    });
+    wait_until(Duration::from_secs(15), "A to be merged", || is_ancestor(&repo, &branch_a, "main"));
     wait_until(Duration::from_secs(15), "B to be asked to rebase", || asks(&branch_b) == 1);
     assert_eq!(asks(&branch_c), 0, "C is behind B in board order");
 
@@ -465,14 +437,14 @@ fn a_ticket_in_its_rebase_turn_holds_the_next_ask_until_it_merges() {
     // B's turn ends: B merges, main moves, and C is asked onto the new tip.
     h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+        is_ancestor(&repo, &branch_b, "main")
     });
     wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
     h.prompt_turn(&mut c, sc);
     git(&wt_c, &["rebase", "-q", "main"]);
     h.end_turn(&mut c, sc);
     wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
+        is_ancestor(&repo, &branch_c, "main")
     });
     std::thread::sleep(Duration::from_millis(2500));
     assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", h.got());
@@ -546,7 +518,7 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
     // B's turn ends: B merges, main moves, and C is asked onto the new tip.
     h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+        is_ancestor(&repo, &branch_b, "main")
     });
     wait_until(Duration::from_secs(15), "C to be asked to rebase", || asks(&branch_c) == 1);
     // Settled with its turn: off the open asks, kept as the memo (T-770).
@@ -558,7 +530,7 @@ fn a_rebase_turn_open_across_a_restart_still_holds_the_next_ask() {
     git(&wt_c, &["rebase", "-q", "main"]);
     h.end_turn(&mut c, sc);
     wait_until(Duration::from_secs(15), "C to be merged after its rebase", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_c, "main"])
+        is_ancestor(&repo, &branch_c, "main")
     });
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!((asks(&branch_b), asks(&branch_c)), (1, 1), "one ask each: {}", h.got());
@@ -593,7 +565,7 @@ fn a_later_delivery_of_a_merged_branch_waits_behind_a_fresh_rebase() {
     commit(&repo, "base.txt");
     panes_up(&h, 2);
     let asks = |branch: &str| lines_in(&got, &format!("Rebase your current branch {branch}")).len();
-    let merged = |branch: &str| git_ok(&repo, &["merge-base", "--is-ancestor", branch, "main"]);
+    let merged = |branch: &str| is_ancestor(&repo, branch, "main");
     let merge_row = |c: &mut TestClient, t: ulid::Ulid| {
         pending_of(c, Some(t)).iter().any(|p| p.action == PendingAction::Merge)
     };
@@ -751,12 +723,12 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
         "{}",
         n.text
     );
-    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]));
+    assert!(!is_ancestor(&repo, &branch_a, "main"));
     // Out of the way. Neither tip moves — only the checkout's own status —
     // and that is what lets the train try again.
     std::fs::remove_file(repo.join("alpha.txt")).unwrap();
     wait_until(Duration::from_secs(25), "A to merge once the checkout is clean", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+        is_ancestor(&repo, &branch_a, "main")
     });
     wait_until(Duration::from_secs(5), "the notice to go with it", || {
         !pending_of(&mut c, Some(a)).iter().any(|p| p.action == PendingAction::Merge)
@@ -774,7 +746,7 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     hook_send(&hook_sock, &sb.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     c.await_state(sb, "idle", |s| matches!(s, SessionState::Idle { .. }));
     wait_until(Duration::from_secs(15), "B to merge after one rebase onto A", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+        is_ancestor(&repo, &branch_b, "main")
     });
     wait_until(Duration::from_secs(5), "both merges in the feed", || {
         feed().lines().filter(|line| line.contains("merge_train_merged")).count() == 2
@@ -881,10 +853,7 @@ fn a_relaunched_agent_at_its_composer_does_not_hold_the_train() {
         )
     );
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
-        "merged under a seat still starting"
-    );
+    assert!(!is_ancestor(&repo, &branch_a, "main"), "merged under a seat still starting");
 
     // The relaunch comes up at its composer: the train merges.
     session_start("resume");
@@ -892,7 +861,7 @@ fn a_relaunched_agent_at_its_composer_does_not_hold_the_train() {
         *s == SessionState::Idle { stop_reason: StopReason::Unknown }
     });
     wait_until(Duration::from_secs(15), "A to be merged past its relaunch", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+        is_ancestor(&repo, &branch_a, "main")
     });
     wait_until(Duration::from_secs(5), "the train's merge in the feed", || {
         feed().contains("merge_train_merged")
@@ -932,9 +901,7 @@ fn a_worker_mid_turn_says_what_the_train_does_after_it() {
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
-    wait_until(Duration::from_secs(15), "A to be merged", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
-    });
+    wait_until(Duration::from_secs(15), "A to be merged", || is_ancestor(&repo, &branch_a, "main"));
     let key_b = c.board().ticket(b).unwrap().short_key.clone();
     let owed = |c: &mut TestClient, action: PendingAction| {
         pending_of(c, Some(b)).into_iter().find(|p| p.action == action)
@@ -949,13 +916,10 @@ fn a_worker_mid_turn_says_what_the_train_does_after_it() {
     wait_until(Duration::from_secs(15), "B's row: the merge after its turn", || {
         owed(&mut c, PendingAction::Merge).is_some_and(|p| p.waits_on.first() == Some(&key_b))
     });
-    assert!(
-        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"]),
-        "nothing merged under a working agent"
-    );
+    assert!(!is_ancestor(&repo, &branch_b, "main"), "nothing merged under a working agent");
     h.end_turn(&mut c, sb);
     wait_until(Duration::from_secs(15), "B to be merged once its turn ends", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+        is_ancestor(&repo, &branch_b, "main")
     });
     assert!(!asked(&branch_b), "the rebase was never asked: {}", h.got());
     let _ = c.request(Command::Shutdown);

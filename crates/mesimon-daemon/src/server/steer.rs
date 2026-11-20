@@ -57,6 +57,31 @@ impl Daemon {
         }
     }
 
+    /// A steer's press worker finished (`Msg::SteerPressed`): the press is
+    /// finished where the seat still owes that receipt.
+    pub(super) fn steer_pressed(&mut self, id: uuid::Uuid, receipt: ulid::Ulid) {
+        if self.owed.get(&id).is_some_and(|o| o.receipt_id == receipt)
+            && self.finish_steer_press(id, now_ms())
+        {
+            self.persist_sessions();
+            self.broadcast();
+        }
+    }
+
+    /// `after_paste`'s feed line: `sent` once the paste lands, `failed`
+    /// when it does not.
+    pub(super) fn feed_after_paste(
+        &mut self,
+        ticket: ulid::Ulid,
+        by: &'static str,
+        sent: &'static str,
+        failed: &'static str,
+    ) {
+        self.after_paste(ticket, move |d, pasted| {
+            d.feed.board(by, if pasted { sent } else { failed }, Some(ticket));
+        });
+    }
+
     pub(super) fn codex_steer(
         &mut self,
         id: uuid::Uuid,
@@ -207,11 +232,7 @@ pub(super) fn reply_after_pastes(
                 }
             }
         }
-        let (response, told) = match saved {
-            Ok(()) => (response, told),
-            Err(message) => (Response::Err { message }, None),
-        };
-        let _ = reply.send(ClientReply { response, told, delivered: None });
+        let _ = reply.send(session_saves::saved_reply(saved, response, told));
     });
 }
 

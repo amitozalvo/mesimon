@@ -48119,3 +48119,131 @@ the change. Volume-wide `df -k` showed 35,880,000 KiB available before and
 33,760,000 KiB during verification. No files were deleted, so this change
 reclaimed zero bytes. The samples do not measure how much deleting the APFS
 copies would free.
+
+## The eleventh simplify pass (T-1349, 2026-11-20, "simplify")
+
+Eight reviewers over the 85 commits since the tenth pass (`f6fe42db..1f550876`, the PERFORMANCE
+run T-1335 to T-1346 included), one per area: the web client, the TUI's state, the TUI's drawing,
+`server.rs` with its non-crown modules, the `crown*.rs` modules (split off: `crownwake.rs` alone
+grew 1,100 lines), the rest of the daemon, core with the binary, and the e2e tests with `ci/`.
+Each read all four angles (reuse, simplification, efficiency, altitude) against the live file,
+kind `mechanical` or `decision`. Eight appliers worked by file ownership, each started as its
+report landed; the lead took the changes across owners. Quality only: behaviour, the wire, every
+state file and every word a person, an agent, the crown or the phone reads are unchanged, and no
+golden moved. A bug a reviewer tripped over is listed, not fixed.
+
+**Applied, hot paths.**
+- **Search ranks off precomputed rows.** `Rows::new` keeps each row's haystack and its key, title
+  and trail lengths, so a keystroke no longer `format!`s and counts three strings per row;
+  `pr_excerpt` reads the folded `needles` the rank already built.
+- **A crown wake renders its sentence only when it must.** `crown_wake_by_submit` (every person
+  hold, two or three times per tick while a wake is owed, and per snapshot) checks the cheap
+  terms first (`submits_here`, shared with `takes_by_submit`) and `road::is_command` on the
+  rendered wake last. `crownrules::rules_digest()` hashes the two-const rules text once per
+  process instead of on every dirty `persist_crown`.
+- **Receipts compare their parts.** `Receipt.words` hashed what `Receipt.parts` already held, so
+  `receipt_seen` ran `word_parts` three times; the field and `words_token` went (in memory only,
+  no serde).
+- **The TUI's peek cache** stores an equal re-read's new `Rc`, so later pumps stop at
+  `Rc::ptr_eq` instead of deep-comparing each card's peek; **the card-peek picker** is one
+  `card_peek` (board and search), a `min_by_key` on the same `(rank, id)` key with no Vec;
+  **the columns view** records placed cards through the table's `Placed` and one `record_cards`
+  (the per-card linear `brief_spots` search went); **a picked link** sleeps through its shimmer's
+  600 ms rest instead of asking a frame every 100 ms (`pick_crest` is 0 there).
+- **The phone** hashes each prompt row's words once for its life (`KEYS` WeakMap in
+  `transcript.js`; `withActs` re-hashed every row with the BigInt FNV on every keystroke's emit),
+  and `withLines` takes the rows instead of a spread copy of the chat per render.
+- `cost::count_mod` calls `Arc::make_mut` only on its two writing paths (a subagent or empty turn
+  deep-cloned the ticket's ledger while a save was in flight); `RemoteRefs::pushed` drops a
+  per-leg `HashSet` the sort and dedup made moot; the worktree sample's writer side collects the
+  uncached upstream names (`uncached_upstreams`) instead of cloning the whole `upstreams` map.
+
+**Applied, one home each.**
+- Daemon workers: `Daemon::off_writer(work)` for the ~24 one-shot `tx.clone(); spawn(.. send(Msg))`
+  roads in `server.rs`, `responsive`, `gate_reads`, `peer`, `trainhold`, `eviction`, `bridge` and
+  `tiers` (multi-send workers kept their own: provision, the park loop, `press_steer`,
+  `codex_steer`, the Codex observer). `root_default_branch` + `sample_terms` for the three flag
+  samples' setup (board, ticket look, crown probe). `leg_lands` is the one "this leg holds nothing
+  back" rule for the writer's DONE gate (lazy `branch_merged`, still asked only past the first
+  clause) and the worker's `reads_landed`. `caller_rules` and `session_saves::saved_reply` for the
+  reply tails; `persist_sessions` lives in `session_saves.rs` and `Saves`' fields are private
+  (`revision`, `idle`, `last_error`). `feed_after_paste` for three paste-feed tails;
+  `steer_pressed`, `status_written` and `forge_remotes_read` out of `run()`. `crownask::steer` is
+  one `Steer { Admits, Unseen, No }` for `steer_admits` + `steer_unseen`; `wake_hold_row`;
+  `judge_probe` reads `parked` once (`unparked`); `crownrules` keeps one `told: HashMap` (the
+  `told` set and `told_ms` map always held the same keys) and its digest is `text::fnv1a` (pinned
+  values unchanged). `paths::FileStamp` for forge's reflog stamp and Codex's snapshot stamp;
+  `codex::Snapshot::{fresh, ahead, STALE_MS}` for the freshness rule the daemon and `mesimon
+  state` each spelled, tied to the runtime's `HEARTBEAT` by a const assert.
+- Core: `forge::moves_only` (from `worktree.rs`, pure, beside `wrote_commit`; the two rules
+  still differ on a rebase's pick and a `branch:` step); `Raised::ms_for(session)` for the hand
+  rule the phone (`phone_hand`) and the ticket page (`hand_of`) each wrote;
+  `Machine::parked_or_parking` for two arms; `Bodies` has one method (`body_at`);
+  `AgentAutomoveView::is_empty` is `== default()`; `Effort::step` and the non-test
+  `rank_with_prs` went (`rank` stays: the TUI's tests call it).
+- TUI: `App::answer` for four outage arms; `submission_pending` + `SUBMISSION_PENDING`;
+  `create_ticket` builds its command once; `preview_scrolls` / `page_links_on_screen` shared by
+  `ctx()` and `preview_measured`; `client::on_lane` for both detached reads and `Client::base`
+  for four literals; `message_head` for the transcript dialog's head; `draw_app_dialogs` holds
+  Links, Summary, PullRequests and the merge dialog for both screens, and `draw_tag_picker` the
+  three tag-picker blocks; `glyphs::{cycle, lit, spin_frames}` for twelve frame-index spellings;
+  `usage::windows_word`.
+- Tests and `ci/`: `common::is_ancestor` for ten `merge-base --is-ancestor` closures and two
+  private `git_ok`s (27 calls); `common::stage_tmux` on `boot_staged` (both `Scratch` temp-dir structs
+  went); `TestClient::try_send_within` and `post`; `feed_count_with`; one `TASK_NOTIFICATION`;
+  `crown_starts_on_worktree` at seven hand-rolled sites; `restart_e2e`'s five beds on one `STUB`,
+  `running_in_progress` and `moves_to_review`; `forge_e2e`'s two-repo bed on `cut`;
+  `rig.py`'s `compaction_window`, `prompts_naming` and `write_prs_file(name=)`.
+- Phone: `sessions.ghostly` for `tell`'s copy of the ghost rule; `refuseError`; `Stamp` and
+  `ActHead` for four `<time>` spellings and two act heads; three CSS pairs grouped at the first
+  rule's place; `Chat` takes `agent`; `sendPictures`' `settle()`.
+
+**Refuted or kept.** `register.ts`'s `taskKilled` onto `taskNotified`: the second returns every
+`<task-id>` in a block, the first only its first. The terminal's reply park onto
+`crownplan::park_in`: `park_in` hands a reply back where the terminal's overwrites or drops it.
+`take_ready` in `background.rs`: the first `try_recv` branches on `current`. `Searcher::rank` to
+`#[cfg(test)]`: the TUI's tests call it across the crate line.
+
+**Found and left open (each a behaviour, wire or design decision, or an unproven bug):**
+- **A peer ask to a Codex crown can be told `sent_now` and then lost** (the path CONFIRMED by
+  reading, the loss PLAUSIBLE): `Command::PeerAsk` is not in the writer's hand-kept `steer_calls`
+  list, so since the asynchronous steer it answers before `codex_steer`'s worker lands the paste;
+  a dialog or changed pane then drops the owed entry (`prompt_not_sent`) after the queue entry was
+  taken. Any command reaching `codex_steer` through `drain_queue` / `send_queued_ask` and not
+  listed has the same shape.
+- **`pr_merge_number` re-splits joined words** (CONFIRMED): `gh pr merge --body "it's done" 42`
+  reads no PR and `--subject "fix 12 tests" 34` reads 12, so T-1278's quick forge read is lost or
+  spent on the wrong PR. `act_subject(words, at)` shared with `pr_act` fixes it.
+- **An automove overwrites a hand mover's name** (CONFIRMED): `note_hand_move` writes `moved_by`
+  for Automation without bumping the hand count, so a receipt refusal says "by the board" after
+  a person moved the card and an automove followed.
+- **A picture-read failure becomes the phone's delivery line off-screen** (CONFIRMED, T-1312):
+  beside the previous prompt's ticks on the Terminal tab, and kept after a later good read.
+- A panicked worker never posts its completion (PLAUSIBLE, latent): `responsive.reaping`,
+  `opening`, `park_checks` and `status_writing` would then latch for the daemon's life;
+  `off_writer` is now the one place a drop guard could post it.
+- `frame_clock::phase` schedules a whole step from the draw, so the in-step offset creeps and a
+  spinner skips a frame every few seconds at rest (PLAUSIBLE, cosmetic). `usage::reset_word`
+  reads the date off `app.clock` and the midnight off libc's zone (PLAUSIBLE, wake timing only).
+  `restart_e2e`'s T-1322 bound stamps `restarted` after the socket appears (PLAUSIBLE flake
+  under load).
+- Decisions: the remotes are discovered by two worker roads that can race (`forge_remotes_ready`
+  and the flags sample); `cost::Saves` (thread per write, polled per tick) and
+  `session_saves::Saves` (one worker, `Msg`) are two coalescing savers; `ParkChecked` per
+  candidate (one persist and broadcast each) could be one batch; one reply-park enum for the six
+  slots; render the crown wake once per drain; `Found::Branch(legs)` without its derived look;
+  two 16 ms pacers in the TUI (`frame_clock` and `tick_until`'s `moving`); off-screen cards
+  register display interest under `P`; `ctx_dirty` twice per frame in the reader and transcript
+  dialogs; the phone's two whitespace normalizers (U+FEFF, U+0085), its restatement of core's
+  hand and act-placement rules (a wire change), and `ux.test.js`'s two 5.4 s banner waits;
+  `restart_e2e`'s `ENV_LOCK` (nothing sets process env any more, but dropping it lets five slow
+  restart tests run at once under `cargo test`) and its 4 s park clock; `moves_only` vs
+  `wrote_commit` as one rule; `unmerged_detail` forks `own_commits` on the writer at a DONE
+  refusal.
+
+Verified on the applied tree: `cargo ut` (3,340); `cargo nextest run --workspace --no-fail-fast`
+under `ci/test-run.py`, 3,790 passed in 597 s, first run, no rerun (the shared
+`tests/common/mod.rs` moved, so every e2e binary was in reach); `node --test state.test.js
+assets.test.js` (73) and the UX suite on Chromium at phone size; `ci/rig_test.py`. Not run: the
+UX suite on WebKit and the other sizes, `browser.test.js` (the relay's), `register.test.ts` (no
+change in `mod/`). 67 files, −1,848 +1,415 outside this file.

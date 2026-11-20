@@ -154,21 +154,19 @@ impl Body {
 /// Where the ranker finds a note's body by its id. The picker's cache
 /// (`App::bodies`); `()` for a caller with none, which searches rows alone.
 pub trait Bodies {
-    fn body(&self, note: ulid::Ulid) -> Option<&Body>;
-    /// A live cache can receive bodies ahead of or behind its snapshot.
-    fn body_at(&self, note: ulid::Ulid, _rev: u64) -> Option<&Body> {
-        self.body(note)
-    }
+    /// The note's body at `rev`: a live cache can receive bodies ahead of or
+    /// behind its snapshot.
+    fn body_at(&self, note: ulid::Ulid, rev: u64) -> Option<&Body>;
 }
 
 impl Bodies for () {
-    fn body(&self, _: ulid::Ulid) -> Option<&Body> {
+    fn body_at(&self, _: ulid::Ulid, _: u64) -> Option<&Body> {
         None
     }
 }
 
 impl Bodies for HashMap<ulid::Ulid, Body> {
-    fn body(&self, note: ulid::Ulid) -> Option<&Body> {
+    fn body_at(&self, note: ulid::Ulid, _: u64) -> Option<&Body> {
         self.get(&note)
     }
 }
@@ -218,6 +216,13 @@ struct Row {
     short_key: String,
     title: String,
     trail: String,
+    /// `short_key`, `title` and `trail` joined by the single space the picker
+    /// draws between them, with each field's length in characters: built
+    /// once per snapshot, not per keystroke.
+    haystack: String,
+    key_len: usize,
+    title_len: usize,
+    trail_len: usize,
     archived: bool,
     notes: Vec<(ulid::Ulid, u64)>,
     prs: Vec<String>,
@@ -233,14 +238,23 @@ impl Rows {
         let rest = if archived { board.archived_tickets() } else { Vec::new() };
         Self(
             live.chain(rest)
-                .map(|t| Row {
-                    id: t.id,
-                    short_key: t.short_key.clone(),
-                    title: crate::text::scrub_cells(&t.title, false),
-                    trail: trail_of(t),
-                    archived: t.is_archived(),
-                    notes: t.notes.iter().map(|n| (n.id, n.rev)).collect(),
-                    prs: by_ticket.remove(&t.id).unwrap_or_default(),
+                .map(|t| {
+                    let short_key = t.short_key.clone();
+                    let title = crate::text::scrub_cells(&t.title, false);
+                    let trail = trail_of(t);
+                    Row {
+                        id: t.id,
+                        haystack: format!("{short_key} {title} {trail}"),
+                        key_len: short_key.chars().count(),
+                        title_len: title.chars().count(),
+                        trail_len: trail.chars().count(),
+                        short_key,
+                        title,
+                        trail,
+                        archived: t.is_archived(),
+                        notes: t.notes.iter().map(|n| (n.id, n.rev)).collect(),
+                        prs: by_ticket.remove(&t.id).unwrap_or_default(),
+                    }
                 })
                 .collect(),
         )
@@ -321,10 +335,11 @@ impl Searcher {
         archived: bool,
         bodies: &dyn Bodies,
     ) -> Vec<Hit> {
-        self.rank_with_prs(board, query, archived, bodies, &[])
+        self.rank_rows(&Rows::new(board, archived, []), query, bodies)
     }
 
     /// Like `rank`, also searches the forge rows already cached by the picker.
+    #[cfg(test)]
     pub fn rank_with_prs(
         &mut self,
         board: &Board,
@@ -395,8 +410,8 @@ impl Searcher {
         // Pattern indices are sparse for substring atoms in nucleo. Record
         // each positive contiguous needle's visible span explicitly.
         let folded: Vec<char> = text.chars().map(fold).collect();
-        for atom in self.pattern.atoms.iter().filter(|a| !a.negative && a.kind != AtomKind::Fuzzy) {
-            let needle: Vec<char> = atom.needle_text().chars().map(fold).collect();
+        for needle in &self.needles {
+            let needle: Vec<char> = needle.chars().collect();
             if needle.is_empty() {
                 continue;
             }
@@ -429,11 +444,9 @@ impl Searcher {
         // One haystack, joined by the single space the picker draws between
         // the fields, so a query may cross a field boundary the way the eye
         // does: `t-3 redirect` is one atom per word and both land.
-        let haystack = format!("{key} {title} {trail}");
-
         self.indices.clear();
         let score = self.pattern.indices(
-            Utf32Str::new(&haystack, &mut self.buf),
+            Utf32Str::new(&ticket.haystack, &mut self.buf),
             &mut self.matcher,
             &mut self.indices,
         )?;
@@ -442,8 +455,7 @@ impl Searcher {
 
         // Split the indices back over the three fields. Every offset is a
         // CHARACTER offset — nucleo counts characters, and so does the draw.
-        let key_len = key.chars().count();
-        let title_len = title.chars().count();
+        let (key_len, title_len) = (ticket.key_len, ticket.title_len);
         let title_at = key_len + 1;
         let trail_at = title_at + title_len + 1;
         let cut = |lo: usize, hi: usize| -> Vec<u32> {
@@ -458,7 +470,7 @@ impl Searcher {
             key: Field { matched: cut(0, key_len), text: key.clone() },
             title: Field { matched: cut(title_at, title_at + title_len), text: title.clone() },
             trail: Field {
-                matched: cut(trail_at, trail_at + trail.chars().count()),
+                matched: cut(trail_at, trail_at + ticket.trail_len),
                 text: trail.clone(),
             },
             excerpt: None,

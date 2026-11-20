@@ -95,7 +95,6 @@ impl Daemon {
         self.wt_seq = self.wt_seq.wrapping_add(1);
         let seq = self.wt_seq;
         let gen = self.wt_gen;
-        let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         // What the forge would need to read again (T-761): the legs a forge
         // may read and the transcripts' tails, looked at beside the flags.
         let forge_legs = self.look_legs(ticket);
@@ -107,29 +106,15 @@ impl Daemon {
         if !forge_legs.is_empty() {
             self.forge.looking.insert(ticket);
         }
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        let uncached = self.uncached_upstreams(&queries);
+        self.off_writer(move || {
             let local =
                 (!forge_legs.is_empty()).then(|| crate::forge::look(&forge_legs, &tails, now_ms()));
             // The board's sample's terms (`queue_worktree_flags`): the base
-            // and the upstream filled in here where the writer had none. A
-            // single-repo leg with no base known is not judged this look;
-            // a workspace leg carries its own (T-754).
-            for q in &mut queries {
-                if q.base.is_empty() {
-                    if let Some(b) = &base {
-                        q.base = b.clone();
-                    }
-                }
-            }
-            queries.retain(|q| !q.base.is_empty());
-            for q in &mut queries {
-                if !cached.contains_key(&q.name) {
-                    q.upstream = worktree::upstream_base(&q.repo, &q.base);
-                }
-            }
+            // and the upstream filled in here where the writer had none.
+            sample_terms(&mut queries, base.as_ref(), &uncached);
             let samples = worktree::compute_repo_flags(&queries);
-            let _ = tx.send(Msg::TicketFlags(ticket, gen, seq, samples, local));
+            Msg::TicketFlags(ticket, gen, seq, samples, local)
         });
     }
 

@@ -562,6 +562,23 @@ pub struct Snapshot {
     pub collaboration_mode: Option<String>,
 }
 
+impl Snapshot {
+    /// The oldest heartbeat the daemon still trusts the seat by.
+    pub const STALE_MS: u64 = 5_000;
+    /// How far ahead of the reader's clock a heartbeat may be stamped.
+    pub const AHEAD_MS: u64 = 1_000;
+
+    /// A heartbeat stamped past the reader's clock and its slack.
+    pub fn ahead(&self, now_ms: u64) -> bool {
+        self.heartbeat_ms > now_ms.saturating_add(Self::AHEAD_MS)
+    }
+
+    /// A heartbeat at most `STALE_MS` old and not ahead of the clock.
+    pub fn fresh(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.heartbeat_ms) <= Self::STALE_MS && !self.ahead(now_ms)
+    }
+}
+
 /// A server request that waits on a person, as the snapshot carries it
 /// (T-846): the content the native dialog shows, so a phone or the crown
 /// can answer the same dialog by its keys. Bounds: `Ask::QUESTIONS`
@@ -694,16 +711,10 @@ impl Hold {
     }
 }
 
-/// What a snapshot file looked like when it was last parsed: length, mtime
-/// and inode. `write_json` renames a fresh file in, so a rewrite always
-/// moves the inode, whatever the filesystem's mtime grain.
-type Stamp = (u64, Option<std::time::SystemTime>, u64);
-
-fn stamp_of(path: &Path) -> Option<Stamp> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.len(), meta.modified().ok(), meta.ino()))
-}
+/// What a snapshot file looked like when it was last parsed. `write_json`
+/// renames a fresh file in, so a rewrite always moves the inode, whatever
+/// the filesystem's mtime grain.
+type Stamp = crate::paths::FileStamp;
 
 /// The snapshot file at `path`, or `None` where it is missing, oversized or
 /// not a snapshot. Lost evidence is the daemon's to judge.
@@ -735,7 +746,7 @@ pub fn spawn_observer(
             let snapshots = paths
                 .into_iter()
                 .map(|(id, path)| {
-                    let snapshot = match (stamp_of(&path), seen.get(&path)) {
+                    let snapshot = match (Stamp::of(&path), seen.get(&path)) {
                         (Some(stamp), Some((was, kept))) if *was == stamp => kept.clone(),
                         (Some(stamp), _) => {
                             let fresh = read_snapshot(&path);

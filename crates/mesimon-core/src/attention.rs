@@ -601,6 +601,11 @@ impl Machine {
         self
     }
 
+    /// Parked on tasks it left running, or a transition there pending.
+    fn parked_or_parking(&self) -> bool {
+        self.state.on_tasks() || self.pending.as_ref().is_some_and(|p| p.to.on_tasks())
+    }
+
     /// Where the current park lands on the park clock — for persistence.
     pub fn park_fallback(&self) -> StopReason {
         self.park_fallback
@@ -1101,14 +1106,7 @@ impl Machine {
             }
             Signal::Stop { .. } => t(S::Idle { stop_reason: StopReason::EndTurn }),
             Signal::BackgroundChanged { liveness } => {
-                let parked = |s: &S| {
-                    matches!(
-                        s,
-                        S::Idle { stop_reason: StopReason::Background | StopReason::Monitoring }
-                    )
-                };
-                if parked(&self.state)
-                    || self.pending.as_ref().is_some_and(|p| parked(&p.to))
+                if self.parked_or_parking()
                     || (*liveness != crate::background::Liveness::None
                         && (matches!(self.state, S::Idle { .. })
                             || self
@@ -1129,15 +1127,8 @@ impl Machine {
                 }
             }
             Signal::TasksKilled => {
-                let parked = |s: &S| {
-                    matches!(
-                        s,
-                        S::Idle { stop_reason: StopReason::Background | StopReason::Monitoring }
-                    )
-                };
                 let teammates_busy = self.stop_teammates > self.idle_teammates.len();
-                ((parked(&self.state) || self.pending.as_ref().is_some_and(|p| parked(&p.to)))
-                    && !teammates_busy)
+                (self.parked_or_parking() && !teammates_busy)
                     .then_some((S::Idle { stop_reason: StopReason::EndTurn }, Confidence::High))
             }
 

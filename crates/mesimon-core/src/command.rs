@@ -2911,10 +2911,7 @@ impl AgentAutomoveView {
     /// No rule on the column and no move held: what the board does to the
     /// ticket on its own is nothing.
     pub fn is_empty(&self) -> bool {
-        self.on_working.is_none()
-            && self.on_done.is_none()
-            && self.on_merged.is_none()
-            && self.held.is_none()
+        *self == Self::default()
     }
 }
 

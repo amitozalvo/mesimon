@@ -39,8 +39,7 @@ impl Daemon {
         }
         self.responsive.reaping = due.clone();
         let backend = self.backend.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let began = Instant::now();
             let mut panes = None;
             let done = due
@@ -55,8 +54,17 @@ impl Daemon {
                     (sid, generation, removed)
                 })
                 .collect();
-            let _ = tx.send(Msg::Reaped(done, began.elapsed()));
+            Msg::Reaped(done, began.elapsed())
         });
+    }
+
+    /// The status line's write landed (`refresh_status_line`).
+    pub(super) fn status_written(&mut self, line: String, ok: bool) {
+        self.responsive.status_writing = false;
+        if ok {
+            self.last_status_left = Some(line);
+            self.refresh_status_line();
+        }
     }
 
     pub(super) fn reaped(&mut self, done: Vec<(String, Instant, bool)>, took: Duration) {

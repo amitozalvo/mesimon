@@ -313,6 +313,26 @@ impl TestClient {
         }
     }
 
+    /// `try_send` that gives up after `within` without an answer, then puts
+    /// the connection's usual 10 s back.
+    pub fn try_send_within(
+        &mut self,
+        principal: Principal,
+        command: Command,
+        within: Duration,
+    ) -> Option<Response> {
+        self.read.get_ref().set_read_timeout(Some(within)).unwrap();
+        let response = self.try_send(principal, command);
+        self.read.get_ref().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        response
+    }
+
+    /// One bare envelope on the connection, its answer left unread.
+    pub fn post(&mut self, principal: Principal, command: Command) {
+        let env = Envelope { principal, command };
+        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
+    }
+
     fn send_result(&mut self, principal: Principal, command: Command) -> std::io::Result<Response> {
         let env = Envelope { principal, command };
         let wire = mesimon_core::command::WireRequest {
@@ -812,13 +832,14 @@ pub struct Harness {
 
 /// The feed rows naming `ticket` whose command is exactly `cmd`.
 pub fn feed_count(h: &Harness, cmd: &str, ticket: ulid::Ulid) -> usize {
+    feed_count_with(h, cmd, ticket, "")
+}
+
+/// [`feed_count`]'s rows that also hold `extra`.
+pub fn feed_count_with(h: &Harness, cmd: &str, ticket: ulid::Ulid, extra: &str) -> usize {
     let needle = format!("\"cmd\":\"{cmd}\"");
     let id = ticket.to_string();
-    std::fs::read_to_string(h.paths.state_dir.join("activity.jsonl"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| l.contains(&needle) && l.contains(&id))
-        .count()
+    h.feed().lines().filter(|l| l.contains(&needle) && l.contains(&id) && l.contains(extra)).count()
 }
 
 /// Claude Code's composer as a stub paints it (T-570): a rule, the `❯ `
@@ -911,6 +932,10 @@ while True:
     draw()
 "#;
 
+/// A background task's `<task-notification>`, as Claude Code fires it: the
+/// `prompt` of a `UserPromptSubmit` (T-135).
+pub const TASK_NOTIFICATION: &str = r#"{"prompt":"<task-notification>\n<task-id>bqvffdb91</task-id>\n<status>completed</status>\n<summary>Background command \"cargo ut\" completed (exit code 0)</summary>\n</task-notification>"}"#;
+
 /// A claude stub that appends every line it reads to `got.txt` beside it,
 /// so a test reads what reached the pane ([`Harness::got`]).
 /// A Claude stub that reads its launch words and says nothing.
@@ -948,6 +973,17 @@ pub fn claude_stub(body: &str) -> String {
         }
         _ => body.to_string(),
     }
+}
+
+/// `script` as the daemon's tmux (`MESIMON_TMUX_BIN`): a wrapper in the
+/// fixture's own directory around the real one, for a
+/// [`Harness::boot_staged`] stage, so the daemon reads it from its first fork.
+pub fn stage_tmux(fixture: &TestFixture, script: &str) {
+    let wrapper = fixture.dir.join("tmux.sh");
+    std::fs::write(&wrapper, script).unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .unwrap();
+    fixture.set_env("MESIMON_TMUX_BIN", &wrapper);
 }
 
 impl Harness {
@@ -1152,6 +1188,16 @@ pub fn commit(repo: &Path, file: &str) -> String {
     git(repo, &["add", file]);
     git(repo, &["commit", "-qm", file]);
     git(repo, &["rev-parse", "--short=7", "HEAD"]).trim().to_string()
+}
+
+/// Whether `branch` is an ancestor of `base` in `repo`: merged into it.
+pub fn is_ancestor(repo: &Path, branch: &str, base: &str) -> bool {
+    Proc::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", "--is-ancestor", branch, base])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Whether `repo` has a local branch `branch`.

@@ -635,6 +635,7 @@ pub(crate) struct Held {
 }
 
 /// The archived tickets, asked for (T-842): the snapshot leaves them out.
+#[derive(Default)]
 pub(crate) struct HeldArchive {
     prs: Vec<mesimon_core::command::PrItem>,
     tickets: Vec<Ticket>,
@@ -1485,9 +1486,6 @@ impl TicketLink {
 pub struct Corpus(std::collections::HashMap<ulid::Ulid, (u64, Arc<mesimon_core::search::Body>)>);
 
 impl mesimon_core::search::Bodies for Corpus {
-    fn body(&self, note: ulid::Ulid) -> Option<&mesimon_core::search::Body> {
-        self.0.get(&note).map(|(_, body)| body.as_ref())
-    }
     fn body_at(&self, note: ulid::Ulid, rev: u64) -> Option<&mesimon_core::search::Body> {
         self.0.get(&note).filter(|(r, _)| *r == rev).map(|(_, body)| body.as_ref())
     }
@@ -4292,18 +4290,12 @@ impl App {
         if self.focus_ask.is_some() {
             return Response::Err { message: "waiting for attachment preparation".into() };
         }
-        match self.client.request(command) {
-            Ok(r) => {
-                if let Some(id) = moved.filter(|_| !matches!(r, Response::Err { .. })) {
-                    self.own_moves.insert(id, (self.now)());
-                }
-                r
-            }
-            Err(e) => {
-                self.note_daemon_down(crate::client::outage(&e));
-                Response::Err { message: self.status.clone() }
-            }
+        let result = self.client.request(command);
+        let r = self.answer(result);
+        if let Some(id) = moved.filter(|_| !matches!(r, Response::Err { .. })) {
+            self.own_moves.insert(id, (self.now)());
         }
+        r
     }
 
     pub fn update_ready(&self) -> bool {
@@ -4794,12 +4786,22 @@ impl App {
     /// frame's cached `Ctx` goes with the old value.
     pub(crate) fn preview_measured(&self) {
         if self.frame_ctx.borrow().as_ref().is_some_and(|ctx| {
-            ctx.preview_scrolls != (self.preview.view.get().max > 0)
-                || ctx.ticket_links != self.page_visible(|on| on.next().is_some()).unwrap_or(false)
+            ctx.preview_scrolls != self.preview_scrolls()
+                || ctx.ticket_links != self.page_links_on_screen()
                 || self.page_link.borrow().is_some()
         }) {
             self.ctx_dirty();
         }
+    }
+
+    /// `Ctx::preview_scrolls`: the measured preview zone has rows to scroll.
+    fn preview_scrolls(&self) -> bool {
+        self.preview.view.get().max > 0
+    }
+
+    /// `Ctx::ticket_links`: the ticket page draws a link on screen.
+    fn page_links_on_screen(&self) -> bool {
+        self.page_visible(|on| on.next().is_some()).unwrap_or(false)
     }
 
     /// Draw-side write of whether the page's description has rows to fold
@@ -8739,12 +8741,7 @@ impl App {
             None => return false,
             Some(Response::Tickets { tickets, prs }) => (tickets, prs),
             Some(_) => {
-                self.archive = Some(HeldArchive {
-                    prs: Vec::new(),
-                    tickets: Vec::new(),
-                    inserted: Default::default(),
-                    stale: false,
-                });
+                self.archive = Some(HeldArchive::default());
                 return false;
             }
         };
@@ -9198,8 +9195,8 @@ impl App {
             mouse: self.prefs.mouse,
             new_replies: self.prefs.new_replies,
             card_prs_word: self.prefs.card_prs.key(),
-            preview_scrolls: self.preview.view.get().max > 0,
-            ticket_links: self.page_visible(|on| on.next().is_some()).unwrap_or(false),
+            preview_scrolls: self.preview_scrolls(),
+            ticket_links: self.page_links_on_screen(),
             link_picked: self.pick_live(),
             link_askable: subject.is_some_and(|t| {
                 !self.ticket_queued(t) && self.unsent_of(t).is_none() && !launching && !box_held
@@ -13945,7 +13942,7 @@ impl App {
         // new shell, to adopt as well"). The adopted shell is a rail row;
         // Enter on it is how it is reached.
         let grant = self.grant_for(FocusTarget::Terminal);
-        self.focus_target(FocusTarget::Terminal, grant);
+        self.begin_focus(FocusTarget::Terminal, grant);
     }
 
     /// Enter on the terminal's ghost row (T-366): the first press arms,
@@ -14110,11 +14107,9 @@ impl App {
         }
         if matches!(verb, Some(Verb::Save | Verb::SaveStart))
             && matches!(purpose, InputPurpose::Create { .. } | InputPurpose::Prompt { .. })
-            && (self.submission.is_some()
-                || self.created_follow.is_some()
-                || self.write_recovery.is_some())
+            && self.submission_pending()
         {
-            self.status = "previous submission is still pending ∙ draft kept".into();
+            self.status = background::SUBMISSION_PENDING.into();
             return Ok(());
         }
         match verb {
@@ -15057,12 +15052,9 @@ impl App {
     /// seat's word, the receipt in the status — line breaks and all. A blank
     /// room sends nothing and stays open; the daemon would refuse it too.
     fn editor_send(&mut self, ed: Editor) -> Result<()> {
-        if self.submission.is_some()
-            || self.created_follow.is_some()
-            || self.write_recovery.is_some()
-        {
+        if self.submission_pending() {
             self.mode = Mode::Editor(ed);
-            self.status = "previous submission is still pending ∙ draft kept".into();
+            self.status = background::SUBMISSION_PENDING.into();
             return Ok(());
         }
         let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
@@ -15180,12 +15172,9 @@ impl App {
     /// files nothing: the dialog stays, the cursor goes to the title, and
     /// the title row shakes where the eye is (2026-11-05, user request).
     fn mint_composed(&mut self, mut ed: Editor, start: bool) -> Result<()> {
-        if self.submission.is_some()
-            || self.created_follow.is_some()
-            || self.write_recovery.is_some()
-        {
+        if self.submission_pending() {
             self.mode = Mode::Editor(ed);
-            self.status = "previous submission is still pending ∙ draft kept".into();
+            self.status = background::SUBMISSION_PENDING.into();
             return Ok(());
         }
         let EditorPurpose::Compose { workspace, tags, plan, tier } = ed.purpose.clone() else {
@@ -16857,45 +16846,7 @@ impl App {
         } else {
             (description.unwrap_or_default(), Vec::new())
         };
-        if uploads.is_empty() {
-            let generation = self.input_generation;
-            self.status = "saving ticket".into();
-            return self.submit(
-                Command::CreateTicketWithNote {
-                    column,
-                    title,
-                    workspace,
-                    text,
-                    uploads,
-                    tags,
-                    tier,
-                },
-                move |app, response| {
-                    match response {
-                        Response::Created { id } => {
-                            app.refresh_soon()?;
-                            app.created_follow = Some(background::CreatedFollow {
-                                id,
-                                start,
-                                generation,
-                                after: app.need_seq,
-                            });
-                            app.poll_created()?;
-                        }
-                        response => {
-                            app.status = match response {
-                                Response::Err { message } => message,
-                                _ => "ticket save was not acknowledged".into(),
-                            };
-                            app.recover_submission(recovery);
-                            app.refresh_soon()?;
-                        }
-                    }
-                    Ok(())
-                },
-            );
-        }
-        let response = self.req(Command::CreateTicketWithNote {
+        let command = Command::CreateTicketWithNote {
             column,
             title,
             workspace,
@@ -16903,10 +16854,36 @@ impl App {
             uploads: uploads.clone(),
             tags,
             tier,
-        });
-        if !uploads.is_empty() {
-            let _ = self.req(Command::DiscardAttachmentUploads { uploads });
+        };
+        if uploads.is_empty() {
+            let generation = self.input_generation;
+            self.status = "saving ticket".into();
+            return self.submit(command, move |app, response| {
+                match response {
+                    Response::Created { id } => {
+                        app.refresh_soon()?;
+                        app.created_follow = Some(background::CreatedFollow {
+                            id,
+                            start,
+                            generation,
+                            after: app.need_seq,
+                        });
+                        app.poll_created()?;
+                    }
+                    response => {
+                        app.status = match response {
+                            Response::Err { message } => message,
+                            _ => "ticket save was not acknowledged".into(),
+                        };
+                        app.recover_submission(recovery);
+                        app.refresh_soon()?;
+                    }
+                }
+                Ok(())
+            });
         }
+        let response = self.req(command);
+        let _ = self.req(Command::DiscardAttachmentUploads { uploads });
         match response {
             Response::Created { id } => {
                 self.refresh()?;
@@ -17035,6 +17012,7 @@ impl App {
         // to the agent on that tier.
         let on_tier = tier.as_deref().map(|t| format!(" ∙ on {}", self.tier_name(t)));
         let immediately = immediately && !queued && !accept_plan;
+        let synchronous = !uploads.is_empty();
         let command = Command::PromptSession {
             ticket,
             text,
@@ -17114,11 +17092,9 @@ impl App {
             }
             app.refresh_soon()
         };
-        if let Command::PromptSession { uploads, .. } = &command {
-            if !uploads.is_empty() {
-                let answer = self.req(command);
-                return finish(self, answer);
-            }
+        if synchronous {
+            let answer = self.req(command);
+            return finish(self, answer);
         }
         self.status = "asking".into();
         self.submit(command, finish)
@@ -17364,16 +17340,8 @@ impl App {
                 }
             }
         }
-        self.focus_target(FocusTarget::Session(sid, origin), Command::FocusStart { session: sid });
+        self.begin_focus(FocusTarget::Session(sid, origin), Command::FocusStart { session: sid });
         Ok(())
-    }
-
-    /// The focus road every attach takes: GATE (D20) — prove the unfocus key
-    /// once before the first real focus — then the command that grants the
-    /// attach argv, parked for the main loop's handover with the target it
-    /// holds the token on, so `after_handover` knows what to release.
-    fn focus_target(&mut self, target: FocusTarget, grant: Command) {
-        self.begin_focus(target, grant);
     }
 
     /// A daemon's attach argv as this board's terminal runs it: with the
@@ -19687,7 +19655,7 @@ mod tests {
     fn attachment_preparation_leaves_navigation_free_and_releases_an_abandoned_grant() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         let hold = hold_background(&mut app);
-        app.focus_target(FocusTarget::Terminal, Command::OpenTerminal { ticket: None });
+        app.begin_focus(FocusTarget::Terminal, Command::OpenTerminal { ticket: None });
         assert!(app.pending_attach.is_none());
         release(&hold); // gate
         app.poll_focus();

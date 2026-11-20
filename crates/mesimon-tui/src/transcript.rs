@@ -124,11 +124,7 @@ pub(crate) fn hand_of(
     session: uuid::Uuid,
 ) -> Option<Hand> {
     let raised = board.ticket(ticket)?.raised.as_ref()?;
-    if raised.by.strip_prefix("agent:").is_some_and(|by| by != session.to_string()) {
-        return None;
-    }
-    let secs = mesimon_core::board::stamp_secs(&raised.at)?;
-    Some(Hand { ms: secs * 1000, reason: raised.reason.clone() })
+    Some(Hand { ms: raised.ms_for(session)?, reason: raised.reason.clone() })
 }
 
 /// The hand among `out` by its time: after the last message written in or

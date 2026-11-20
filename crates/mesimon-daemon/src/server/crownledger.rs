@@ -184,7 +184,7 @@ impl Daemon {
         taken: crown_wakes_taken => self.crown_wakes_taken.to_vec(),
         out_asks: crown_asks => self.kept_crown_asks(),
         expects: crown_expects => self.crown_expects.iter().map(|(t, e)| (*t, e.clone())).collect(),
-        rules: crown_rules => self.crown_rules.kept(&mesimon_core::mcp::crown_view()),
+        rules: crown_rules => self.crown_rules.kept(crownrules::rules_digest()),
     }
 
     /// The single write path for `crown.json`: on the tick and on the way
@@ -351,8 +351,7 @@ impl Daemon {
                 _ => false,
             }
         };
-        let rules = mesimon_core::mcp::crown_view();
-        self.crown_rules.restore(ledger.rules, &rules, still);
+        self.crown_rules.restore(ledger.rules, crownrules::rules_digest(), still);
         self.crown_recheck_until = now_ms() + recheck_ms();
         // The crown's asks still out come back at their word (T-974); one a
         // turn rode that no kept record names comes back `unknown` (T-938).

@@ -2960,7 +2960,8 @@ select {
   flex: none;
   color: var(--ink4);
 }
-.chat-said time {
+.chat-said time,
+.chat-act time {
   font-family: var(--mono);
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
@@ -2988,12 +2989,6 @@ select {
   gap: 2px 6px;
   color: var(--tag-5);
 }
-.chat-act time {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink4);
-}
 .chat-act-body {
   color: var(--ink2);
   white-space: pre-wrap;
@@ -3004,7 +2999,8 @@ select {
 /* Words mesimon carried in (T-1309): a prompt the crown, another board's
    crown or the board's wake put in the conversation, headed in the crown's
    ink as the ticket page heads it, the words off the person's bubble. */
-.chat-crowned {
+.chat-crowned,
+.chat-hand {
   max-width: 62ch;
   display: flex;
   flex-direction: column;
@@ -3022,7 +3018,8 @@ select {
   font-size: 0.8125rem;
   font-weight: 600;
 }
-.chat-crowned-head time {
+.chat-crowned-head time,
+.chat-hand-head time {
   font-family: var(--mono);
   font-size: 0.6875rem;
   font-weight: 400;
@@ -3050,14 +3047,6 @@ select {
 /* A raised hand (T-1304), as the ticket page draws it (T-1155): the
    agent's words under who raised it, the head in the needs-you colour
    while the hand is up and quiet once it is down. */
-.chat-hand {
-  max-width: 62ch;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding-left: 11px;
-  border-left: 2px solid var(--line);
-}
 .chat-hand-head {
   display: flex;
   align-items: center;
@@ -3066,13 +3055,6 @@ select {
   color: var(--ink3);
   font-size: 0.8125rem;
   font-weight: 600;
-}
-.chat-hand-head time {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink4);
 }
 .chat-hand-body {
   margin: 0;

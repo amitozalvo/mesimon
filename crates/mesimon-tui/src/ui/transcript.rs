@@ -13,7 +13,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap::Scope;
 use mesimon_core::mesophon::RowKind;
@@ -21,7 +20,6 @@ use mesimon_core::mesophon::RowKind;
 use super::dialog::{self, Edges};
 use crate::app::App;
 use crate::rich::Newline;
-use crate::text::truncate;
 
 /// The dialog's inner rows and width, terminal permitting: a medium
 /// window, the reply's reading measure.
@@ -134,24 +132,9 @@ fn words(
     let theme = &app.theme;
     let width = body.width as usize;
 
-    // Who, when, and the steps that followed, at the right.
-    let time = when(m.ms, mesimon_core::clock::now_ms());
-    let who = super::ticket::who_word(theme, m, t.kind, width.saturating_sub(time.width() + 2));
-    // `you` as bold as the agent's name, as the ticket page heads both.
-    let who_style = super::ticket::head_ink(theme, m);
-    let left = if who.is_empty() { time.clone() } else { format!("{who}  {time}") };
-    let room = width.saturating_sub(left.width() + 2);
-    let steps = truncate(&steps_word(m.steps, &m.tools), room);
-    let gap = width.saturating_sub(left.width() + steps.width());
-    let mut head = Vec::new();
-    if !who.is_empty() {
-        head.push(Span::styled(who.to_string(), who_style));
-        head.push(Span::styled(format!("  {time}"), theme.dim2()));
-    } else {
-        head.push(Span::styled(time, theme.dim2()));
-    }
-    head.push(Span::raw(" ".repeat(gap)));
-    head.push(Span::styled(steps, theme.dim3()));
+    // Who, when, and the steps that followed, at the right: the ticket
+    // page's head at the dialog's width.
+    let head = super::ticket::message_head(theme, t.kind, m, width, mesimon_core::clock::now_ms());
 
     // The words: a person's read as they typed them, on the raised ground
     // behind the prompt mark (the ticket page's look, T-1152); the agent's
@@ -206,5 +189,5 @@ fn words(
             width + 2 * PAD.len(),
         );
     }
-    (Line::from(head), shown)
+    (head, shown)
 }

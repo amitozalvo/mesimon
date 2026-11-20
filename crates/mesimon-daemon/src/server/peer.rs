@@ -232,11 +232,7 @@ impl Daemon {
             },
         );
         self.peer_wait = Some(id);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let answer = call_peer(&sock, &env);
-            let _ = tx.send(Msg::PeerAnswered(id, Box::new(answer)));
-        });
+        self.off_writer(move || Msg::PeerAnswered(id, Box::new(call_peer(&sock, &env))));
         Response::Ok // the writer parks the actual reply
     }
 

@@ -310,25 +310,11 @@ impl Transport for Client {
     /// the observer's road: no spawn, no lock wait — a daemon that is gone
     /// is the board's own connection's to bring back (`redial`).
     fn snapshot_detached(&mut self) -> Receiver<Result<Response>> {
-        let (tx, rx) = channel();
-        let repo_root = self.repo_root.clone();
-        let lane = Arc::clone(&self.lane);
-        std::thread::spawn(move || {
-            let mut lane = lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = tx.send(ask_lane(&mut lane, &repo_root));
-        });
-        rx
+        on_lane(&self.lane, &self.repo_root, Command::Snapshot)
     }
 
     fn read_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
-        let (tx, rx) = channel();
-        let root = self.repo_root.clone();
-        let reads = Arc::clone(&self.reads);
-        std::thread::spawn(move || {
-            let mut lane = reads.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = tx.send(ask_read_lane(&mut lane, &root, command));
-        });
-        rx
+        on_lane(&self.reads, &self.repo_root, command)
     }
 
     fn request_async(&mut self, command: Command) -> Receiver<Result<Response>> {
@@ -400,6 +386,23 @@ impl Transport for Client {
 }
 
 impl Client {
+    /// A client on `repo_root` with nothing dialled, flagged or lent: what
+    /// each constructor starts from.
+    fn base(repo_root: &Path) -> Self {
+        Client {
+            repo_root: repo_root.to_path_buf(),
+            conn: None,
+            restart_suppressed: false,
+            observer: false,
+            notice: None,
+            legacy_daemon: false,
+            reopening: None,
+            lane: Default::default(),
+            reads: Default::default(),
+            loan: None,
+        }
+    }
+
     fn collect_loan(&mut self) {
         let Some(rx) = &self.loan else { return };
         match rx.try_recv() {
@@ -480,27 +483,13 @@ impl Client {
         let _ = Paths::for_repo(repo_root)?;
         match open_current(repo_root, true) {
             Ok((conn, notice)) => Ok(Client {
-                repo_root: repo_root.to_path_buf(),
                 conn: Some(conn),
                 restart_suppressed: notice.is_some(),
-                observer: false,
                 notice,
-                legacy_daemon: false,
-                reopening: None,
-                lane: Default::default(),
-                reads: Default::default(),
-                loan: None,
+                ..Client::base(repo_root)
             }),
             Err(why) => Ok(Client {
-                repo_root: repo_root.to_path_buf(),
-                conn: None,
-                restart_suppressed: false,
-                observer: false,
                 legacy_daemon: upgradeable(&why),
-                reopening: None,
-                lane: Default::default(),
-                reads: Default::default(),
-                loan: None,
                 notice: Some(if upgradeable(&why) {
                     Notice::new(
                         "protocol_mismatch",
@@ -511,6 +500,7 @@ impl Client {
                     Notice::new("daemon_down", format!("no daemon yet — {why}"))
                         .with_detail("reconnecting on a 2 s cadence; `mesimon doctor` says why a daemon will not start".to_string())
                 }),
+                ..Client::base(repo_root)
             }),
         }
     }
@@ -530,16 +520,10 @@ impl Client {
     pub fn connect_observer(repo_root: &Path) -> Result<Self> {
         let _ = Paths::for_repo(repo_root)?;
         Ok(Client {
-            repo_root: repo_root.to_path_buf(),
             conn: open_existing(repo_root).ok(),
             restart_suppressed: true,
             observer: true,
-            notice: None,
-            legacy_daemon: false,
-            reopening: None,
-            lane: Default::default(),
-            reads: Default::default(),
-            loan: None,
+            ..Client::base(repo_root)
         })
     }
 }
@@ -764,16 +748,29 @@ fn open_lane(repo_root: &Path) -> Result<Conn> {
     hello(connect_existing(repo_root)?, PROTOCOL_VERSION, RESPONSE_WAIT)
 }
 
-/// One snapshot on the lane: the kept connection, or a fresh one when there
-/// is none. A kept connection that fails outright was opened on a daemon
-/// that is gone (a `U` reload, a crash and a respawn): one fresh dial asks
-/// the one that is there now, and a snapshot is a read, so asking twice
-/// is safe. A timeout is not that — the daemon is up and slow, and a second
-/// wait would double it. Any failure drops the lane, so the next ask dials.
-fn ask_lane(lane: &mut Option<Conn>, repo_root: &Path) -> Result<Response> {
-    ask_read_lane(lane, repo_root, Command::Snapshot)
+/// One read asked on `lane` from a thread of its own, which dies with the
+/// reply (`ask_read_lane`).
+fn on_lane(
+    lane: &Arc<Mutex<Option<Conn>>>,
+    repo_root: &Path,
+    command: Command,
+) -> Receiver<Result<Response>> {
+    let (tx, rx) = channel();
+    let repo_root = repo_root.to_path_buf();
+    let lane = Arc::clone(lane);
+    std::thread::spawn(move || {
+        let mut lane = lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = tx.send(ask_read_lane(&mut lane, &repo_root, command));
+    });
+    rx
 }
 
+/// One read (a snapshot, a note) on the lane: the kept connection, or a
+/// fresh one when there is none. A kept connection that fails outright was
+/// opened on a daemon that is gone (a `U` reload, a crash and a respawn):
+/// one fresh dial asks the one that is there now, and a read is safe to ask
+/// twice. A timeout is not that — the daemon is up and slow, and a second
+/// wait would double it. Any failure drops the lane, so the next ask dials.
 fn ask_read_lane(lane: &mut Option<Conn>, repo_root: &Path, command: Command) -> Result<Response> {
     let kept = lane.is_some();
     let first = match lane.as_mut() {
@@ -783,7 +780,7 @@ fn ask_read_lane(lane: &mut Option<Conn>, repo_root: &Path, command: Command) ->
     let reply = match first {
         Err(e) if kept && outage(&e) != Outage::Slow => {
             *lane = None;
-            open_lane(repo_root).and_then(|c| lane.insert(c).request(command.clone()))
+            open_lane(repo_root).and_then(|c| lane.insert(c).request(command))
         }
         other => other,
     };
@@ -1279,18 +1276,7 @@ mod tests {
             reply(&mut reader, Response::Ok);
             hellos
         });
-        let mut client = Client {
-            repo_root: repo,
-            conn: None,
-            restart_suppressed: true,
-            observer: true,
-            notice: None,
-            legacy_daemon: false,
-            reopening: None,
-            lane: Default::default(),
-            reads: Default::default(),
-            loan: None,
-        };
+        let mut client = Client { restart_suppressed: true, observer: true, ..Client::base(&repo) };
         let wait = Duration::from_secs(5);
         for _ in 0..2 {
             let got = client.snapshot_detached().recv_timeout(wait).unwrap().unwrap();

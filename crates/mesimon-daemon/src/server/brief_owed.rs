@@ -7,18 +7,11 @@
 //! turn. The reason the crown reads names the brief, never a person.
 
 use super::*;
-use crate::server::queued_person_push_tests::{daemon, worker_ticket};
+use crate::server::queued_person_push_tests::{daemon, prompt_frame, worker_ticket};
 
 /// A `UserPromptSubmit` by the seat's own road.
 fn prompt(d: &Daemon, sid: uuid::Uuid, text: &str) -> HookFrame {
-    HookFrame {
-        session: sid.to_string(),
-        event: "UserPromptSubmit".into(),
-        reason: None,
-        pane: None,
-        road: d.board.session(sid).unwrap().road,
-        payload: serde_json::json!({ "prompt": text }),
-    }
+    prompt_frame(sid, d.board.session(sid).unwrap().road, text)
 }
 
 fn feed(d: &mut Daemon) -> String {

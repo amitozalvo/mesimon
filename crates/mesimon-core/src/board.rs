@@ -2446,6 +2446,17 @@ pub struct Raised {
     pub reason: String,
 }
 
+impl Raised {
+    /// When the hand went up in ms, for `session`'s conversation (T-1304):
+    /// none when another agent raised it, or its stamp does not read.
+    pub fn ms_for(&self, session: uuid::Uuid) -> Option<u64> {
+        if self.by.strip_prefix("agent:").is_some_and(|by| by != session.to_string()) {
+            return None;
+        }
+        Some(stamp_secs(&self.at)? * 1000)
+    }
+}
+
 /// The `[archived]` table on a ticket. Presence = off the board.
 ///
 /// A SNOOZE is an archive with a deadline (T-74): `until` set means the

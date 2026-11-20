@@ -100,9 +100,8 @@ impl Daemon {
         let bin = crate::agents::cli_bin(AgentProvider::Agy);
         let argv = self.launch(&[bin, "models".into()], &[]);
         let cwd = self.paths.state_dir.clone();
-        let tx = self.tx.clone();
         self.agy_models_reading = true;
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let read = crate::modroad::run_bounded(&argv, &cwd, agy::MODELS_TIMEOUT)
                 .and_then(|out| match (out.code, agy::models_text(&out.stdout)) {
                     (Some(0), Some(text)) => Ok(text),
@@ -114,7 +113,7 @@ impl Daemon {
                         .map_err(|e| format!("{}: {e:#}", file.display()))?;
                     Ok(text.lines().count())
                 });
-            let _ = tx.send(Msg::AgyModelsRead(read));
+            Msg::AgyModelsRead(read)
         });
     }
 

@@ -487,6 +487,37 @@ struct ClientReply {
     told: Option<(uuid::Uuid, u64)>,
 }
 
+/// The root checkout's default branch, where the root is a repository:
+/// what a single-repo leg with no base of its own is judged against.
+fn root_default_branch(repo: &std::path::Path) -> Option<String> {
+    repo.join(".git").exists().then(|| worktree::default_branch(repo).ok()).flatten()
+}
+
+/// A flags sample's terms, on its worker (the board's sample, a ticket's
+/// look, the crown's probe): a leg with no base of its own takes the
+/// root's, one left with none is not judged this pass (a workspace leg
+/// carries its own, T-754), and the upstream ref is asked for the names
+/// in `uncached` (`Daemon::uncached_upstreams`), on the same terms.
+fn sample_terms(
+    queries: &mut Vec<worktree::RepoQuery>,
+    base: Option<&String>,
+    uncached: &std::collections::HashSet<String>,
+) {
+    for q in queries.iter_mut() {
+        if q.base.is_empty() {
+            if let Some(b) = base {
+                q.base = b.clone();
+            }
+        }
+    }
+    queries.retain(|q| !q.base.is_empty());
+    for q in queries.iter_mut() {
+        if uncached.contains(&q.name) {
+            q.upstream = worktree::upstream_base(&q.repo, &q.base);
+        }
+    }
+}
+
 /// The board-wide worker returns the refs and remotes it resolved alongside
 /// the flags, so the writer can fold saved PRs into the very first sample.
 struct WorktreeSample {
@@ -1908,27 +1939,14 @@ pub fn run(paths: Paths) -> Result<()> {
                 let _ = answer.send(d.steer_allowed(id, receipt));
             }
             Msg::SteerPasted(job, result) => d.steer_pasted(job, result),
-            Msg::SteerPressed(id, receipt) => {
-                if d.owed.get(&id).is_some_and(|o| o.receipt_id == receipt)
-                    && d.finish_steer_press(id, now_ms())
-                {
-                    d.persist_sessions();
-                    d.broadcast();
-                }
-            }
+            Msg::SteerPressed(id, receipt) => d.steer_pressed(id, receipt),
             Msg::TicketGates(read) => d.ticket_gates_read(*read),
             Msg::TeardownChecked(job, query, reads) => d.teardown_checked(job, query, reads),
             Msg::PeerAnswered(id, answer) => d.peer_answered(id, *answer),
             Msg::Reaped(done, took) => d.reaped(done, took),
             Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
             Msg::SessionsSaved(result) => d.sessions_saved(result),
-            Msg::StatusWritten(line, ok) => {
-                d.responsive.status_writing = false;
-                if ok {
-                    d.last_status_left = Some(line);
-                    d.refresh_status_line();
-                }
-            }
+            Msg::StatusWritten(line, ok) => d.status_written(line, ok),
             Msg::Control(generation, event, ack) => {
                 d.on_control(generation, event);
                 let _ = ack.send(());
@@ -1984,16 +2002,7 @@ pub fn run(paths: Paths) -> Result<()> {
                     }
                 }
             }
-            Msg::ForgeRemotes(epoch, found) => {
-                if epoch == d.forge.epoch {
-                    d.forge.reading_remotes = false;
-                    for (dir, remote) in found {
-                        d.forge.remember_remote(dir, remote);
-                    }
-                    d.queue_worktree_flags();
-                    d.queue_forge_sample();
-                }
-            }
+            Msg::ForgeRemotes(epoch, found) => d.forge_remotes_read(epoch, found),
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
             Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
@@ -2028,7 +2037,7 @@ pub fn run(paths: Paths) -> Result<()> {
                     (Principal::Agent { session }, _) => Some(*session),
                     _ => None,
                 };
-                let before = d.session_saves.requested;
+                let before = d.session_saves.revision();
                 let mutates = env.command.meta().action != Action::Read;
                 let shutdown = matches!(env.command, Command::Shutdown);
                 d.steer_calls = matches!(
@@ -2090,14 +2099,11 @@ pub fn run(paths: Paths) -> Result<()> {
                             ticket,
                             reply,
                             caller,
-                            d.session_saves.requested != before,
+                            d.session_saves.revision() != before,
                         );
                     } else {
-                        let wait = d.session_saves.requested != before;
-                        let (response, told) = match caller {
-                            Some(session) => d.with_crown_rules(session, resp),
-                            None => (resp, None),
-                        };
+                        let wait = d.session_saves.revision() != before;
+                        let (response, told) = d.caller_rules(caller, resp);
                         if steers.is_empty() {
                             d.session_reply(reply, response, told, wait);
                         } else {
@@ -2109,8 +2115,8 @@ pub fn run(paths: Paths) -> Result<()> {
                 }
             }
         }
-        if d.shutting_down && d.session_saves.active.is_none() {
-            let error = d.session_saves.error.clone();
+        if d.shutting_down && d.session_saves.idle() {
+            let error = d.session_saves.last_error().map(str::to_owned);
             if let Some(reply) = shutdown_reply.take() {
                 let (delivered, receipt) = channel();
                 let response = match &error {
@@ -2619,6 +2625,15 @@ impl Daemon {
         }
     }
 
+    /// Run `work` on a thread of its own and post the `Msg` it returns to
+    /// the writer: a worker that answers once.
+    fn off_writer(&self, work: impl FnOnce() -> Msg + Send + 'static) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+    }
+
     /// Ask the user's login shell for its environment, off the writer thread.
     ///
     /// One at a time (`shell_env_capturing`): the capture forks a shell and
@@ -2632,10 +2647,7 @@ impl Daemon {
         self.shell_env_asked_at = now_ms();
         let dump = self.paths.shell_env_dump();
         let shell = self.shell.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::ShellEnvCaptured(crate::shellenv::capture(&shell, &dump)));
-        });
+        self.off_writer(move || Msg::ShellEnvCaptured(crate::shellenv::capture(&shell, &dump)));
     }
 
     /// A capture landed. `PATH` goes to the backend (it rides the tmux CLIENT
@@ -5407,9 +5419,7 @@ impl Daemon {
             let mut valid = snapshot.filter(|s| {
                 s.session == id
                     && Some(s.generation) == rec.codex_generation
-                    && (s.stopped
-                        || (now.saturating_sub(s.heartbeat_ms) <= 5_000
-                            && s.heartbeat_ms <= now + 1_000))
+                    && (s.stopped || s.fresh(now))
             });
             if let Some(snapshot) = &mut valid {
                 let plan = snapshot.plan_key.clone().zip(snapshot.plan.clone());
@@ -8800,6 +8810,18 @@ impl Daemon {
         (Response::CrownRules { rules: mcp::crown_view(), inner: Box::new(resp) }, told)
     }
 
+    /// `with_crown_rules` for a reply whose caller is a session, where it is.
+    fn caller_rules(
+        &self,
+        caller: Option<uuid::Uuid>,
+        resp: Response,
+    ) -> (Response, Option<(uuid::Uuid, u64)>) {
+        match caller {
+            Some(session) => self.with_crown_rules(session, resp),
+            None => (resp, None),
+        }
+    }
+
     /// The crown comes off its ticket, to another or to none: its owed
     /// wakes go, its train holds stand as the person's, its sends wait, its
     /// shell close asks are revoked and its rules are said again to the next.
@@ -9371,9 +9393,10 @@ impl Daemon {
                 // A steer is not a resend (T-974): `now` or `immediately` into
                 // a turn observed running, of an agent the crown sends to, is
                 // a person's send-now on its say-so, admitted beside the ask
-                // still out as its own (`steer_admits`).
-                if !self.steer_admits(&seat, deliver, sends) {
-                    let unseen = self.steer_unseen(&seat, deliver, sends);
+                // still out as its own (`steer`).
+                let steer = self.steer(&seat, deliver, sends);
+                if steer != crownask::Steer::Admits {
+                    let unseen = steer == crownask::Steer::Unseen;
                     if let Some(message) = self.crown_ask_blocks(target, &key, unseen) {
                         return Response::Err { message };
                     }
@@ -10445,26 +10468,11 @@ impl Daemon {
         format!("{:016x}", h.finish())
     }
 
-    /// The stamp's other half (T-1035): what only a person or another
-    /// principal changes, with how many times someone moved the ticket by
-    /// hand in place of where it sits, and nothing of what its agent is
-    /// doing. A receipt keeps this beside the stamp it hands back, so the
-    /// write's own consequences — the seat it set in motion, the board's
-    /// rules moving the card after it — leave the stamp good and anyone's
-    /// edit makes it stale.
-    fn words_token(&self, id: ulid::Ulid) -> String {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        if self.board.ticket(id).is_some() {
-            self.hash_words(id, &mut h);
-            self.moved_by_hand.get(&id).copied().unwrap_or_default().hash(&mut h);
-        }
-        format!("{:016x}", h.finish())
-    }
-
-    /// What both stamps hash of a ticket's words: the title, the tags, the
+    /// What the stamp hashes of a ticket's words: the title, the tags, the
     /// notes by id and revision, the workspace, the archive, the raised
-    /// hand, the train hold and the hand the crown was told of.
+    /// hand, the train hold and the hand the crown was told of. A receipt
+    /// keeps them part by part (`crownreceipt::Parts`), with the count of
+    /// moves by hand in place of where the ticket sits.
     fn hash_words(&self, id: ulid::Ulid, h: &mut impl std::hash::Hasher) {
         use std::hash::Hash;
         for (_, part) in self.word_parts(id) {
@@ -11041,11 +11049,12 @@ impl Daemon {
     /// so neither a person in the pane nor their draft holds it. Not where
     /// the submit would be refused (T-936, `crown_wake_typed`): that wake is
     /// the paste road's, held for a person in the pane or their draft, as
-    /// before T-931.
+    /// before T-931. `submits_here`, then the sentence's render last:
+    /// every person hold asks this while a wake is owed.
     fn crown_wake_by_submit(&self, id: uuid::Uuid) -> bool {
-        !self.crown_wake_typed(id)
+        self.submits_here(id)
             && !self.relaunches(id, false)
-            && self.takes_by_submit(id, &self.crown_wake_text())
+            && !road::is_command(&self.crown_wake_text())
     }
 
     /// The crown's wake, and since T-1025 every ask (`takes_by_submit`), is
@@ -12391,13 +12400,7 @@ impl Daemon {
         let ack = Ack { by: "automation", word: "merge_notice_landed" };
         match self.merge_to_agent(id, req, by, ack) {
             Response::Ok => {
-                self.after_paste(id, move |d, pasted| {
-                    d.feed.board(
-                        "automation",
-                        if pasted { "merge_notified" } else { "merge_notice_failed" },
-                        Some(id),
-                    );
-                });
+                self.feed_after_paste(id, "automation", "merge_notified", "merge_notice_failed");
                 "sent"
             }
             _ => {
@@ -13081,7 +13084,7 @@ impl Daemon {
 
     /// A move or reorder of `id` that a rule did not make (T-1035): a
     /// person's, an agent's, a peer's. A receipt's stamp counts these in
-    /// place of the column (`words_token`), so the board's own move after
+    /// place of the column (`crownreceipt::Parts`), so the board's own move after
     /// the crown's write leaves it good and anyone's makes it stale.
     fn note_hand_move(&mut self, id: ulid::Ulid, by: &Principal) {
         let who = self.mover_word(id, by);
@@ -13457,10 +13460,8 @@ impl Daemon {
             let argv = self.launch(&argv, &[]);
             let cwd = self.paths.state_dir.clone();
             let lock = crate::usage::shared_file().map(|f| f.with_extension("lock"));
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
-                let outcome = crate::usage::probe(p, &argv, &cwd, lock.as_deref(), now_ms());
-                let _ = tx.send(Msg::UsageRead(p, outcome));
+            self.off_writer(move || {
+                Msg::UsageRead(p, crate::usage::probe(p, &argv, &cwd, lock.as_deref(), now_ms()))
             });
             changed = true;
         }
@@ -13750,11 +13751,10 @@ impl Daemon {
         // where its branch's remote is configured.
         let fetch_in = crate::gitstatus::branch_dir(&repo, &self.git_cache);
         let branch = self.git_cache.branch.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let own = fetch.then_some((fetch_in, branch));
             let fetched = crate::gitstatus::fetch_pass(&repo, own, &nested);
-            let _ = tx.send(Msg::GitSampled(crate::gitstatus::sample(&repo), fetched));
+            Msg::GitSampled(crate::gitstatus::sample(&repo), fetched)
         });
     }
 
@@ -13856,33 +13856,6 @@ impl Daemon {
         store::save_columns_if_changed(&self.paths, &self.board, &mut self.columns_written)
     }
 
-    /// Also the one place `started.json` learns a key (T-441): every change
-    /// of a record's conversation persists the sessions, so folding here
-    /// misses none — and folds before the bar, which is `sessions.json`'s.
-    ///
-    /// Many tick stages persist on a change that touched no record: those
-    /// cost nothing, because a record is only reached for writing through
-    /// `Tracked`'s mark (T-839). A marked one is serialised and still
-    /// compared with the last write, since the mark over-approximates.
-    fn persist_sessions(&mut self) {
-        if !self.board.sessions.is_dirty() {
-            return;
-        }
-        self.board.sessions.mark_clean();
-        self.session_saves.requested += 1;
-        let save_keys =
-            crate::started::fold(&mut self.started, &self.board.sessions) && !self.started_barred;
-        if save_keys {
-            self.session_saves.started_revision = self.session_saves.requested;
-        }
-        if self.sessions_barred && !save_keys {
-            return;
-        }
-        if self.session_saves.active.is_none() {
-            self.start_session_save();
-        }
-    }
-
     /// The single write path for `costs.json` (T-327).
     pub(super) fn persist_costs(&mut self) {
         if self.costs_barred {
@@ -13928,10 +13901,7 @@ impl Daemon {
             return;
         }
         self.cost_scanning = true;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::CostScanned(crate::cost::scan(jobs, now_ms())));
-        });
+        self.off_writer(move || Msg::CostScanned(crate::cost::scan(jobs, now_ms())));
     }
 
     /// A pass landed: fold it in, drop the tickets the board no longer has,
@@ -14241,8 +14211,7 @@ impl Daemon {
             trees.iter().filter(|p| !self.tree_sizes.contains_key(*p)).cloned().collect();
         if !unsized_.is_empty() && !self.trees_sizing {
             self.trees_sizing = true;
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
+            self.off_writer(move || {
                 let sized = unsized_
                     .into_iter()
                     .map(|p| {
@@ -14251,7 +14220,7 @@ impl Daemon {
                         (p, bytes)
                     })
                     .collect();
-                let _ = tx.send(Msg::TreesSized(sized));
+                Msg::TreesSized(sized)
             });
         }
         let bytes = trees.iter().filter_map(|p| self.tree_sizes.get(p)).sum();
@@ -14346,8 +14315,7 @@ impl Daemon {
         self.external_scanning = true;
         let roots = crate::census::repo_roots(&self.paths.repo_root);
         let known = self.excluded_conversations();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let mut items = Vec::new();
             for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
                 let Some(adapter) = crate::agents::adapter(provider.session_kind()) else {
@@ -14355,7 +14323,7 @@ impl Daemon {
                 };
                 items.extend(adapter.discover(&roots, &|identity| known.contains(identity)));
             }
-            let _ = tx.send(Msg::ExternalScanned(items));
+            Msg::ExternalScanned(items)
         });
     }
 
@@ -14930,11 +14898,13 @@ impl Daemon {
                 let tip = worktree::branch_tip(&leg.repo, &b.branch);
                 (leg, tip)
             })
-            // `RepoFlags::touched`'s rule: a branch git no longer has is touched.
-            .filter(|(leg, tip)| *tip != leg.base_oid)
             .find(|(leg, tip)| {
-                !self.leg_landed(id, b, leg, tip)
-                    && !(given_up && self.leg_given_up(id, &leg.repo, &leg.base_oid, tip).is_some())
+                // Fresh check on gate paths (the 10 s cache may lag a
+                // just-made merge).
+                let merged = || {
+                    !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base)
+                };
+                !self.leg_lands(id, leg, tip, merged, given_up)
             })
     }
 
@@ -14975,19 +14945,25 @@ impl Daemon {
             })
     }
 
-    /// One leg's landing, by the three clauses below, at the branch's tip
-    /// `tip` as read for this call.
-    fn leg_landed(
+    /// One leg holds nothing back, at the branch's tip `tip` as read for
+    /// this call: the writer's gates (`unlanded_leg`) and the reads off it
+    /// (`reads_landed`) by one rule. An untouched leg (`RepoFlags::touched`'s
+    /// rule: a branch git no longer has is touched) has nothing to land;
+    /// a touched one lands by git's ancestry (`merged`, asked only past
+    /// the first clause) or by the clauses below; with `given_up`, a leg
+    /// the forge holds as a closed PR's head passes too.
+    fn leg_lands(
         &self,
         id: ulid::Ulid,
-        b: &worktree::Binding,
         leg: &worktree::Leg,
         tip: &str,
+        merged: impl FnOnce() -> bool,
+        given_up: bool,
     ) -> bool {
-        // Fresh check on gate paths (the 10 s cache may lag a just-made
-        // merge).
-        (!leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base))
+        tip == leg.base_oid
+            || merged()
             || self.landed_beyond_ancestry(id, leg, tip)
+            || (given_up && self.leg_given_up(id, &leg.repo, &leg.base_oid, tip).is_some())
     }
 
     fn landed_beyond_ancestry(&self, id: ulid::Ulid, leg: &worktree::Leg, tip: &str) -> bool {
@@ -16001,9 +15977,14 @@ impl Daemon {
     /// typed words are held for a person at the pane and go only into an
     /// empty box (T-958, T-966), which is where a re-sent ask must land.
     fn takes_by_submit(&self, id: uuid::Uuid, text: &str) -> bool {
+        self.submits_here(id) && !road::is_command(text)
+    }
+
+    /// A Claude seat whose mod speaks `submit` and has not refused the
+    /// last one: `takes_by_submit` for any words but a slash command.
+    fn submits_here(&self, id: uuid::Uuid) -> bool {
         self.session_kind(id) == SessionKind::Claude
             && self.mod_speaks(id, "submit")
-            && !road::is_command(text)
             && !self.crown_wake_typed(id)
     }
 
@@ -16302,17 +16283,12 @@ impl Daemon {
                             let ack = Ack { by: "automation", word: "merge_train_notice_landed" };
                             match self.merge_to_agent(t, req, &by, ack) {
                                 Response::Ok => {
-                                    self.after_paste(t, move |d, pasted| {
-                                        d.feed.board(
-                                            "automation",
-                                            if pasted {
-                                                "merge_train_notified"
-                                            } else {
-                                                "merge_train_refused:deliver_failed"
-                                            },
-                                            Some(t),
-                                        );
-                                    });
+                                    self.feed_after_paste(
+                                        t,
+                                        "automation",
+                                        "merge_train_notified",
+                                        "merge_train_refused:deliver_failed",
+                                    );
                                 }
                                 _ => self.feed.board(
                                     "automation",
@@ -16861,13 +16837,12 @@ impl Daemon {
                     started += 1;
                 }
                 _ => {
-                    self.after_paste(ticket, move |d, pasted| {
-                        d.feed.board(
-                            "local",
-                            if pasted { "prompt_column_sent" } else { "prompt_column_failed" },
-                            Some(ticket),
-                        );
-                    });
+                    self.feed_after_paste(
+                        ticket,
+                        "local",
+                        "prompt_column_sent",
+                        "prompt_column_failed",
+                    );
                     sent += 1;
                 }
             }
@@ -19123,10 +19098,7 @@ impl Daemon {
             return;
         }
         self.backfill_inflight = true;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::Backfilled(crate::cost::backfill(jobs)));
-        });
+        self.off_writer(move || Msg::Backfilled(crate::cost::backfill(jobs)));
     }
 
     /// The backfill landed (T-810): its URLs join their tickets' `pr_urls`,
@@ -19667,10 +19639,9 @@ impl Daemon {
                 self.tearing_down.remove(&ticket);
                 continue;
             };
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
+            self.off_writer(move || {
                 let reads = query.read(true);
-                let _ = tx.send(Msg::TeardownChecked(job, query, reads));
+                Msg::TeardownChecked(job, query, reads)
             });
         }
     }
@@ -19722,8 +19693,7 @@ impl Daemon {
         // teardown needs only their paths and repos).
         let legs: Vec<_> = reads.into_iter().map(|r| r.leg).collect();
         let branch = b.branch.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let started = Instant::now();
             if b.path.is_dir() {
                 let _ = backend.kill_session(&terminal_name(Some(ticket)));
@@ -19742,8 +19712,7 @@ impl Daemon {
                     None
                 }
             });
-            let _ =
-                tx.send(Msg::TornDown { ticket, archived, branch_kept, took: started.elapsed() });
+            Msg::TornDown { ticket, archived, branch_kept, took: started.elapsed() }
         });
     }
 
@@ -20587,10 +20556,7 @@ impl Daemon {
         self.forge.gen = self.forge.gen.wrapping_add(1);
         let gen = self.forge.gen;
         self.forge_asked(&query);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
-        });
+        self.off_writer(move || Msg::ForgeSampled(gen, crate::forge::sample(query, now_ms())));
     }
 
     /// A turn's end's read (T-761): the owed tickets' repositories alone,
@@ -20772,10 +20738,7 @@ impl Daemon {
         self.forge.burst_inflight = true;
         self.forge_asked(&query);
         let epoch = self.forge.epoch;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::ForgeBurst(epoch, crate::forge::sample(query, now_ms())));
-        });
+        self.off_writer(move || Msg::ForgeBurst(epoch, crate::forge::sample(query, now_ms())));
     }
 
     /// The repositories a read is about to ask, stamped for the floor.
@@ -20831,9 +20794,8 @@ impl Daemon {
         }
         if !missing.is_empty() {
             let epoch = self.forge.epoch;
-            let tx = self.tx.clone();
             self.forge.reading_remotes = true;
-            std::thread::spawn(move || {
+            self.off_writer(move || {
                 let found = missing
                     .into_iter()
                     .map(|(dir, base)| {
@@ -20841,11 +20803,28 @@ impl Daemon {
                         (dir, remote)
                     })
                     .collect();
-                let _ = tx.send(Msg::ForgeRemotes(epoch, found));
+                Msg::ForgeRemotes(epoch, found)
             });
             return false;
         }
         true
+    }
+
+    /// `forge_remotes_ready`'s read landed: remembered, and the samples
+    /// that waited on it asked, unless a later epoch superseded it.
+    fn forge_remotes_read(
+        &mut self,
+        epoch: u64,
+        found: Vec<(std::path::PathBuf, Option<crate::forge::Remotes>)>,
+    ) {
+        if epoch == self.forge.epoch {
+            self.forge.reading_remotes = false;
+            for (dir, remote) in found {
+                self.forge.remember_remote(dir, remote);
+            }
+            self.queue_worktree_flags();
+            self.queue_forge_sample();
+        }
     }
 
     /// What a forge read asks: every ticket's set, or `only` those (a
@@ -21600,10 +21579,9 @@ impl Daemon {
         let gen = self.pane_gen;
         let backend = self.backend.clone();
         let repo = self.paths.repo_root.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let sample = crate::panes::take(&backend, &repo, query, gen, now_ms());
-            let _ = tx.send(Msg::PaneSampled(Box::new(sample)));
+            Msg::PaneSampled(Box::new(sample))
         });
     }
 
@@ -21734,35 +21712,20 @@ impl Daemon {
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
         let base = self.worktree_base_cached();
-        let cached: HashMap<String, Option<String>> = self.upstreams.clone();
         let parsed: Vec<std::path::PathBuf> = self.forge.remotes.keys().cloned().collect();
         let prs = self.through_prs();
         let mut queries = self.wt_queries(false, None);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
+        let uncached = self.uncached_upstreams(&queries);
+        self.off_writer(move || {
             // The root's default branch, for the single-repo legs judged
             // against it; a workspace leg carries its own, so a folder
             // root with no branch samples its legs all the same (T-754).
-            let base = base.or_else(|| {
-                repo.join(".git").exists().then(|| worktree::default_branch(&repo).ok()).flatten()
-            });
-            for q in &mut queries {
-                if q.base.is_empty() {
-                    if let Some(b) = &base {
-                        q.base = b.clone();
-                    }
-                }
-            }
-            queries.retain(|q| !q.base.is_empty());
+            let base = base.or_else(|| root_default_branch(&repo));
+            sample_terms(&mut queries, base.as_ref(), &uncached);
             let mut remotes = HashMap::new();
             for q in &mut queries {
-                // The upstream ref leaves the writer thread with the base,
-                // and on the same terms: asked here when the cache has no
-                // answer yet.
-                if !cached.contains_key(&q.name) {
-                    q.upstream = worktree::upstream_base(&q.repo, &q.base);
-                }
-                // So is whether a forge reads its remote (T-786).
+                // Whether a forge reads its remote leaves the writer thread
+                // with the base too (T-786).
                 if prs && !parsed.contains(&q.repo) {
                     let found = remotes
                         .entry(q.repo.clone())
@@ -21771,8 +21734,22 @@ impl Daemon {
                 }
             }
             let repos = worktree::compute_repo_flags(&queries);
-            let _ = tx.send(Msg::WorktreeFlags(WorktreeSample { gen, seq, base, remotes, repos }));
+            Msg::WorktreeFlags(WorktreeSample { gen, seq, base, remotes, repos })
         });
+    }
+
+    /// The names among `queries` whose upstream ref the writer's cache has
+    /// no answer for yet: the ones a flags sample's worker asks
+    /// (`sample_terms`).
+    fn uncached_upstreams(
+        &self,
+        queries: &[worktree::RepoQuery],
+    ) -> std::collections::HashSet<String> {
+        queries
+            .iter()
+            .filter(|q| !self.upstreams.contains_key(&q.name))
+            .map(|q| q.name.clone())
+            .collect()
     }
 
     /// A superseded pass starts its replacement immediately. Its refs,
@@ -22848,11 +22825,10 @@ impl Daemon {
             self.reaping.insert(sid.clone(), stamp);
             self.responsive.reaping.insert(sid.clone(), stamp);
             let backend = self.backend.clone();
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
+            self.off_writer(move || {
                 let _ = backend.signal_session(&sid);
                 // Still present: start its normal reaper grace, release waiting wakes.
-                let _ = tx.send(Msg::Reaped(vec![(sid, stamp, false)], stamp.elapsed()));
+                Msg::Reaped(vec![(sid, stamp, false)], stamp.elapsed())
             });
         } else {
             let _ = self.backend.signal_session(&sid);
@@ -23191,12 +23167,10 @@ impl Daemon {
         let backend = self.backend.clone();
         let tmux_sock = self.paths.tmux_sock();
         let paths = self.paths.clone();
-        let tx = self.tx.clone();
         self.codex_orphan_checking = true;
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let Ok(panes) = backend.panes() else {
-                let _ = tx.send(Msg::CodexOrphansChecked(Vec::new()));
-                return;
+                return Msg::CodexOrphansChecked(Vec::new());
             };
             let tmux_answered_nothing = panes.is_none();
             let live: std::collections::HashSet<_> = panes
@@ -23225,7 +23199,7 @@ impl Daemon {
                     (rec.id, rec.codex_generation, verdict)
                 })
                 .collect();
-            let _ = tx.send(Msg::CodexOrphansChecked(results));
+            Msg::CodexOrphansChecked(results)
         });
     }
 
@@ -23428,10 +23402,9 @@ impl Daemon {
         if self.last_status_left.as_deref() != Some(&line) && !self.responsive.status_writing {
             self.responsive.status_writing = true;
             let backend = self.backend.clone();
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
+            self.off_writer(move || {
                 let ok = backend.set_status_left(&line).is_ok();
-                let _ = tx.send(Msg::StatusWritten(line, ok));
+                Msg::StatusWritten(line, ok)
             });
         }
     }
@@ -24166,6 +24139,18 @@ mod queued_person_push_tests {
             "column": column, "order": order, "created_at": "@0"
         }))
         .unwrap()
+    }
+
+    /// A `UserPromptSubmit` of `text` from `sid`, by `road`.
+    pub(super) fn prompt_frame(sid: uuid::Uuid, road: Road, text: &str) -> HookFrame {
+        HookFrame {
+            session: sid.to_string(),
+            event: "UserPromptSubmit".into(),
+            reason: None,
+            pane: None,
+            road,
+            payload: serde_json::json!({ "prompt": text }),
+        }
     }
 
     /// A daemon assembled as `run` assembles one, on a temporary state dir

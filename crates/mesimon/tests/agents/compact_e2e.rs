@@ -106,9 +106,7 @@ fn a_compaction_is_painted_and_moves_nothing() {
     let mut c = h.client("compact");
     let (ticket, sid) = seat(&h, &mut c, "squeeze");
     let session = sid.to_string();
-    let rec = |c: &mut TestClient| -> SessionRecord {
-        c.board().sessions.iter().find(|s| s.id == sid).cloned().expect("record")
-    };
+    let rec = |c: &mut TestClient| -> SessionRecord { c.record(sid) };
     let column = |c: &mut TestClient| c.board().ticket(ticket).unwrap().column.clone();
     let done = SessionState::Idle { stop_reason: StopReason::EndTurn };
 
@@ -301,7 +299,7 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
     wait_until(Duration::from_secs(5), "acked off the screen", || {
         feed_count(&h, "prompt_submitted", ticket) == 1
     });
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
+    let rec = c.record(sid);
     assert!(rec.unsent.is_none(), "{:?}", rec.unsent);
     assert!(!rec.pending_submit);
     assert_eq!(feed_count(&h, "paste_unacked", ticket), 0);
@@ -312,7 +310,7 @@ fn a_slash_command_from_the_board_is_acked_off_the_screen() {
         h.got().contains(words)
     });
     assert_eq!(feed_count(&h, "queued_ask_dropped_by_hand", ticket), 0, "{}", h.feed());
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
+    let rec = c.record(sid);
     assert!(rec.compacting, "the window is still open");
     post(&h, "manual");
 }

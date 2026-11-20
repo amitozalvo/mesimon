@@ -111,9 +111,20 @@ impl PeekCache {
     }
 
     pub(crate) fn display_changed(&self) -> bool {
-        self.displayed.borrow().iter().any(|(path, (kind, was))| {
-            match (was, self.peek_for(*kind, path)) {
-                (Some(old), Some(new)) => !Rc::ptr_eq(old, &new) && **old != *new,
+        self.displayed.borrow_mut().iter_mut().any(|(path, (kind, was))| {
+            match (was.as_mut(), self.peek_for(*kind, path)) {
+                (Some(old), Some(new)) => {
+                    if Rc::ptr_eq(old, &new) {
+                        false
+                    } else if **old == *new {
+                        // An equal re-read: keep the new `Rc` so the next
+                        // pump stops at the pointer check.
+                        *old = new;
+                        false
+                    } else {
+                        true
+                    }
+                }
                 (None, None) => false,
                 _ => true,
             }

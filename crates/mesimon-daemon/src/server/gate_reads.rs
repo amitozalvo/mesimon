@@ -72,13 +72,7 @@ impl Daemon {
         legs: &[LegRead],
         given_up: bool,
     ) -> bool {
-        legs.iter().all(|r| {
-            r.tip == r.leg.base_oid
-                || r.merged
-                || self.landed_beyond_ancestry(ticket, &r.leg, &r.tip)
-                || (given_up
-                    && self.leg_given_up(ticket, &r.leg.repo, &r.leg.base_oid, &r.tip).is_some())
-        })
+        legs.iter().all(|r| self.leg_lands(ticket, &r.leg, &r.tip, || r.merged, given_up))
     }
 
     fn view_plan(&self, view: &AgentTicketView, ticket: ulid::Ulid) -> Option<ViewPlan> {
@@ -124,19 +118,18 @@ impl Daemon {
             return;
         };
         let tails = plan.tails.then(|| self.costs.tails(ticket, &self.live_transcripts(ticket)));
-        let tx = self.tx.clone();
         self.after_session_save(wait, move |d, result| {
             if let Err(message) = result {
                 d.session_reply(reply, Response::Err { message }, None, false);
                 return;
             }
-            std::thread::spawn(move || {
+            d.off_writer(move || {
                 let facts = Facts {
                     legs: plan.query.as_ref().map(|q| q.read(plan.ancestry)).unwrap_or_default(),
                     urls: tails.as_deref().and_then(crate::cost::urls_in_tails),
                 };
                 let read = ViewRead { ticket, plan, view, caller, reply, facts };
-                let _ = tx.send(Msg::TicketGates(Box::new(read)));
+                Msg::TicketGates(Box::new(read))
             });
         });
     }
@@ -170,12 +163,7 @@ impl Daemon {
         reply: Sender<ClientReply>,
         wait: bool,
     ) {
-        let response = Response::AgentTicket { ticket: view };
-        let (response, told) = if let Some(session) = caller {
-            self.with_crown_rules(session, response)
-        } else {
-            (response, None)
-        };
+        let (response, told) = self.caller_rules(caller, Response::AgentTicket { ticket: view });
         self.session_reply(reply, response, told, wait);
     }
 }

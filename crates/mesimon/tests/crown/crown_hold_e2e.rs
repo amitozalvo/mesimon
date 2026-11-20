@@ -138,14 +138,7 @@ fn the_crown_holds_a_ticket_out_of_the_train_for_review() {
         Response::Ok
     ));
     let worker = format!("{kw} \"mesimon-probe-919 held for review\"");
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
 
     // ---- 2. delivered while held: the crown hears it now, nothing merges --
     commit(&path, "one.txt");
@@ -486,14 +479,7 @@ fn a_hold_inside_the_trains_rebase_turn_lets_the_turn_run_and_merges_nothing() {
         c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
         Response::Ok
     ));
-    let merged = || {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&h.repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .status()
-            .is_ok_and(|s| s.success())
-    };
+    let merged = || is_ancestor(&h.repo, &branch, "main");
 
     // The base moves first, so the delivery is behind it and the train asks.
     commit(&h.repo, "base1.txt");

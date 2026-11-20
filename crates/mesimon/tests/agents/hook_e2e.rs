@@ -561,7 +561,6 @@ fn a_task_notification_leaves_a_raised_hand_up() {
     let mut c = h.client("hook_notified");
     let t = c.create_ticket("mesimon-probe-1287 raises its hand");
     let s = c.spawn_claude(t);
-    let notification = r#"{"prompt":"<task-notification>\n<task-id>b9v95z8qk</task-id>\n<status>completed</status>\n</task-notification>"}"#;
     let hand_up = |c: &mut TestClient| c.board().ticket(t).unwrap().hand_raised();
 
     h.prompt_turn(&mut c, s);
@@ -574,12 +573,12 @@ fn a_task_notification_leaves_a_raised_hand_up() {
     }
     assert!(hand_up(&mut c));
     // Its own background command ends inside the turn.
-    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", notification);
+    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", TASK_NOTIFICATION);
     std::thread::sleep(Duration::from_millis(500));
     assert!(hand_up(&mut c), "a notification inside the turn answers no hand");
     // The turn ends; another ends while the seat rests and wakes it.
     h.end_turn(&mut c, s);
-    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", notification);
+    hook_send(&hook_sock, &s.to_string(), "UserPromptSubmit", TASK_NOTIFICATION);
     c.await_state(s, "woken by its own task", |st| *st == SessionState::Running);
     assert!(hand_up(&mut c), "a turn the agent's own work began answers no hand");
     h.end_turn(&mut c, s);

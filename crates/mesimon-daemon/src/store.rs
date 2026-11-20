@@ -1268,6 +1268,7 @@ pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
     save_sessions_if_changed(paths, board, &mut String::new())
 }

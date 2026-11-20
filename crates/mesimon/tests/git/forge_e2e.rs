@@ -1742,7 +1742,7 @@ fn a_board_that_merges_into_main_never_calls_the_forge() {
     git(&path, &["update-ref", &format!("refs/remotes/origin/{branch}"), &tip]);
     hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
     wait_until(Duration::from_secs(30), "the train to merge on the turn's end", || {
-        git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"])
+        is_ancestor(&repo, &branch, "main")
     });
     wait_until(Duration::from_secs(10), "the train's merge in the feed", || {
         feed_count(&h, "merge_train_merged", id) >= 1
@@ -1761,16 +1761,6 @@ fn a_board_that_merges_into_main_never_calls_the_forge() {
     wait_until(Duration::from_secs(20), "the first forge pass", || calls().contains("pr list"));
     let _ = c.request(Command::Shutdown);
     let _ = std::fs::remove_dir_all(&stub_dir);
-}
-
-fn git_ok(repo: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// One ask per conflict (T-770), the lab's D1 on a stub: the local base
@@ -1849,7 +1839,7 @@ fn a_pr_conflict_is_asked_about_once_and_again_only_when_it_returns() {
     turn(&mut c, sid);
     passes();
     assert_eq!(asks(), 0, "a clean PR is the forge's merge, and nothing to ask");
-    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch, "main"]), "never merged here");
+    assert!(!is_ancestor(&repo, &branch, "main"), "never merged here");
 
     // The forge reports a conflict: one ask, naming the PR.
     write(&prs_file, &pr("CONFLICTING"));
@@ -1959,31 +1949,13 @@ fn a_deployed_arrival_waits_for_every_repositorys_pr() {
     }
     let mut c = h.client("forge_two");
     through_prs(&mut c);
-    let id = c.create_ticket("two repos");
-    assert!(matches!(
-        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-        Response::Ok
-    ));
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: id,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-            plan: false
-        }),
-        Response::Provisioning
-    ));
-    let wt = wait_attached(&mut c, id);
-    let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(names, ["api", "web"]);
     // The stub never starts its turn, so it reads working, and a working
     // agent holds a deployed arrival (T-1275): the ticket's agent is done.
-    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-        c.board().sessions.iter().any(|s| s.ticket == id)
-    });
-    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
+    let (id, sid, _, container) = cut(&mut c, "two repos");
+    let wt = wt_of(&mut c, id).expect("the ticket's worktree");
+    let names: Vec<&str> = wt.repos.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["api", "web"]);
     quiet(&mut c, id, sid);
-    let container = PathBuf::from(wt.path.clone().expect("a path"));
     let tip = |name: &str| git(&container.join(name), &["rev-parse", "HEAD"]).trim().to_string();
     let (api_tip, web_tip) = (tip("api"), tip("web"));
 

@@ -12,6 +12,7 @@ use crate::common;
 use common::*;
 
 use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Confidence, SessionKind, SessionState, StopReason, UnknownReason};
@@ -19,6 +20,53 @@ use mesimon_core::command::{Command, Response};
 
 /// Both tests set the same process-global env vars — serialize them.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The stand-in Claude every test here runs. Paints forever: the pane reads
+/// alive across the restart.
+const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
+
+/// `ticket`'s column on a fresh snapshot.
+fn column(c: &mut TestClient, ticket: ulid::Ulid) -> String {
+    c.board().ticket(ticket).unwrap().column.clone()
+}
+
+/// A ticket and session named `name`, the session started on `transcript`
+/// and running, its card moved to IN PROGRESS by `on_working`; the client is
+/// the one that drove it.
+fn running_in_progress(
+    h: &Harness,
+    name: &str,
+    transcript: &Path,
+) -> (TestClient, ulid::Ulid, uuid::Uuid) {
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client(name);
+    let ticket = c.create_ticket(name);
+    let sid = c.spawn_claude(ticket);
+    hook_send(
+        &hook_sock,
+        &sid.to_string(),
+        "SessionStart",
+        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+    );
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    wait_until(Duration::from_secs(5), "on_working to IN PROGRESS", || {
+        column(&mut c, ticket) == "IN PROGRESS"
+    });
+    (c, ticket, sid)
+}
+
+/// The feed's automove rows that moved `ticket` to REVIEW.
+fn moves_to_review(feed: &str, ticket: ulid::Ulid) -> usize {
+    feed.lines()
+        .filter(|l| {
+            l.contains("\"kind\":\"movement_decision\"")
+                && l.contains(&ticket.to_string())
+                && l.contains("\"destination\":\"REVIEW\"")
+                && l.contains("\"outcome\":\"moved\"")
+        })
+        .count()
+}
 
 #[test]
 fn restart_recovers_state_from_the_transcript() {
@@ -39,11 +87,7 @@ fn restart_recovers_state_from_the_transcript() {
     // Paints forever: the pane must read alive across the restart, and the
     // recovered Running must not trip the quiet probe during the assertions.
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(
-        &stub,
-        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n",
-    )
-    .unwrap();
+    std::fs::write(&stub, STUB).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let transcript = dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();
@@ -170,11 +214,7 @@ fn restart_recovers_done_from_a_resting_transcript() {
     let hook_sock = paths.hook_sock();
 
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(
-        &stub,
-        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n",
-    )
-    .unwrap();
+    std::fs::write(&stub, STUB).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     // The finished turn, at rest on disk before the restart.
     let transcript = dir.join("transcript.jsonl");
@@ -327,8 +367,6 @@ fn iso(ms: u64) -> String {
 #[test]
 fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Paints forever: the pane reads alive across the restart.
-    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
     let Some(h) =
         Harness::boot_with_env("restart-done", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
     else {
@@ -337,42 +375,11 @@ fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
     let now = mesimon_core::clock::now_ms;
     let stamp = now();
     assert_eq!(mesimon_core::adopt::iso_ms(&iso(stamp)), Some(stamp), "the stamp reads back");
-    let hook_sock = h.paths.hook_sock();
     let transcript = h.dir.join("transcript.jsonl");
     let prompt = serde_json::json!({"uuid":"p", "type":"user", "timestamp": iso(now()),
         "message":{"role":"user","content":"rebase"}});
     std::fs::write(&transcript, format!("{prompt}\n")).unwrap();
-    let mut c = h.client("restart-done");
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "restart-done".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
-    hook_send(
-        &hook_sock,
-        &sid.to_string(),
-        "SessionStart",
-        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
-    );
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    let column = |c: &mut TestClient| c.board().ticket(ticket).unwrap().column.clone();
-    wait_until(Duration::from_secs(5), "on_working to IN PROGRESS", || {
-        column(&mut c) == "IN PROGRESS"
-    });
+    let (c, ticket, sid) = running_in_progress(&h, "restart-done", &transcript);
     drop(c);
 
     // The turn ends inside the window: its close lands on disk, stamped
@@ -388,26 +395,18 @@ fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
     });
     let mut c = h.client("restart-done-2");
     wait_until(Duration::from_secs(10), "on_done to REVIEW after the restart", || {
-        column(&mut c) == "REVIEW"
+        column(&mut c, ticket) == "REVIEW"
     });
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    let rec = c.record(sid);
     assert_eq!(rec.state, SessionState::Idle { stop_reason: StopReason::EndTurn });
     assert_eq!(rec.confidence, Confidence::Medium, "the closed turn is the turn, not a hint");
 
     // Several tail polls on: one move, and the card stays where it went.
     std::thread::sleep(Duration::from_secs(3));
-    let feed = std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
-    let moves = feed
-        .lines()
-        .filter(|l| {
-            l.contains("\"kind\":\"movement_decision\"")
-                && l.contains(&ticket.to_string())
-                && l.contains("\"destination\":\"REVIEW\"")
-                && l.contains("\"outcome\":\"moved\"")
-        })
-        .count();
+    let feed = h.feed();
+    let moves = moves_to_review(&feed, ticket);
     assert_eq!(moves, 1, "once and never twice:\n{feed}");
-    assert_eq!(column(&mut c), "REVIEW");
+    assert_eq!(column(&mut c, ticket), "REVIEW");
     let _ = c.request(Command::KillSession { id: sid });
 }
 
@@ -419,7 +418,6 @@ fn a_turn_that_ends_while_the_daemon_is_down_still_moves_its_ticket() {
 #[test]
 fn a_park_on_a_background_command_keeps_its_column_across_a_restart() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
     const PARK_STALE: u64 = 4_000;
     let Some(h) = Harness::boot_with_env(
         "restart-park",
@@ -428,39 +426,11 @@ fn a_park_on_a_background_command_keeps_its_column_across_a_restart() {
     ) else {
         return;
     };
-    let hook_sock = h.paths.hook_sock();
     let transcript = h.dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();
-    let mut c = h.client("restart-park");
-    let ticket = match c.request(Command::CreateTicket {
-        column: "TODO".into(),
-        title: "restart-park".into(),
-        workspace: None,
-        tier: None,
-    }) {
-        Response::Created { id, .. } => id,
-        other => panic!("create: {other:?}"),
-    };
-    let sid = match c.request(Command::SpawnSession {
-        ticket,
-        kind: SessionKind::Claude,
-        submit_prompt: false,
-        plan: false,
-    }) {
-        Response::Spawned { id, .. } => id,
-        other => panic!("spawn failed: {other:?}"),
-    };
+    let (mut c, ticket, sid) = running_in_progress(&h, "restart-park", &transcript);
+    let hook_sock = h.paths.hook_sock();
     let send = |event: &str, body: &str| hook_send(&hook_sock, &sid.to_string(), event, body);
-    send(
-        "SessionStart",
-        &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
-    );
-    send("UserPromptSubmit", r#"{"session_id":"x"}"#);
-    c.await_state(sid, "running", |s| *s == SessionState::Running);
-    let column = |c: &mut TestClient| c.board().ticket(ticket).unwrap().column.clone();
-    wait_until(Duration::from_secs(5), "on_working to IN PROGRESS", || {
-        column(&mut c) == "IN PROGRESS"
-    });
     send(
         "PostToolUse",
         r#"{"tool_name":"Bash","tool_response":{"stdout":"","stderr":"","backgroundTaskId":"gate"}}"#,
@@ -471,34 +441,29 @@ fn a_park_on_a_background_command_keeps_its_column_across_a_restart() {
     );
     let parked = SessionState::Idle { stop_reason: StopReason::Background };
     c.await_state(sid, "parked on its command", |s| *s == parked);
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    let rec = c.record(sid);
     assert_eq!(rec.park_fallback, Some(StopReason::Monitoring), "the Stop's word is on the record");
     drop(c);
 
     h.restart_after(|| {});
     let restarted = mesimon_core::clock::now_ms();
     let mut c = h.client("restart-park-2");
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    let rec = c.record(sid);
     assert_eq!(rec.state, parked, "the park survives the restart");
 
     let monitoring = SessionState::Idle { stop_reason: StopReason::Monitoring };
     c.await_state(sid, "the park clock's demote", |s| *s == monitoring);
-    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("the record");
+    let rec = c.record(sid);
     assert!(
         rec.state_changed_at.is_some_and(|at| at >= restarted + PARK_STALE - 500),
         "the demote came on the clock: {rec:?}"
     );
     // Past the clock again: nothing decided by time, the card stays.
     std::thread::sleep(Duration::from_millis(PARK_STALE + 1_000));
-    assert_eq!(c.board().sessions.iter().find(|s| s.id == sid).unwrap().state, monitoring);
-    assert_eq!(column(&mut c), "IN PROGRESS", "no on_done from the demote");
-    let feed = std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
-    assert!(
-        !feed.lines().any(|l| l.contains("\"kind\":\"movement_decision\"")
-            && l.contains("\"destination\":\"REVIEW\"")
-            && l.contains("\"outcome\":\"moved\"")),
-        "no move to REVIEW:\n{feed}"
-    );
+    assert_eq!(c.record(sid).state, monitoring);
+    assert_eq!(column(&mut c, ticket), "IN PROGRESS", "no on_done from the demote");
+    let feed = h.feed();
+    assert_eq!(moves_to_review(&feed, ticket), 0, "no move to REVIEW:\n{feed}");
     let _ = c.request(Command::KillSession { id: sid });
 }
 
@@ -522,11 +487,7 @@ fn restart_recovers_working_from_a_board_tool_call() {
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(
-        &stub,
-        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n",
-    )
-    .unwrap();
+    std::fs::write(&stub, STUB).unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let transcript = dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();

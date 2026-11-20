@@ -2023,22 +2023,11 @@ fn only_moved(repo: &Path, branch: &str, cut: &str) -> bool {
         if oid == cut {
             return true;
         }
-        if !moves_only(step) {
+        if !mesimon_core::forge::moves_only(step) {
             return false;
         }
     }
     false
-}
-
-/// One reflog step that moves the branch without making a commit.
-fn moves_only(step: &str) -> bool {
-    let ff = |s: &str| s.ends_with(": Fast-forward");
-    step.starts_with("reset: moving to ")
-        || step.starts_with("branch: Reset to ")
-        || step.starts_with("branch: Created from ")
-        || step.starts_with("rebase")
-        || (step.starts_with("pull") && (ff(step) || step.contains("(finish)")))
-        || (step.starts_with("merge ") && ff(step))
 }
 
 /// The ref `ahead` and `needs_rebase` are counted against where it is not
@@ -3687,27 +3676,7 @@ mod tests {
                 seen: None,
                 since: String::new(),
             }];
-            let got = compute_flags(&r.dir, "main", None, false, &inputs);
-            let f = &got.flags[0];
-            RepoFlags {
-                name: String::new(),
-                base: "main".into(),
-                base_tip: got.base_tip.clone(),
-                counted: String::new(),
-                base_oid: base_oid.into(),
-                tip: f.tip.clone(),
-                ahead: f.ahead,
-                merged: f.merged,
-                needs_rebase: f.needs_rebase,
-                conflict: false,
-                merged_in: f.merged_in.clone(),
-                merged_oid: f.merged_oid.clone(),
-                content: f.seen.clone(),
-                unchecked: f.unchecked,
-                trouble: None,
-                ff: f.ff,
-                moved_only: f.moved_only,
-            }
+            root_flags(compute_flags(&r.dir, "main", None, false, &inputs), base_oid, branch)
         };
         // Another ticket lands; both branches are sampled behind it.
         r.commit("other.txt", "other\n", "another ticket");
@@ -3761,25 +3730,27 @@ mod tests {
             seen: None,
             since,
         }];
-        let got = compute_flags(&r.dir, "main", Some("origin/main"), forge, &inputs);
-        let f = &got.flags[0];
-        RepoFlags {
+        root_flags(
+            compute_flags(&r.dir, "main", Some("origin/main"), forge, &inputs),
+            base_oid,
+            branch,
+        )
+    }
+
+    /// `RepoFlags::of` for the root leg of a one-input `compute_flags`
+    /// answer against `main`, cut at `base_oid`.
+    fn root_flags(got: WtFlags, base_oid: &str, branch: &str) -> RepoFlags {
+        let leg = Leg {
+            name: String::new(),
+            repo: PathBuf::new(),
+            path: PathBuf::new(),
             base: "main".into(),
-            base_tip: got.base_tip.clone(),
-            counted: got.counted.clone(),
             base_oid: base_oid.into(),
-            tip: f.tip.clone(),
-            ahead: f.ahead,
-            merged: f.merged,
-            needs_rebase: f.needs_rebase,
-            merged_in: f.merged_in.clone(),
-            merged_oid: f.merged_oid.clone(),
-            content: f.seen.clone(),
-            unchecked: f.unchecked,
-            ff: f.ff,
-            moved_only: f.moved_only,
-            ..Default::default()
-        }
+            branch_oid: String::new(),
+        };
+        let sample =
+            RepoSample { name: String::new(), base: "main".into(), upstream: None, flags: got };
+        RepoFlags::of(&leg, &sample, &sample.flags.flags[0], branch)
     }
 
     /// The simbly board's case (T-1311): on a forge board whose local `main`
@@ -3873,10 +3844,6 @@ mod tests {
             assert!(!RepoFlags::came_to_base(&before, &after), "{branch}: a landing");
             up_at(&up0);
         }
-        // A step the board does not know is work too.
-        assert!(!moves_only("commit: x") && !moves_only("cherry-pick: x") && !moves_only(""));
-        assert!(!moves_only("merge origin/main: Merge made by the 'ort' strategy."));
-        assert!(moves_only("merge origin/main: Fast-forward") && moves_only("pull: Fast-forward"));
     }
 
     /// The simbly crown's case (T-1321): a worker reset its branch onto
@@ -5084,9 +5051,9 @@ mod tests {
         let Some(root) = workspace_scratch("wsflags") else { return };
         let b = ws_provision(&root, true, &mut |_, _| {}).unwrap();
         testrepo::commit(&b.path.join("api"), "new.ts", "x\n", "work");
-        let queries: Vec<RepoQuery> = b
-            .legs(&root, "")
-            .into_iter()
+        let bound = b.legs(&root, "");
+        let queries: Vec<RepoQuery> = bound
+            .iter()
             .map(|leg| RepoQuery {
                 name: leg.name.clone(),
                 repo: leg.repo.clone(),
@@ -5106,28 +5073,8 @@ mod tests {
         assert_eq!(samples.len(), 3);
         let legs: Vec<RepoFlags> = samples
             .iter()
-            .zip(&queries)
-            .map(|(s, q)| {
-                let f = &s.flags.flags[0];
-                RepoFlags {
-                    name: s.name.clone(),
-                    base: s.base.clone(),
-                    base_tip: s.flags.base_tip.clone(),
-                    counted: String::new(),
-                    base_oid: q.inputs[0].base_oid.clone(),
-                    tip: f.tip.clone(),
-                    ahead: f.ahead,
-                    merged: f.merged,
-                    needs_rebase: f.needs_rebase,
-                    conflict: false,
-                    merged_in: f.merged_in.clone(),
-                    merged_oid: f.merged_oid.clone(),
-                    content: f.seen.clone(),
-                    unchecked: f.unchecked,
-                    trouble: None,
-                    ..Default::default()
-                }
-            })
+            .zip(&bound)
+            .map(|(s, leg)| RepoFlags::of(leg, s, &s.flags.flags[0], &b.branch))
             .collect();
         assert_eq!(legs[1].name, "api");
         assert_eq!(legs[1].ahead, 1);

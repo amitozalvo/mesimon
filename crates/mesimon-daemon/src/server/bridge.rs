@@ -375,13 +375,12 @@ impl Daemon {
         let account = self.launch(&[bin, "auth".into(), "status".into(), "--json".into()], &[]);
         let managed = modroad::managed_settings_present();
         let cwd = self.paths.state_dir.clone();
-        let tx = self.tx.clone();
         self.modroad.probing = true;
         self.modroad.recheck = false;
-        std::thread::spawn(move || {
+        self.off_writer(move || {
             let verdict =
                 modroad::probe(&version, &validate, &load, &account, managed, &cwd, now_ms());
-            let _ = tx.send(Msg::RoadProbed(Probe { key, verdict }));
+            Msg::RoadProbed(Probe { key, verdict })
         });
     }
 

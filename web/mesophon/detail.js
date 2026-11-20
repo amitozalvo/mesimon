@@ -193,8 +193,7 @@ function Output({ store, ticket, entry, live }) {
     ${!chat && attention}
     <div class="output-body">
       ${chat
-        ? html`<${Chat} store=${store} entry=${entry} doing=${ticket?.agent?.doing} hand=${ticket?.agent?.hand}
-            provider=${ticket?.agent?.provider} tail=${attention} />`
+        ? html`<${Chat} store=${store} entry=${entry} agent=${ticket?.agent} tail=${attention} />`
         : html`<pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
         onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>`}
       <button id="latest" type="button" class="latest" hidden=${!entry || following}

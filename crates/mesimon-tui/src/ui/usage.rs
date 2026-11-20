@@ -105,6 +105,18 @@ const WDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MON: [&str; 12] =
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/// The board's estimated spend over its three windows, as both the usage
+/// readout and its dialog spell it.
+fn windows_word(total: &mesimon_core::cost::BoardCost) -> String {
+    use mesimon_core::cost::usd_word;
+    format!(
+        "24 hours {} ∙ 7 days {} ∙ 30 days {}",
+        usd_word(total.day),
+        usd_word(total.week),
+        usd_word(total.month)
+    )
+}
+
 /// When a window starts over, in the board's clock: `20:50` today, `Sat
 /// 11:00` within the week, `Oct 3` past it.
 pub(crate) fn reset_word(app: &App, at_ms: u64) -> String {
@@ -115,7 +127,6 @@ pub(crate) fn reset_word(app: &App, at_ms: u64) -> String {
     // A future reset changes from a date to a weekday, then to a clock
     // at local midnight (including a DST transition).
     if let Some(midnight) = crate::localtime::to_epoch(&mesimon_core::snooze::LocalTime {
-        mday: t.mday,
         hour: 0,
         min: 0,
         sec: 0,
@@ -330,19 +341,10 @@ pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
         }
         lines.push(fit_line(spans, width));
     }
-    use mesimon_core::cost::usd_word;
     let board = if let Some(total) = app.cost_windows() {
         vec![
             head("this board"),
-            Span::styled(
-                format!(
-                    "24 hours {} ∙ 7 days {} ∙ 30 days {}",
-                    usd_word(total.day),
-                    usd_word(total.week),
-                    usd_word(total.month)
-                ),
-                theme.dim2(),
-            ),
+            Span::styled(windows_word(&total), theme.dim2()),
             Span::styled("   an estimate", theme.dim3()),
         ]
     } else {
@@ -498,15 +500,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let rows = app.costly_tickets();
     if let Some(total) = app.cost_windows() {
         use mesimon_core::cost::{tokens_word, usd_word};
-        lines.push(Line::from(Span::styled(
-            format!(
-                "     24 hours {} ∙ 7 days {} ∙ 30 days {}",
-                usd_word(total.day),
-                usd_word(total.week),
-                usd_word(total.month)
-            ),
-            theme.dim2(),
-        )));
+        lines
+            .push(Line::from(Span::styled(format!("     {}", windows_word(&total)), theme.dim2())));
         // As many rows as the screen has room for, the cursor's in view.
         let room = (f.area().height as usize).saturating_sub(lines.len() + 6).max(1);
         let idx = idx.min(rows.len().saturating_sub(1));

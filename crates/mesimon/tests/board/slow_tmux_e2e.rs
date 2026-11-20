@@ -15,7 +15,6 @@
 use crate::common;
 use common::*;
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState};
@@ -119,27 +118,17 @@ fn the_live_preview_renders_and_enter_attaches_from_page_and_board() {
 #[test]
 fn terminal_open_and_reaping_leave_the_writer_free() {
     use mesimon_tui::client::{Client, Transport};
-    use std::os::unix::fs::PermissionsExt;
-
-    let scratch =
-        Scratch(std::env::temp_dir().join(format!("msmn-lifecycle-{}", uuid::Uuid::new_v4())));
-    std::fs::create_dir_all(&scratch.0).unwrap();
-    let marker = scratch.0.join("command");
-    let reached = scratch.0.join("reached");
-    let wrapper = scratch.0.join("tmux.sh");
-    std::fs::write(&wrapper, format!(
-        "#!/bin/sh\nif [ -f '{marker}' ]; then\nwant=$(cat '{marker}')\nfor arg do\nif [ \"$arg\" = \"$want\" ]; then\n: > '{reached}'\nn=0\nwhile [ -f '{marker}' ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done\nbreak\nfi\ndone\nfi\nexec '{tmux}' \"$@\"\n",
-        marker = marker.display(), reached = reached.display(), tmux = mesimon_backend_tmux::tmux_bin().display()
-    )).unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     const STUB: &str = "#!/bin/sh\ntrap '' TERM\nexec sleep 300\n";
-    let Some(h) = Harness::boot_with_env(
-        "slow-lifecycle",
-        Some(STUB),
-        &[("MESIMON_TMUX_BIN", wrapper.to_str().unwrap())],
-    ) else {
+    let Some(h) = Harness::boot_staged("slow-lifecycle", Some(&claude_stub(STUB)), &[], |f, _| {
+        let (marker, reached) = (f.dir.join("command"), f.dir.join("reached"));
+        stage_tmux(f, &format!(
+            "#!/bin/sh\nif [ -f '{marker}' ]; then\nwant=$(cat '{marker}')\nfor arg do\nif [ \"$arg\" = \"$want\" ]; then\n: > '{reached}'\nn=0\nwhile [ -f '{marker}' ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done\nbreak\nfi\ndone\nfi\nexec '{tmux}' \"$@\"\n",
+            marker = marker.display(), reached = reached.display(), tmux = mesimon_backend_tmux::tmux_bin().display()
+        ));
+    }) else {
         return;
     };
+    let (marker, reached) = (h.dir.join("command"), h.dir.join("reached"));
     let mut observer = h.client("responsive-observer");
     let ticket = observer.create_ticket("reap then resume");
     let session = observer.spawn_claude(ticket);
@@ -147,19 +136,21 @@ fn terminal_open_and_reaping_leave_the_writer_free() {
     let mut client = Client::connect_observer(&h.repo).unwrap();
 
     let responsive = |observer: &mut TestClient| {
-        observer.read.get_ref().set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         for _ in 0..3 {
             let began = Instant::now();
             assert!(
                 matches!(
-                    observer.try_send(Principal::Local, Command::Snapshot),
+                    observer.try_send_within(
+                        Principal::Local,
+                        Command::Snapshot,
+                        Duration::from_secs(1)
+                    ),
                     Some(Response::Board { .. })
                 ),
                 "snapshot blocked behind a lifecycle command"
             );
             assert!(began.elapsed() < Duration::from_secs(1));
         }
-        observer.read.get_ref().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     };
 
     std::fs::write(&marker, "new-session").unwrap();
@@ -203,15 +194,10 @@ fn terminal_open_and_reaping_leave_the_writer_free() {
 
     // A client that disappears while its terminal opens must not receive a
     // late focus grant. The shell may finish opening and is reusable.
-    use std::io::Write;
     std::fs::remove_file(&reached).unwrap();
     std::fs::write(&marker, "new-session").unwrap();
     let mut abandoned = h.client("abandoned-open");
-    let env = mesimon_core::command::Envelope {
-        principal: Principal::Local,
-        command: Command::OpenTerminal { ticket: Some(ticket) },
-    };
-    writeln!(abandoned.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
+    abandoned.post(Principal::Local, Command::OpenTerminal { ticket: Some(ticket) });
     wait_until(Duration::from_secs(10), "abandoned terminal spawn", || reached.exists());
     abandoned.write.shutdown(std::net::Shutdown::Both).unwrap();
     drop(abandoned);
@@ -233,48 +219,22 @@ fn terminal_open_and_reaping_leave_the_writer_free() {
 const MOVED: [&str; 5] =
     ["refresh_panes", "refresh_rss", "probe_spawning", "probe_activity", "reclaim_archived"];
 
-/// A directory of this test's own for the wrapper and its marker, since the
-/// fixture's directory exists only once the daemon's environment is fixed.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 #[test]
 fn a_slow_tmux_never_holds_the_board() {
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "msmn-slow-tmux-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-    )));
-    std::fs::create_dir_all(&scratch.0).unwrap();
-    let marker = scratch.0.join("slow");
-    let wrapper = scratch.0.join("slow-tmux.sh");
+    const STUB: &str = "#!/bin/sh\nexec sleep 300\n";
     // The real tmux, 2 s late while the marker stands: the boot and the
     // spawn run at full speed, the measurement under the slow one.
-    std::fs::write(
-        &wrapper,
-        format!(
+    let Some(h) = Harness::boot_staged("slow_tmux", Some(&claude_stub(STUB)), &[], |f, _| {
+        let script = format!(
             "#!/bin/sh\n[ -e '{}' ] && sleep 2\nexec '{}' \"$@\"\n",
-            marker.display(),
+            f.dir.join("slow").display(),
             mesimon_backend_tmux::tmux_bin().display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .unwrap();
-
-    const STUB: &str = "#!/bin/sh\nexec sleep 300\n";
-    let Some(h) = Harness::boot_with_env(
-        "slow_tmux",
-        Some(STUB),
-        &[("MESIMON_TMUX_BIN", wrapper.to_str().unwrap())],
-    ) else {
+        );
+        stage_tmux(f, &script);
+    }) else {
         return;
     };
+    let marker = h.dir.join("slow");
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("slow_tmux");

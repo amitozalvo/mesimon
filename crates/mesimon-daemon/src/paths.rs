@@ -253,6 +253,31 @@ pub fn own_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A file's identity and version, held in memory to tell a file read
+/// before from one replaced or grown since: a rename-in or a replacement of
+/// the same size moves the device or inode. Never persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    dev: u64,
+    ino: u64,
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+impl FileStamp {
+    /// `None` when `path` cannot be read.
+    pub fn of(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        })
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

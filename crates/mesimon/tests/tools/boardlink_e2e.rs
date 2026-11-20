@@ -101,8 +101,7 @@ fn a_waiting_peer_leaves_snapshots_and_incoming_crown_asks_responsive() {
     let pending =
         std::thread::spawn(move || ask_board(&mut asker, session, &destination, "first ask"));
     arrived.recv_timeout(Duration::from_secs(5)).unwrap();
-    c.read.get_ref().set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-    let snapshot = c.try_send(Principal::Local, Command::Snapshot);
+    let snapshot = c.try_send_within(Principal::Local, Command::Snapshot, Duration::from_secs(1));
     // Release even on failure, so the regression cannot strand its worker.
     if snapshot.is_none() {
         release.send(Response::Err { message: "test peer released".into() }).unwrap();
@@ -111,13 +110,14 @@ fn a_waiting_peer_leaves_snapshots_and_incoming_crown_asks_responsive() {
         panic!("snapshot waited behind the outgoing peer");
     }
     assert!(matches!(snapshot, Some(Response::Board { .. })));
-    let incoming = c.try_send(
+    let incoming = c.try_send_within(
         Principal::Peer { board: root },
         Command::PeerAsk {
             crown_key: "T-1".into(),
             crown_title: "other crown".into(),
             text: "crossing ask".into(),
         },
+        Duration::from_secs(1),
     );
     let response =
         incoming.clone().unwrap_or(Response::Err { message: "test peer released".into() });

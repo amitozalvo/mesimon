@@ -96,13 +96,8 @@ impl Effort {
         *self == Self::Default
     }
 
-    /// The next (or previous) level on `provider`'s ring, wrapping. A level
-    /// the ring lacks steps to the ring's first.
-    pub fn step(self, provider: AgentProvider, forward: bool) -> Effort {
-        self.step_in(Self::ring(provider), forward)
-    }
-
-    /// [`Self::step`] over `ring`, one [`Self::ring_for`] gave.
+    /// The next (or previous) level on `ring`, one [`Self::ring_for`] gave,
+    /// wrapping. A level the ring lacks steps to the ring's first.
     pub fn step_in(self, ring: &[Effort], forward: bool) -> Effort {
         let Some(i) = ring.iter().position(|e| *e == self) else {
             return ring[0];
@@ -878,7 +873,7 @@ pub fn model_ring(list: Option<&[ModelChoice]>, saved: &str) -> Vec<ModelStop> {
 }
 
 /// The word after (or before) `current` on its ring, wrapping, as
-/// [`Effort::step`] steps a level.
+/// [`Effort::step_in`] steps a level.
 pub fn step_model(ring: &[ModelStop], current: &str, forward: bool) -> String {
     let n = ring.len();
     match ring.iter().position(|s| s.model == current) {
@@ -1215,10 +1210,14 @@ mod tests {
 
     #[test]
     fn effort_steps_wrap_over_the_providers_ring() {
-        assert_eq!(Effort::Max.step(claude_code(), true), Effort::Default);
-        assert_eq!(Effort::Default.step(claude_code(), false), Effort::Max);
-        assert_eq!(Effort::Ultra.step(claude_code(), true), Effort::Default, "off-ring → first");
-        assert_eq!(Effort::Xhigh.step(AgentProvider::Codex, true), Effort::Max);
+        assert_eq!(Effort::Max.step_in(Effort::ring(claude_code()), true), Effort::Default);
+        assert_eq!(Effort::Default.step_in(Effort::ring(claude_code()), false), Effort::Max);
+        assert_eq!(
+            Effort::Ultra.step_in(Effort::ring(claude_code()), true),
+            Effort::Default,
+            "off-ring → first"
+        );
+        assert_eq!(Effort::Xhigh.step_in(Effort::ring(AgentProvider::Codex), true), Effort::Max);
     }
 
     #[test]

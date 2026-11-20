@@ -1138,7 +1138,7 @@ impl Daemon {
         let by = Principal::Paired { device: device.to_hex(), grant: grant.to_hex() };
         // The board answer comes measured (T-688); every other is measured
         // once on its way out.
-        let before = self.session_saves.requested;
+        let before = self.session_saves.revision();
         let status = matches!(command.request, api::Request::Status { .. });
         let read = matches!(
             command.request,
@@ -1303,7 +1303,7 @@ impl Daemon {
             command.id,
             reply,
             measured,
-            status || self.session_saves.requested != before,
+            status || self.session_saves.revision() != before,
         );
     }
 
@@ -5291,11 +5291,10 @@ fn agent_exit(s: &SessionRecord) -> Option<api::AgentExit> {
 /// hand is not this conversation's.
 fn phone_hand(t: &Ticket, s: &SessionRecord) -> Option<api::Hand> {
     let raised = t.raised.as_ref()?;
-    if raised.by.strip_prefix("agent:").is_some_and(|by| by != s.id.to_string()) {
-        return None;
-    }
-    let secs = mesimon_core::board::stamp_secs(&raised.at)?;
-    Some(api::Hand { ms: secs * 1000, reason: mesimon_core::text::scrub_text(&raised.reason) })
+    Some(api::Hand {
+        ms: raised.ms_for(s.id)?,
+        reason: mesimon_core::text::scrub_text(&raised.reason),
+    })
 }
 
 /// A permission as a phone draws it (T-1218): every string in the tool's

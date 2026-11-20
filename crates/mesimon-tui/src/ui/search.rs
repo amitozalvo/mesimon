@@ -401,7 +401,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         // Open, always: the agent's last reply is the most useful thing a
         // preview can hold, and here there is room for it.
         true,
-        peek_of(app, &sessions).as_deref(),
+        super::board::card_peek(app, &sessions).as_deref(),
         &painted_tags,
         false,
         false,
@@ -494,22 +494,6 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
     }
     lines.truncate(inner.height as usize);
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-/// The card's reply, through the draw cache — `board::draw_column`'s rule:
-/// the highest-ranked session that has a transcript, and a stale activity
-/// row dropped on anything that is not running.
-fn peek_of(app: &App, sessions: &[&SessionRecord]) -> Option<std::rc::Rc<crate::peek::Peek>> {
-    let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
-    ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
-    ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
-        let pk = app.peek_cache.displayed(s)?;
-        Some(if s.state == mesimon_core::board::SessionState::Running || pk.activity.is_none() {
-            pk
-        } else {
-            std::rc::Rc::new(crate::peek::Peek { activity: None, ..(*pk).clone() })
-        })
-    })
 }
 
 #[cfg(test)]

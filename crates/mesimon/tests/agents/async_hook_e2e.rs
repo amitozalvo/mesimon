@@ -119,12 +119,7 @@ impl Case {
         Some(case)
     }
     fn send(&self, event: &str) {
-        hook_send(
-            &self.h.paths.hook_sock(),
-            &self.sid.to_string(),
-            event,
-            r#"{"background_tasks":[],"stop_hook_active":false}"#,
-        );
+        self.send_with(event, r#"{"background_tasks":[],"stop_hook_active":false}"#);
     }
     fn send_with(&self, event: &str, payload: &str) {
         hook_send(&self.h.paths.hook_sock(), &self.sid.to_string(), event, payload);
@@ -142,13 +137,7 @@ impl Case {
         std::fs::write(self.dir.join(format!("release-{}", self.key)), "").unwrap();
     }
     fn merged(&self) -> bool {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.h.repo)
-            .args(["merge-base", "--is-ancestor", &self.branch, "main"])
-            .status()
-            .unwrap()
-            .success()
+        is_ancestor(&self.h.repo, &self.branch, "main")
     }
     fn wakes(&self) -> usize {
         self.feed()

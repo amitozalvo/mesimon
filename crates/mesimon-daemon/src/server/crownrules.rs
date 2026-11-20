@@ -13,23 +13,23 @@
 //! the simbly board, half the rules' deliveries in a day (six of twelve,
 //! 3,415 tokens each) followed a `U` that changed neither.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
 pub(super) struct CrownRules {
-    told: HashSet<uuid::Uuid>,
-    /// When each told session's reply went (epoch ms), for the restart's
-    /// look at its transcript.
-    told_ms: HashMap<uuid::Uuid, u64>,
+    /// Each told session, with when its reply went (epoch ms), for the
+    /// restart's look at its transcript.
+    told: HashMap<uuid::Uuid, u64>,
     /// How many resets there have been: an acknowledgement sent under an
     /// older count tells nobody.
     generation: u64,
     /// Each Codex seat's thread and compaction count as its snapshot last
     /// said them: a change is a context the rules may not be in.
     codex: HashMap<uuid::Uuid, (Option<String>, u64)>,
-    /// `told` or `told_ms` moved since the ledger last wrote them.
+    /// `told` moved since the ledger last wrote it.
     dirty: bool,
 }
 
@@ -50,27 +50,27 @@ pub(super) struct Told {
 /// the same word in every build, so a rebuild that leaves the rules as they
 /// were keeps the crowns told.
 pub(super) fn digest(text: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in text.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{h:016x}")
+    format!("{:016x}", mesimon_core::text::fnv1a(text.bytes()))
+}
+
+/// `digest(crown_view())`, once: the rules text is this build's constants.
+pub(super) fn rules_digest() -> &'static str {
+    static DIGEST: LazyLock<String> = LazyLock::new(|| digest(&mesimon_core::mcp::crown_view()));
+    &DIGEST
 }
 
 impl CrownRules {
     /// The reset count a reply to `session` would carry the rules under, or
     /// `None` when a reply carrying them already reached it since.
     pub(super) fn owed(&self, session: uuid::Uuid) -> Option<u64> {
-        (!self.told.contains(&session)).then_some(self.generation)
+        (!self.told.contains_key(&session)).then_some(self.generation)
     }
 
     /// A reply carrying the rules was written to `session`'s connection,
     /// sent under `generation`.
     pub(super) fn acked(&mut self, session: uuid::Uuid, generation: u64, now_ms: u64) {
         if generation == self.generation {
-            self.told.insert(session);
-            self.told_ms.insert(session, now_ms);
+            self.told.insert(session, now_ms);
             self.dirty = true;
         }
     }
@@ -81,26 +81,23 @@ impl CrownRules {
         self.generation = self.generation.wrapping_add(1);
         match session {
             Some(id) => {
-                self.dirty |= self.told.remove(&id);
-                self.told_ms.remove(&id);
+                self.dirty |= self.told.remove(&id).is_some();
             }
             None => {
                 self.dirty |= !self.told.is_empty();
                 self.told.clear();
-                self.told_ms.clear();
             }
         }
     }
 
-    /// What `crown.json` keeps: each told session, under `rules`' digest.
-    pub(super) fn kept(&self, rules: &str) -> BTreeMap<uuid::Uuid, Told> {
-        let digest = digest(rules);
+    /// What `crown.json` keeps: each told session, under the rules' `digest`.
+    pub(super) fn kept(&self, digest: &str) -> BTreeMap<uuid::Uuid, Told> {
         self.told
             .iter()
-            .map(|id| {
+            .map(|(id, told_ms)| {
                 let told = Told {
-                    digest: digest.clone(),
-                    told_ms: self.told_ms.get(id).copied().unwrap_or_default(),
+                    digest: digest.to_owned(),
+                    told_ms: *told_ms,
                     codex: self.codex.get(id).cloned(),
                 };
                 (*id, told)
@@ -108,17 +105,16 @@ impl CrownRules {
             .collect()
     }
 
-    /// A restart's start: each kept session whose digest is `rules`' and
+    /// A restart's start: each kept session whose digest is `digest` and
     /// that `still` finds in the context it was told in is told again
     /// without a word sent. A Codex seat's thread and count come back too,
     /// so its first snapshot is compared with them.
     pub(super) fn restore(
         &mut self,
         kept: BTreeMap<uuid::Uuid, Told>,
-        rules: &str,
+        digest: &str,
         still: impl Fn(&uuid::Uuid, &Told) -> bool,
     ) {
-        let digest = digest(rules);
         for (id, told) in kept {
             if told.digest != digest || !still(&id, &told) {
                 continue;
@@ -126,8 +122,7 @@ impl CrownRules {
             if let Some(context) = told.codex.clone() {
                 self.codex.insert(id, context);
             }
-            self.told.insert(id);
-            self.told_ms.insert(id, told.told_ms);
+            self.told.insert(id, told.told_ms);
         }
     }
 
@@ -149,7 +144,7 @@ impl CrownRules {
     ) {
         let now = (thread, compactions);
         let was = self.codex.insert(session, now.clone());
-        if was.as_ref() != Some(&now) && self.told.contains(&session) {
+        if was.as_ref() != Some(&now) && self.told.contains_key(&session) {
             self.dirty = true;
         }
         if was.is_some_and(|was| was != now) {
@@ -226,12 +221,12 @@ mod tests {
             r.acked(s, generation, 500);
         }
         assert!(r.is_dirty());
-        let kept = r.kept("rules v1");
+        let kept = r.kept(&digest("rules v1"));
         assert_eq!(kept[&a].told_ms, 500);
         assert_eq!(kept[&c].codex, Some((Some("t1".into()), 2)));
 
         let mut same = CrownRules::default();
-        same.restore(kept.clone(), "rules v1", |id, _| *id != b);
+        same.restore(kept.clone(), &digest("rules v1"), |id, _| *id != b);
         assert_eq!(same.owed(a), None, "unchanged rules and context: told");
         assert!(same.owed(b).is_some(), "a context that moved is owed");
         assert_eq!(same.owed(c), None);
@@ -241,7 +236,7 @@ mod tests {
         assert!(same.owed(c).is_some(), "a compaction while no daemon listened forgets it");
 
         let mut rebuilt = CrownRules::default();
-        rebuilt.restore(kept, "rules v2", |_, _| true);
+        rebuilt.restore(kept, &digest("rules v2"), |_, _| true);
         assert!(rebuilt.owed(a).is_some(), "new rules text tells every crown again");
     }
 

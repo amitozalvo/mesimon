@@ -1063,6 +1063,21 @@ pub fn wrote_commit(subject: &str) -> bool {
     !(words.eq_ignore_ascii_case("fast-forward") || words.starts_with("Fast-forward ("))
 }
 
+/// One branch-reflog step that moves the branch without making a commit
+/// (T-1311, T-1321): a reset, a branch reset or creation, a rebase, or a
+/// fast-forward pull or merge. `wrote_commit` reads HEAD's reflog for the
+/// forge; this reads a branch's for `came_to_base`, and the two differ on
+/// a rebase's pick and a `branch:` step.
+pub fn moves_only(step: &str) -> bool {
+    let ff = |s: &str| s.ends_with(": Fast-forward");
+    step.starts_with("reset: moving to ")
+        || step.starts_with("branch: Reset to ")
+        || step.starts_with("branch: Created from ")
+        || step.starts_with("rebase")
+        || (step.starts_with("pull") && (ff(step) || step.contains("(finish)")))
+        || (step.starts_with("merge ") && ff(step))
+}
+
 /// Two URLs naming the same PR, a trailing slash or `.diff` aside.
 pub fn same_url(a: &str, b: &str) -> bool {
     let norm = |u: &str| {
@@ -2644,6 +2659,13 @@ mod tests {
         for s in moved {
             assert!(!wrote_commit(s), "{s}");
         }
+    }
+
+    #[test]
+    fn a_step_the_board_does_not_know_is_work() {
+        assert!(!moves_only("commit: x") && !moves_only("cherry-pick: x") && !moves_only(""));
+        assert!(!moves_only("merge origin/main: Merge made by the 'ort' strategy."));
+        assert!(moves_only("merge origin/main: Fast-forward") && moves_only("pull: Fast-forward"));
     }
 
     #[test]

@@ -48,9 +48,10 @@ export const reasonText = (reason) =>
 // past where the conversation ended when it was sent. Queued words are the
 // queued row's; a refused or lost prompt is the delivery line's.
 const GHOSTLY = ["awaiting_delivery", "submitted", "input_sent"];
+export const ghostly = (r) => !!r && ["prompt", "send_now"].includes(r.op) && GHOSTLY.includes(r.status);
 export const sentPrompt = (entry) => {
   const r = entry?.receipt;
-  return r && ["prompt", "send_now"].includes(r.op) && GHOSTLY.includes(r.status) ? r : undefined;
+  return ghostly(r) ? r : undefined;
 };
 export const ghostOf = (entry) => {
   const r = sentPrompt(entry);

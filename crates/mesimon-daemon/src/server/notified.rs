@@ -6,23 +6,12 @@
 
 use super::*;
 use crate::server::crownwake::ToldHand;
-use crate::server::queued_person_push_tests::{daemon, worker_ticket};
+use crate::server::queued_person_push_tests::{daemon, prompt_frame, worker_ticket};
 use mesimon_core::board::Raised;
 
 const NOTIFICATION: &str = "<task-notification>\n<task-id>bqvffdb91</task-id>\n\
     <status>completed</status>\n<summary>Background command \"cargo ut\" completed \
     (exit code 0)</summary>\n</task-notification>";
-
-fn prompt(sid: uuid::Uuid, text: &str) -> HookFrame {
-    HookFrame {
-        session: sid.to_string(),
-        event: "UserPromptSubmit".into(),
-        reason: None,
-        pane: None,
-        road: Road::Hooks,
-        payload: serde_json::json!({ "prompt": text }),
-    }
-}
 
 fn raised() -> Raised {
     Raised { at: "@0".into(), by: "agent:x".into(), reason: "Ship is yours".into() }
@@ -60,14 +49,14 @@ fn a_notification_inside_a_turn_is_nobody_s_prompt() {
     with_seat("mid", SessionState::Running, |d, ticket, sid| {
         d.crown_hands.insert(ticket, ToldHand { reason: "Ship is yours".into(), told_ms: 1 });
         d.notice_turns.insert(sid);
-        d.on_hook(prompt(sid, NOTIFICATION));
+        d.on_hook(prompt_frame(sid, Road::Hooks, NOTIFICATION));
         assert_eq!(d.board.session(sid).unwrap().state, SessionState::Running);
         assert_eq!(d.queued.len(), 1, "the queued ask waits for the turn's end");
         assert!(hand_up(d, ticket), "the hand stays up");
         assert!(d.crown_hands.contains_key(&ticket), "the crown's told hand stands");
         assert!(d.notice_turns.contains(&sid), "the notice turn is still the notice's");
         assert_eq!(mesophon::prompts_now(&d.prompts_heard, sid), 0, "no dialog spoken past");
-        d.on_hook(prompt(sid, "a person's words"));
+        d.on_hook(prompt_frame(sid, Road::Hooks, "a person's words"));
         assert!(d.queued.is_empty(), "a person talking ahead of the ask drops it");
         assert!(!hand_up(d, ticket), "a person's prompt answers the hand");
         assert!(!d.crown_hands.contains_key(&ticket));
@@ -83,13 +72,13 @@ fn a_notification_inside_a_turn_is_nobody_s_prompt() {
 fn a_notification_waking_an_idle_seat_begins_a_turn_nobody_asked_for() {
     let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
     with_seat("idle", idle.clone(), |d, ticket, sid| {
-        d.on_hook(prompt(sid, NOTIFICATION));
+        d.on_hook(prompt_frame(sid, Road::Hooks, NOTIFICATION));
         assert_eq!(d.board.session(sid).unwrap().state, SessionState::Running, "a turn began");
         assert!(hand_up(d, ticket), "a turn the agent's own work began answers no hand");
         assert_eq!(d.queued.len(), 1, "the ask waits for this turn's end");
     });
     with_seat("idle-person", idle, |d, ticket, sid| {
-        d.on_hook(prompt(sid, "a person's words"));
+        d.on_hook(prompt_frame(sid, Road::Hooks, "a person's words"));
         assert!(!hand_up(d, ticket), "a person's prompt on an idle seat answers it");
     });
 }
@@ -102,10 +91,10 @@ fn a_notification_keeps_the_person_s_move_guarded() {
         let now = Instant::now();
         d.moves.record(ticket, "IN PROGRESS", "BACKLOG", &Principal::Local, None, now);
         let auto = Principal::Automation { rule: "automove".into() };
-        d.on_hook(prompt(sid, NOTIFICATION));
+        d.on_hook(prompt_frame(sid, Road::Hooks, NOTIFICATION));
         let held = d.moves.check(ticket, "BACKLOG", "IN PROGRESS", &auto, now);
         assert!(held.is_err(), "the person's drag is still theirs");
-        d.on_hook(prompt(sid, "a person's words"));
+        d.on_hook(prompt_frame(sid, Road::Hooks, "a person's words"));
         let freed = d.moves.check(ticket, "BACKLOG", "IN PROGRESS", &auto, now);
         assert!(freed.is_ok(), "their ask supersedes their drag (T-186): {freed:?}");
     });
@@ -120,16 +109,16 @@ fn a_notification_on_the_crown_s_seat_is_no_cause() {
     with_seat("crown-mid", SessionState::Running, |d, ticket, sid| {
         d.board.crown = Some(ticket);
         d.crown_cause = Some(wake.clone());
-        d.on_hook(prompt(sid, NOTIFICATION));
+        d.on_hook(prompt_frame(sid, Road::Hooks, NOTIFICATION));
         assert_eq!(d.crown_cause, Some(wake.clone()), "the wake's turn keeps its cause");
-        d.on_hook(prompt(sid, "a person's words"));
+        d.on_hook(prompt_frame(sid, Road::Hooks, "a person's words"));
         assert_eq!(d.crown_cause, Some(mesimon_core::crownact::Cause::Person));
     });
     let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
     with_seat("crown-idle", idle, |d, ticket, sid| {
         d.board.crown = Some(ticket);
         d.crown_cause = Some(wake.clone());
-        d.on_hook(prompt(sid, NOTIFICATION));
+        d.on_hook(prompt_frame(sid, Road::Hooks, NOTIFICATION));
         assert_eq!(d.crown_cause, None, "a turn nobody started has no cause");
     });
 }

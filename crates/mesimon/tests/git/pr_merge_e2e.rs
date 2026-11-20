@@ -66,14 +66,7 @@ fn a_squash_merged_branch_reads_merged() {
     .trim()
     .to_string();
     assert!(
-        !std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["merge-base", "--is-ancestor", &branch, "main"])
-            .output()
-            .unwrap()
-            .status
-            .success(),
+        !is_ancestor(&repo, &branch, "main"),
         "a squash leaves no ancestor behind — that is the whole problem"
     );
 

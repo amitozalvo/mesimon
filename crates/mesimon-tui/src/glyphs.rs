@@ -16,6 +16,27 @@ const SPIN_ASCII: &[char] = &['|', '/', '-', '\\'];
 /// One spinner step per redraw-clock interval (see `App::spin_frame`).
 pub(crate) const SPIN_STEP_MS: u64 = 100;
 
+/// The working arc's frames on `tier`: the spinner's, and launching's slower.
+fn spin_frames(tier: Tier) -> &'static [char] {
+    if tier == Tier::Ascii {
+        SPIN_ASCII
+    } else {
+        SPIN_UNICODE
+    }
+}
+
+/// The frame of `frames` that `frame` shows, one step every `steps` redraw
+/// ticks (`frame_clock::phase`, which asks for the frame of the next step).
+pub(crate) fn cycle(frames: &[char], frame: usize, steps: usize) -> char {
+    frames[crate::frame_clock::phase(frame, steps) % frames.len()]
+}
+
+/// Is `frame` in the lit half of a blink whose halves are `steps` redraw
+/// ticks long (`frame_clock::phase`, which asks for the next half's frame)?
+pub(crate) fn lit(frame: usize, steps: usize) -> bool {
+    crate::frame_clock::phase(frame, steps).is_multiple_of(2)
+}
+
 /// Waiting frames: a TWO-dot braille pair walking the ring, against the
 /// working spinner's three-dot arc — two thirds of the ink at a quarter of
 /// the speed. An uncertain session is not working and must not read as if it
@@ -58,21 +79,20 @@ const PULSE_STEP_TICKS: usize = 10;
 /// tier — never the terminal's blink attribute, which is unreliable and
 /// which nothing else on the board uses.
 pub(crate) fn pulse_lit(frame: usize) -> bool {
-    (crate::frame_clock::phase(frame, PULSE_STEP_TICKS)).is_multiple_of(2)
+    lit(frame, PULSE_STEP_TICKS)
 }
 
 /// The animated working glyph for `frame` (any monotonically increasing
 /// counter; wraps internally).
 pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
-    let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
-    frames[crate::frame_clock::phase(frame, 1) % frames.len()]
+    cycle(spin_frames(tier), frame, 1)
 }
 
 /// The waiting glyph for `frame` (same redraw-clock counter the spinner
 /// rides; the divisor is what makes it slower).
 pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
-    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
+    cycle(frames, frame, SLOW_STEP_TICKS)
 }
 
 /// The launching glyph: the WORKING arc at the slow cadence. Spawning is not
@@ -86,8 +106,7 @@ pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
 /// seconds and both mean the same thing to the reader — the agent is going,
 /// leave it alone.
 pub(crate) fn launching(tier: Tier, frame: usize) -> char {
-    let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
-    frames[crate::frame_clock::phase(frame, SLOW_STEP_TICKS) % frames.len()]
+    cycle(spin_frames(tier), frame, SLOW_STEP_TICKS)
 }
 
 /// Background-parked frames: a TWO-dot braille bar turning through the
@@ -112,7 +131,7 @@ const BG_ASCII: &[char] = &['o', 'O'];
 /// No third speed is added: the board keeps one fast register and one slow.
 pub(crate) fn background(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { BG_ASCII } else { BG_UNICODE };
-    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
+    cycle(frames, frame, SLOW_STEP_TICKS)
 }
 
 /// Compaction frames (T-894): the cell pressed down and let go — all six
@@ -134,7 +153,7 @@ const COMPACT_ASCII: &[char] = &['#', '%', '_', '%'];
 /// board, one slow, and no third.
 pub(crate) fn compacting(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { COMPACT_ASCII } else { COMPACT_UNICODE };
-    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
+    cycle(frames, frame, SLOW_STEP_TICKS)
 }
 
 /// The activity row's words while a seat compacts (T-894), on the card and
@@ -166,7 +185,7 @@ const QUEUED_ASCII: &[char] = &['(', ')'];
 /// The owed glyph for `frame` — see `QUEUED_UNICODE`.
 pub(crate) fn queued(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { QUEUED_ASCII } else { QUEUED_UNICODE };
-    frames[(crate::frame_clock::phase(frame, SLOW_STEP_TICKS)) % frames.len()]
+    cycle(frames, frame, SLOW_STEP_TICKS)
 }
 
 /// Lay the owed mark over a card's session glyph. It replaces NOTHING that
@@ -349,10 +368,7 @@ pub(crate) fn pr_mark(
         (_, "waiting") => (if ascii { '@' } else { '◎' }, Register::Calm),
         (_, "running") => {
             let frames = if ascii { PIPE_ASCII } else { PIPE_UNICODE };
-            (
-                frames[(crate::frame_clock::phase(frame, PIPE_STEP_TICKS)) % frames.len()],
-                Register::Grey,
-            )
+            (cycle(frames, frame, PIPE_STEP_TICKS), Register::Grey)
         }
         ("merged", _) if deployed => (if ascii { '^' } else { '◆' }, Register::Grey),
         ("merged", _) => (if ascii { '*' } else { '●' }, Register::Grey),

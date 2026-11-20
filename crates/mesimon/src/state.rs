@@ -119,8 +119,8 @@ fn codex_runtime(path: &Path, session: &SessionRecord, now_ms: u64) -> Value {
     let conversation_matches =
         session.codex_thread_id.as_ref().is_none_or(|id| Some(id) == snapshot.thread_id.as_ref());
     let age_ms = now_ms.saturating_sub(snapshot.heartbeat_ms);
-    let future = snapshot.heartbeat_ms > now_ms.saturating_add(1_000);
-    let fresh = age_ms <= 5_000 && !future;
+    let future = snapshot.ahead(now_ms);
+    let fresh = snapshot.fresh(now_ms);
     let sequence_current = snapshot.sequence >= session.codex_observed_seq;
     let status = if !identity_matches {
         "identity_mismatch"
