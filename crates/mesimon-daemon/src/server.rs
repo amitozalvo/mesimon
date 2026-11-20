@@ -1049,10 +1049,6 @@ pub struct Daemon {
     /// Every crown act, kept for the ticket page's conversation (T-1162):
     /// `crown-acts.jsonl`, board facts and the words' keys alone.
     crown_acts: crate::crownacts::Log,
-    /// What an act about to be marked says beyond its word (T-1162): the
-    /// tag a `tagged` put on, the words' key an `asked` carried. Taken by
-    /// the next `crown_mark` on the same ticket.
-    act_extra: Option<(ulid::Ulid, ActExtra)>,
     /// What started the crown's turn (T-1162): set at the crown's
     /// `UserPromptSubmit`, by the words mesimon carried into it
     /// (`crown_cause_owed`) or else a person's. Codex has no such edge, so
@@ -2409,7 +2405,6 @@ impl Daemon {
             crown_touches: HashMap::new(),
             crown_said: HashMap::new(),
             crown_acts,
-            act_extra: None,
             crown_cause: None,
             crown_cause_owed: None,
             receipts: HashMap::new(),
@@ -9548,9 +9543,12 @@ impl Daemon {
                     Some(target),
                     road.word(),
                 );
-                self.act_extra =
-                    Some((target, ActExtra { words: Some(words), ..ActExtra::default() }));
-                self.crown_mark(ticket, target, "asked");
+                self.crown_mark_with(
+                    ticket,
+                    target,
+                    "asked",
+                    ActExtra { words: Some(words), ..ActExtra::default() },
+                );
                 match road {
                     // Sent now (T-600): the person's `^y` on the parked words,
                     // made by the board on the crown's say-so — a pane takes
@@ -10195,11 +10193,12 @@ impl Daemon {
                 let write = self.receipt_write(target, None);
                 match self.agent_tag_ticket(&by, target, &name, group, remove) {
                     Response::AgentTagged { tags, replaced, board_version, .. } => {
-                        let word = remove.then_some("untagged");
-                        let detail = name.clone();
-                        self.act_extra =
-                            Some((target, ActExtra { word, detail, ..ActExtra::default() }));
-                        let seen = self.crown_touched(ticket, target, "tagged", write);
+                        let extra = ActExtra {
+                            word: remove.then_some("untagged"),
+                            detail: name,
+                            ..ActExtra::default()
+                        };
+                        let seen = self.crown_touched_with(ticket, target, "tagged", write, extra);
                         // A tag already worn changes nothing and broadcasts
                         // nothing; the touch still needs its snapshot (T-719).
                         self.broadcast();
@@ -10712,10 +10711,21 @@ impl Daemon {
         action: &str,
         write: crownreceipt::Write,
     ) -> Option<String> {
+        self.crown_touched_with(own, target, action, write, ActExtra::default())
+    }
+
+    fn crown_touched_with(
+        &mut self,
+        own: ulid::Ulid,
+        target: ulid::Ulid,
+        action: &str,
+        write: crownreceipt::Write,
+        extra: ActExtra,
+    ) -> Option<String> {
         if target == own {
             return None;
         }
-        self.crown_mark(own, target, action);
+        self.crown_mark_with(own, target, action, extra);
         if action == "merged" {
             self.crown_observed_merge(target);
         }
@@ -10740,6 +10750,16 @@ impl Daemon {
     /// A card touch without a reply. In particular, delivering a queued
     /// ask must not replace the stamp its caller already holds (T-1042).
     fn crown_mark(&mut self, own: ulid::Ulid, target: ulid::Ulid, action: &str) {
+        self.crown_mark_with(own, target, action, ActExtra::default());
+    }
+
+    fn crown_mark_with(
+        &mut self,
+        own: ulid::Ulid,
+        target: ulid::Ulid,
+        action: &str,
+        extra: ActExtra,
+    ) {
         if target == own {
             return;
         }
@@ -10749,18 +10769,24 @@ impl Daemon {
             target,
             CrownTouch { ticket: target, action: action.to_string(), at_ms: now, from: Some(own) },
         );
-        self.record_crown_act(own, target, action, now);
+        self.record_crown_act(own, target, action, now, extra);
     }
 
     /// The touch, kept for the ticket page's conversation (T-1162). `sent`
     /// is the `asked` already kept going out, and `woke` the bolt of a
     /// worker's news, which the wake's own act says; neither is a line.
-    fn record_crown_act(&mut self, crown: ulid::Ulid, target: ulid::Ulid, word: &str, at_ms: u64) {
-        let extra = self.act_extra.take().filter(|(t, _)| *t == target).map(|(_, e)| e);
+    fn record_crown_act(
+        &mut self,
+        crown: ulid::Ulid,
+        target: ulid::Ulid,
+        word: &str,
+        at_ms: u64,
+        extra: ActExtra,
+    ) {
         if matches!(word, "sent" | "woke") {
             return;
         }
-        let ActExtra { word: told, detail, words } = extra.unwrap_or_default();
+        let ActExtra { word: told, detail, words } = extra;
         let word = told.unwrap_or(word);
         let detail = if detail.is_empty() { self.act_detail(target, word) } else { detail };
         let act = mesimon_core::crownact::CrownAct {
@@ -10820,9 +10846,8 @@ impl Daemon {
             _ => Cause::Board { board: detail.to_string(), reply: word == BOARD_REPLIED },
         };
         self.crown_cause_owed = Some((words, cause));
-        self.act_extra =
-            Some((crown, ActExtra { word: Some(word), detail: detail.into(), words: Some(words) }));
-        self.record_crown_act(crown, crown, word, mesimon_core::clock::now_ms());
+        let extra = ActExtra { detail: detail.into(), words: Some(words), ..ActExtra::default() };
+        self.record_crown_act(crown, crown, word, mesimon_core::clock::now_ms(), extra);
     }
 
     /// A linked board's crown's words went into this board's crown (T-733):

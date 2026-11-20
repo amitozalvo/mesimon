@@ -275,11 +275,8 @@ impl Daemon {
                 } else {
                     mesimon_core::crownact::ASKED_BOARD
                 };
-                self.act_extra = Some((
-                    ticket,
-                    super::ActExtra { word: Some(word), detail: name.clone(), words: None },
-                ));
-                self.record_crown_act(ticket, ticket, word, now_ms());
+                let extra = super::ActExtra { detail: name.clone(), ..Default::default() };
+                self.record_crown_act(ticket, ticket, word, now_ms(), extra);
                 self.feed.board_outcome("agent", "ask_board", Some(ticket), asked.road.word());
                 self.broadcast();
                 Response::AgentAskedBoard { board: name, asked: PeerAnswer { reply, ..asked } }

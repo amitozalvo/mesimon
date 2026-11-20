@@ -2663,11 +2663,8 @@ impl Daemon {
             self.crown_answer_lines.insert(id, line);
             self.persist_sessions();
         }
-        self.act_extra = Some((
-            ticket,
-            super::ActExtra { detail: answer.to_string(), ..super::ActExtra::default() },
-        ));
-        self.crown_mark(crown, ticket, touch);
+        let extra = super::ActExtra { detail: answer.to_string(), ..Default::default() };
+        self.crown_mark_with(crown, ticket, touch, extra);
         self.crown_said(ticket, answer);
         self.broadcast();
     }

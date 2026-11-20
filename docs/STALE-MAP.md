@@ -48655,3 +48655,15 @@ changes (3,350 passed, 13 ignored on the final build). The guard superseded
 the first crown e2e run when the final build was ready. All 139 crown e2es
 passed on that build, with a clean fixture audit. The full workspace suite
 belongs to the crown's post-merge batch.
+
+## A worker's own tag could appear in the crown's next move (T-1256, 2026-11-20)
+
+A daemon regression test reproduced the first open item from the tenth simplify
+pass. After a worker added READY, the crown moved it to REVIEW and the act log
+read `moved READY`. After the worker removed READY, a move to IN PROGRESS read
+`untagged READY`. Both moves succeeded on the board.
+
+The daemon now passes the tag name and removal word into the call that records
+that act. An own-ticket tag returns with its details scoped to that call. The
+test reads `crown-acts.jsonl` and expects exactly the two moves, each with its
+destination column.

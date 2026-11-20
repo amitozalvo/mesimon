@@ -1447,6 +1447,37 @@ pub(in crate::server) mod ledger_tests {
         }
     }
 
+    #[test]
+    fn a_workers_own_tag_stays_out_of_the_next_crown_move() {
+        let mut b = bed("own-tag");
+        b.d.board.register_tag(2, "READY").unwrap();
+        let crown_seat = uuid::Uuid::from_u128(1256);
+        let mut crown = b.d.board.session(b.seat).unwrap().clone();
+        crown.id = crown_seat;
+        crown.ticket = b.crown;
+        b.d.board.sessions.push(crown);
+
+        for (remove, column) in [(false, "REVIEW"), (true, "IN PROGRESS")] {
+            let tag =
+                Command::AgentTagTicket { name: "READY".into(), group: None, remove, key: None };
+            let tagged = b.d.handle_agent(b.seat, tag);
+            assert!(matches!(tagged, Response::AgentTagged { seen: None, .. }), "{tagged:?}");
+            let mov = Command::AgentMoveTicket {
+                key: Some("T-2".into()),
+                seen: Some(b.d.seen_token(b.worker)),
+                to_column: column.into(),
+                before: None,
+                idempotency_key: None,
+            };
+            let moved = b.d.handle_agent(crown_seat, mov);
+            assert!(matches!(moved, Response::AgentMoved { .. }), "{moved:?}");
+        }
+
+        let acts = crate::crownacts::read(&b.d.paths.crown_acts_file());
+        let moves: Vec<_> = acts.iter().map(|a| (a.act.as_str(), a.detail.as_str())).collect();
+        assert_eq!(moves, [("moved", "REVIEW"), ("moved", "IN PROGRESS")]);
+    }
+
     /// The crown's acts land in `crown-acts.jsonl` (T-1162) with what the
     /// page says of them: the column a move put the ticket in, the words'
     /// key an ask carried, and what started the crown's turn — the board's
@@ -1471,11 +1502,8 @@ pub(in crate::server) mod ledger_tests {
         // A person's words next: the turn is theirs.
         b.d.frame_words = Some("move it back".into());
         b.d.crown_prompted(crown);
-        b.d.act_extra = Some((
-            worker,
-            super::ActExtra { words: Some(words_key("fix it")), ..Default::default() },
-        ));
-        b.d.crown_mark(crown, worker, "asked");
+        let extra = super::ActExtra { words: Some(words_key("fix it")), ..Default::default() };
+        b.d.crown_mark_with(crown, worker, "asked", extra);
         // The ask going out is the same act, and the bolt's `woke` none.
         b.d.crown_mark(crown, worker, "sent");
         b.d.crown_mark(worker, crown, "woke");
