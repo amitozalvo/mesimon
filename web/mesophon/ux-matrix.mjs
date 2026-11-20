@@ -1,6 +1,7 @@
 // The coordinator owns no fixture. Each child owns one browser, one server
 // (including its offline switch), and the screenshots for its engine and size.
 import { spawn, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import path from "node:path";
 
 function selection(variable, choices) {
@@ -41,14 +42,9 @@ export async function runMatrix(root, engineNames, bySize) {
     // Keep the longstanding direct node invocation bounded too. Forward a
     // targeted TERM/INT to the supervisor so it can clean up its descendants.
     const deadline = Number(process.env.MESOPHON_UX_JOBS) === 1 ? ["--timeout", "3600"] : [];
-    // test-run locks and prunes Cargo's output even for a non-Cargo command.
-    // Lock the screenshots we actually share with another run of this suite.
     const child = spawn("python3", [
       "-B", path.resolve(root, "../../ci/test-run.py"), ...deadline, "--", process.execPath, suite,
-    ], {
-      stdio: "inherit",
-      env: { ...process.env, CARGO_TARGET_DIR: path.join(root, "test-results") },
-    });
+    ], { stdio: "inherit" });
     const stop = (signal) => child.kill(signal);
     process.on("SIGTERM", stop);
     process.on("SIGINT", stop);
@@ -87,11 +83,15 @@ export async function runMatrix(root, engineNames, bySize) {
     ? navigation : navigation.slice(0, 1);
   if (sweep.length) console.log(`15-theme sweep: ${sweep.map(({ engine, size }) => engine + "/" + size).join(", ")}`);
 
+  const resultsRoot = path.join(root, "test-results");
+  await mkdir(resultsRoot, { recursive: true });
+  const screenshots = await mkdtemp(path.join(resultsRoot, "run-"));
+  console.log(`Screenshots: ${screenshots}`);
   const queue = cells.values();
   async function work() {
     for (const cell of queue) {
       const { engine, size, names } = cell;
-      await finished(spawn(process.execPath, [suite, "--cell", engine, size,
+      await finished(spawn(process.execPath, [suite, "--cell", screenshots, engine, size,
         sweep.includes(cell) ? "all" : "chalk", ...names], { stdio: "inherit" }));
     }
   }

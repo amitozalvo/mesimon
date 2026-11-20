@@ -25,8 +25,10 @@ changes the reserve (0 disables it). This is not a filesystem quota.
 Python 3 is a test dependency only; the shipped binary does not use it.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -43,38 +45,31 @@ def build_output(command, env):
     """The Cargo build directories this run writes: the target directory and,
     when configured apart, the build directory (`build.build-dir`), read the
     way cargo reads them (config, environment, an explicit --target-dir).
-    A command that is not cargo gets its checkout's, when it is in one: a
-    script may build (the rig does). Paths are resolved, so a symlinked or
-    /tmp-vs-/private/tmp spelling of one directory is one directory."""
+    Other commands own no Cargo output unless their caller declares it."""
+    if command[:1] != ["cargo"]:
+        return []
     metadata = ["cargo", "metadata", "--offline", "--no-deps", "--format-version=1"]
     target = None
-    if command[:1] == ["cargo"]:
-        # Metadata reads Cargo's target-dir config and environment. An explicit
-        # build --target-dir wins; metadata itself does not accept that flag.
-        args = iter(command[1:])
-        for arg in args:
-            if arg == "--":
-                break
-            if arg in ("--manifest-path", "--config", "--target-dir"):
-                value = next(args, None)
-                if value is None:
-                    raise ValueError(f"missing value for {arg}")
-                if arg == "--target-dir":
-                    target = value
-                else:
-                    metadata.extend([arg, value])
-            elif arg.startswith("--target-dir="):
-                target = arg.split("=", 1)[1]
-            elif arg.startswith(("--manifest-path=", "--config=")):
-                metadata.append(arg)
-        result = subprocess.run(metadata, env=env, capture_output=True, text=True,
-                                check=True, timeout=30)
-    else:
-        try:
-            result = subprocess.run(metadata, env=env, capture_output=True, text=True,
-                                    check=True, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            return []
+    # Metadata reads Cargo's target-dir config and environment. An explicit
+    # build --target-dir wins; metadata itself does not accept that flag.
+    args = iter(command[1:])
+    for arg in args:
+        if arg == "--":
+            break
+        if arg in ("--manifest-path", "--config", "--target-dir"):
+            value = next(args, None)
+            if value is None:
+                raise ValueError(f"missing value for {arg}")
+            if arg == "--target-dir":
+                target = value
+            else:
+                metadata.extend([arg, value])
+        elif arg.startswith("--target-dir="):
+            target = arg.split("=", 1)[1]
+        elif arg.startswith(("--manifest-path=", "--config=")):
+            metadata.append(arg)
+    result = subprocess.run(metadata, env=env, capture_output=True, text=True,
+                            check=True, timeout=30)
     info = json.loads(result.stdout)
     dirs = [Path(target or info["target_directory"]).resolve()]
     # Newer Cargo can place intermediate artifacts on a separate volume.
@@ -122,6 +117,106 @@ def lock_dir(env):
     if path.is_symlink() or not path.is_dir() or st.st_uid != os.getuid() or st.st_mode & 0o077:
         raise ValueError(f"lock directory must be private and owned: {path}")
     return path
+
+
+class Tee:
+    def __init__(self, console, log):
+        self.console = console
+        self.log = log
+
+    def write(self, text):
+        self.log.write(text)
+        return self.console.write(text)
+
+    def flush(self):
+        self.log.flush()
+        self.console.flush()
+
+
+class RunRecord:
+    """A check publishes its own result. Replacements only leave it a message."""
+    def __init__(self, directory):
+        self.root = Path(tempfile.mkdtemp(prefix="check-", dir=directory)).resolve()
+        self.path = self.root / "result.json"
+        self.data = dict(started_at=time.time(), exited_at=None, result=None,
+                         log=str(self.root / "run.log"))
+        self.active = None
+
+    def save(self):
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data) + "\n")
+        tmp.replace(self.path)
+
+    @contextlib.contextmanager
+    def registry(self):
+        # Only the handoff itself is serialized. Never hold this during a check.
+        with (self.root.parent / "registration.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def register(self, signature):
+        digest = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
+        self.active = self.root.parent / f"active-{digest}"
+        with self.registry():
+            if self.active.is_symlink():
+                prior = self.active.resolve()
+                prior_data = json.loads(prior.read_text()) if prior.is_file() else None
+                if prior_data and prior_data["result"] is None:
+                    # Metadata for an older launch can finish after a newer one.
+                    if prior_data["started_at"] > self.data["started_at"]:
+                        (self.root / "superseded").symlink_to(prior)
+                        raise Superseded(f"Check superseded by {prior}")
+                    handoff = self.root / "handoff"
+                    handoff.symlink_to(self.path)
+                    handoff.replace(prior.parent / "superseded")
+                    print(f"== superseding previous check: {prior}", flush=True)
+                self.active.unlink()
+            self.active.symlink_to(self.path)
+
+    def retire(self):
+        if self.active:
+            with self.registry():
+                if self.active.resolve() == self.path:
+                    self.active.unlink()
+                self.active = None
+            successor = self.root / "superseded"
+            if successor.is_symlink():
+                self.data["superseded_by"] = os.readlink(successor)
+
+    def check_superseded(self):
+        try:
+            successor = os.readlink(self.root / "superseded")
+        except FileNotFoundError:
+            return
+        raise Superseded(f"Check superseded by {successor}")
+
+
+class Superseded(RuntimeError):
+    pass
+
+
+def wait_for_record(path, timeout):
+    # The runner holds the log lock from publication through its final write.
+    # flock also wakes on a dead runner. Neither case needs a polling process.
+    def expired(_sig, _frame):
+        raise TimeoutError
+
+    with path.with_name("run.log").open() as log:
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.alarm(timeout)
+        try:
+            fcntl.flock(log, fcntl.LOCK_SH)
+            ended = True
+        except TimeoutError:
+            ended = False
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        data = json.loads(path.read_text())
+        if ended and data["result"] is None:
+            raise RuntimeError(f"Runner exited without a result: {path}")
+        print(json.dumps(data))
+        return data["result"] if data["result"] is not None else 124
 
 
 def alive(pid):
@@ -177,7 +272,7 @@ class Claims:
     is not taken twice: a run inside a run would otherwise wait on its
     parent until the deadline."""
 
-    def __init__(self, directory, command, held):
+    def __init__(self, directory, command, held, record=None):
         self.dir = directory
         self.command = command
         self.inherited = set(held)
@@ -186,6 +281,11 @@ class Claims:
         self.keys = []
         self.phase_name = "starting"
         self.since = time.time()
+        self.record = record
+
+    def check_superseded(self):
+        if self.record and self.record.active:
+            self.record.check_superseded()
 
     def note(self, path):
         self.notes.append(path)
@@ -214,6 +314,7 @@ class Claims:
         said = None
         start = time.monotonic()
         while True:
+            self.check_superseded()
             try:
                 fcntl.flock(fd, mode | fcntl.LOCK_NB)
                 if said:
@@ -476,6 +577,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=int,
                         help="whole command deadline in seconds (default: 1200, or 2400 with --both-roads)")
+    parser.add_argument("--wait", type=Path, metavar="RECORD",
+                        help="read the completion record, waiting up to --timeout seconds (default 30)")
+    parser.add_argument("--cargo-manifest", metavar="PATH",
+                        help="lock the Cargo output used by a script for this manifest")
     parser.add_argument("--jobs", type=int, help="cap cargo build jobs and test threads (default: cargo's own)")
     parser.add_argument("--min-free-gib", type=int, default=5,
                         help="stop below this free disk reserve (default: 5 GiB; 0 disables)")
@@ -489,6 +594,14 @@ def main():
     args = parser.parse_args()
     if args.timeout is not None and args.timeout < 1:
         parser.error("timeout must be positive")
+    if args.wait:
+        if args.command:
+            parser.error("--wait takes a record and no command")
+        try:
+            return wait_for_record(args.wait, args.timeout or 30)
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            print(f"Cannot wait for check: {exc}", file=sys.stderr)
+            return 2
     if args.jobs is not None and args.jobs < 1:
         parser.error("jobs must be positive")
     if args.min_free_gib < 0:
@@ -500,6 +613,8 @@ def main():
         command = ["cargo", "nextest", "run", "--workspace"]
         if args.jobs:
             command += ["--test-threads", str(args.jobs)]
+    if args.cargo_manifest and command[0] == "cargo":
+        parser.error("pass --manifest-path to cargo directly")
     # Both release entry points take the exclusive two-road nextest gate.
     release_gate = args.both_roads and args.exclusive and command[:3] == ["cargo", "nextest", "run"]
     if release_gate and os.environ.get("NEXTEST_PROFILE", "default") != "default":
@@ -520,29 +635,66 @@ def main():
         # stays so a loaded machine finishes late rather than dying late.
         args.timeout = 1200 * len(passes)
     os.umask(0o077)
-    held = [k for k in os.environ.get("MESIMON_TEST_HELD", "").split(",") if k]
-    claims = Claims(None, command, held)
     try:
-        build_dirs = build_output(command, os.environ)
-        watched_paths = disk_paths(command, os.environ, build_dirs) if args.min_free_gib else []
-        check_disk_space(watched_paths, args.min_free_gib)
-        # Only runs that write the same build output take turns (T-830);
-        # waiting is bounded by the run's own deadline and spends none of it.
-        claims.dir = lock_dir(os.environ)
-        claims.take(build_dirs, args.exclusive, time.monotonic() + args.timeout)
-        check_disk_space(watched_paths, args.min_free_gib)
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-        claims.release()
+        directory = lock_dir(os.environ)
+        record = RunRecord(directory)
+        log = Path(record.data["log"]).open("a", buffering=1)
+    except (OSError, ValueError) as exc:
         print(f"Check not started: {exc}", file=sys.stderr)
         return 2
-    except KeyboardInterrupt:
-        claims.release()
-        print("Check not started: interrupted while waiting", file=sys.stderr)
-        return 128 + signal.SIGINT
+    with log, contextlib.redirect_stdout(Tee(sys.stdout, log)), contextlib.redirect_stderr(Tee(sys.stderr, log)):
+        fcntl.flock(log, fcntl.LOCK_EX)
+        record.save()
+
+        def terminate(signum, _frame):
+            raise SystemExit(128 + signum)
+
+        previous_term = signal.signal(signal.SIGTERM, terminate)
+        result = 1
+        try:
+            print(f"Completion record: {record.path}", flush=True)
+            result = run(args, command, passes, release_gate, record)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(str(exc), file=sys.stderr)
+        except KeyboardInterrupt:
+            result = 128 + signal.SIGINT
+        except SystemExit as exc:
+            result = exc.code
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            record.data.update(exited_at=time.time(), result=result)
+            record.save()
+        return result
+
+
+def run(args, command, passes, release_gate, record):
+    held = [k for k in os.environ.get("MESIMON_TEST_HELD", "").split(",") if k]
+    claims = Claims(record.root.parent, command, held, record)
     try:
+        try:
+            cargo_command = command
+            if args.cargo_manifest:
+                cargo_command = ["cargo", "--manifest-path", args.cargo_manifest]
+            build_dirs = build_output(cargo_command, os.environ)
+            watched_paths = disk_paths(command, os.environ, build_dirs) if args.min_free_gib else []
+            check_disk_space(watched_paths, args.min_free_gib)
+            # Only runs that write the same build output take turns (T-830);
+            # waiting is bounded by the run's own deadline and spends none of it.
+            if not args.exclusive and not held:
+                # Environment can select a test road, browser cell or build config.
+                # Hash it privately. Two commands with different inputs may both be needed.
+                launcher_vars = {"_", "SHLVL", "OLDPWD", "CODEX_TOOL_CALL_ID"}
+                env = {k: v for k, v in os.environ.items() if k not in launcher_vars}
+                record.register([os.getcwd(), passes, env, args.jobs, args.cargo_manifest])
+            claims.take(build_dirs, args.exclusive, time.monotonic() + args.timeout)
+            check_disk_space(watched_paths, args.min_free_gib)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"Check not started: {exc}", file=sys.stderr)
+            return 2
         return run_claimed(args, command, passes, build_dirs, watched_paths, claims, release_gate)
     finally:
         claims.release()
+        record.retire()
 
 
 def run_claimed(args, command, passes, build_dirs, watched_paths, claims, release_gate):
@@ -606,6 +758,7 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims, releas
                 running[road] = log
             last_disk_check = time.monotonic()
             while running and not interrupted:
+                claims.check_superseded()
                 for road, log in list(running.items()):
                     log.relay()
                     code = request(dict(op="poll", pid=log.pid))
@@ -634,12 +787,15 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims, releas
                 raise RuntimeError("The release gate needs a clean candidate commit")
             passes = {road: [*argv[:3], *failure_report(root, road), *argv[3:]]
                       for road, argv in passes.items()}
+        claims.check_superseded()
         codes = execute(passes)
         result = int(any(codes.values()))
         if release_gate and result and not interrupted:
             rerun_failures(codes, root, candidate, execute, interrupted)
         if interrupted:
             result = 128 + interrupted[0]
+    except Superseded:
+        result = 1
     except (RuntimeError, ValueError, OSError, ET.ParseError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)
         result = 1
@@ -676,6 +832,10 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims, releas
             if not any(m["status"] == "active" for m in manifests) or time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
+        claims.record.retire()
+        if "superseded_by" in claims.record.data:
+            print(f"Check superseded by {claims.record.data['superseded_by']}", file=sys.stderr)
+            result = 1
         bad = [m for m in manifests if m["status"] != "cleaned"]
         if bad:
             result = result or 1
@@ -690,23 +850,32 @@ def run_claimed(args, command, passes, build_dirs, watched_paths, claims, releas
             if release_gate and not stamped:
                 print("Release gate could not stamp the candidate.", file=sys.stderr)
                 result = 1
-        # Every relink leaves its split-debuginfo objects behind and cargo
-        # collects none of them; a week of that made deps/ 879k entries and
-        # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned
-        # here, after each run, under cargo's own locks (ci/prune-deps.py),
-        # in the build directory this run used. Still under this run's lock
-        # on it, which holds off only runs that share it: they would wait on
-        # cargo's lock all the same, and this way they are told it is
-        # pruning (T-830).
-        # This pruner interprets Mach-O OSO entries. It cannot establish live
-        # references for ELF objects, and Linux builds may mount /work read-only.
-        if sys.platform == "darwin" and build_dirs and (build_dirs[-1] / "debug/deps").is_dir():
+        if (sys.platform == "darwin" and command[0] == "cargo" and build_dirs
+                and "superseded_by" not in claims.record.data
+                and needs_prune(build_dirs[-1] / "debug/deps")):
             claims.phase("pruning")
             profile = build_dirs[-1] / "debug"
             print(f"== pruning the build cache in {profile} (the tests are done)", flush=True)
             subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("prune-deps.py")),
                             "--quiet", "--target-dir", str(profile)], check=False)
     return result
+
+
+# Gatekeeper's first-exec scan scales with the number of directory entries.
+# prune-deps already advises cleaning a deps directory above this size.
+TICKET_PRUNE_ENTRIES = 50_000
+
+
+def needs_prune(deps):
+    if not deps.is_dir():
+        return False
+    tree = subprocess.run(["git", "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"],
+                          capture_output=True, text=True)
+    lines = tree.stdout.splitlines()
+    if len(lines) == 2 and lines[1].startswith("msmn/") and Path(lines[0]) in deps.parents:
+        with os.scandir(deps) as entries:
+            return next(itertools.islice(entries, TICKET_PRUNE_ENTRIES, None), None) is not None
+    return True
 
 
 if __name__ == "__main__":

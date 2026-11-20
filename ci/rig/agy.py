@@ -272,7 +272,8 @@ def run(repo, args, parser):
     if args.lay:
         return 0
     if not os.environ.get("MESIMON_TEST_RUN"):
-        command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--timeout", "900", "--",
+        command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--cargo-manifest", str(Path(repo) / "Cargo.toml"),
+                   "--timeout", "900", "--",
                    sys.executable, "-B", str(ROOT / "ci/rig.py"), *sys.argv[1:]]
         os.execv(sys.executable, command)
     binary = args.binary or Path(repo) / "target/debug/mesimon"

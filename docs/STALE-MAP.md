@@ -48441,3 +48441,22 @@ that the agent runs `deploy/ship.sh all` by absolute path after a green dry run.
 changes relay code or tests, the agent first fast-forwards relay `main` to the relay worktree's
 branch. T-1351 waited 153.9 minutes for that merge despite permission to ship. An unexpected
 result or a denial warrants a hand, and a denial names the missing allow rule.
+
+## Waiting for a bounded check (T-1367, 2026-11-20)
+
+The runner prints a private completion record before preflight. A bounded
+`--wait` sleeps on the runner's log lock and returns the recorded exit code.
+Silent success, spawn failure and a late read all use the same path. A matching
+launch asks its predecessor to finish through its own supervisor. Exclusive
+gates still drain every run, finish their audits and stamp under the lock.
+
+In the ticket worktree, a stand-in Cargo command slept for five seconds under
+the real output lock on a disposable target. The second command started
+5.757 s after launch before the change and 0.736 s after the change. Both final audits were clean and
+the superseded run's record named its replacement.
+
+The Cargo lock protects build artifacts. Other scripts can declare a manifest
+when they use those artifacts. The browser matrix now allocates screenshots per
+invocation, including inside an enclosing runner. On macOS a ticket worktree's
+own Cargo output only needs the closing prune above 50,000 deps entries, the
+existing threshold for a costly directory scan.

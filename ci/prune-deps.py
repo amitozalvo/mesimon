@@ -41,8 +41,8 @@ copy of its own that this never touches.
     python3 ci/prune-deps.py            # prune, print what went
     python3 ci/prune-deps.py --dry-run  # count only
 
-ci/test-run.py runs it after every bounded check, on the profile dir of the
-Cargo build directory that check used (T-830). Python 3 is a test
+ci/test-run.py invokes it for Cargo output on macOS, skipping small ticket
+worktree directories (T-830, T-1367). Python 3 is a test
 dependency only; nothing shipped uses it.
 """
 import argparse

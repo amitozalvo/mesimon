@@ -45,7 +45,7 @@ Filters accept comma-separated names. After a web change, run the full
 `node ux.test.js` matrix once. A docs-only rebase needs no browser rerun.
 Both direct and npm invocations use `ci/test-run.py` for the disk reserve,
 deadline and child cleanup. Every selected engine/viewport gets its own server
-and `test-results/<engine>/<size>/`. Set `MESOPHON_UX_JOBS=1` for serial timing.
+and `test-results/run-*/<engine>/<size>/`. Set `MESOPHON_UX_JOBS=1` for serial timing.
 The first selected navigation case sweeps all fifteen themes. Every navigation
 case does so when `style.css` or `themes.js` differs from the branch point with
 main, or when explicitly requested with `MESOPHON_UX_THEMES=all`.

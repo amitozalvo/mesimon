@@ -1444,8 +1444,8 @@ def run(repo, args, parser):
     if not args.live:
         parser.error("Codex model calls require --live; --lay lists the selection without starting anything")
     if not os.environ.get("MESIMON_TEST_RUN"):
-        command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--timeout",
-                   str(min(1200, 120 + sum(case_timeout(args, case) + 30 for case in cases))), "--", sys.executable,
+        command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--cargo-manifest", str(Path(repo) / "Cargo.toml"),
+                   "--timeout", str(min(1200, 120 + sum(case_timeout(args, case) + 30 for case in cases))), "--", sys.executable,
                    "-B", str(ROOT / "ci/rig.py"), *sys.argv[1:]]
         os.execv(sys.executable, command)
     binary = args.binary or Path(repo) / "target/debug/mesimon"

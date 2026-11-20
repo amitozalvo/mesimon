@@ -129,12 +129,19 @@ class DiskBudgetTests(unittest.TestCase):
                 self.assertNotIn(Path("/ignored"), paths)
 
     def test_refusal_starts_no_supervisor_or_workload(self):
-        with patch.object(runner.sys, "argv", ["test-run.py", "--", "echo", "hello"]), \
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(runner, "lock_dir", return_value=Path(directory)), \
+             contextlib.redirect_stdout(io.StringIO()) as output, \
+             patch.object(runner.sys, "argv", ["test-run.py", "--", "echo", "hello"]), \
              patch.object(runner, "build_output", return_value=[]), \
              patch.object(runner.shutil, "disk_usage", return_value=SimpleNamespace(free=0)), \
              patch.object(runner.subprocess, "Popen") as spawn, \
              contextlib.redirect_stderr(io.StringIO()) as errors:
             self.assertEqual(runner.main(), 2)
+            record = Path(output.getvalue().splitlines()[0].removeprefix("Completion record: "))
+            data = json.loads(record.read_text())
+            self.assertEqual(data["result"], 2)
+            self.assertIn("Low disk space", Path(data["log"]).read_text())
         spawn.assert_not_called()
         self.assertIn("Check not started: Low disk space", errors.getvalue())
 
@@ -469,7 +476,7 @@ def alive(pid):
 class Run:
     """One real `ci/test-run.py` over a throwaway package, read as it goes."""
 
-    def __init__(self, test, cwd, *steps, env=None, flags=()):
+    def __init__(self, test, cwd, *steps, env=None, flags=("--cargo-manifest", "Cargo.toml")):
         self.proc = subprocess.Popen(
             [sys.executable, "-B", str(HERE / "test-run.py"), "--min-free-gib", "0", "--timeout", "90",
              *flags, "--", sys.executable, "-B", "-c", SCRIPT, str(test.box), str(HERE / "test_guard.py"), *steps],
@@ -528,7 +535,7 @@ class ConcurrencyTests(unittest.TestCase):
             "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR",
             "MESIMON_TEST_RUN", "MESIMON_TEST_HELD")}
         # A lock dir of the test's own: a real run never waits on these.
-        self.env = dict(env, MESIMON_TEST_LOCK_DIR=str(self.locks))
+        self.env = dict(env, MESIMON_TEST_LOCK_DIR=str(self.locks), MESIMON_TEST_AUDIT_ROOT=str(top / "audit"))
 
     def package(self, name, config=None):
         root = self.top / name
@@ -540,13 +547,60 @@ class ConcurrencyTests(unittest.TestCase):
             (root / ".cargo/config.toml").write_text(config)
         return root
 
+    def test_silent_exit_and_early_spawn_failure_have_readable_final_records(self):
+        for command, code in ((["true"], 0), (["false"], 1), ([str(self.box / "missing")], 1)):
+            with self.subTest(command=command):
+                proc = subprocess.run([sys.executable, "-B", str(HERE / "test-run.py"), "--min-free-gib", "0", "--", *command],
+                                      cwd=self.box, env=self.env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(proc.returncode, code, proc.stdout + proc.stderr)
+                path = Path(proc.stdout.splitlines()[0].removeprefix("Completion record: "))
+                at_exit = json.loads(path.read_text())
+                late = subprocess.run([sys.executable, "-B", str(HERE / "test-run.py"), "--wait", str(path)],
+                                      capture_output=True, text=True, timeout=3)
+                self.assertEqual(late.returncode, code)
+                self.assertEqual(json.loads(late.stdout), at_exit)
+                self.assertEqual(at_exit["result"], code)
+                self.assertLessEqual(at_exit["started_at"], at_exit["exited_at"])
+                self.assertLessEqual(at_exit["exited_at"], time.time())
+                self.assertIn("Fixture audit", Path(at_exit["log"]).read_text())
+
+    def test_matching_check_supersedes_its_predecessor_and_wakes_its_waiter(self):
+        pkg = self.package("same")
+        a = Run(self, pkg, "await:go", env={"CODEX_TOOL_CALL_ID": "first"})
+        a.wait_for("== tests:")
+        record = a.text().splitlines()[0].removeprefix("Completion record: ")
+        argv = [sys.executable, "-B", str(HERE / "test-run.py"), "--wait", record]
+        pending = subprocess.run([*argv, "--timeout", "1"], capture_output=True, text=True, timeout=4)
+        self.assertEqual(pending.returncode, 124)
+        self.assertIsNone(json.loads(pending.stdout)["result"])
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, text=True) as waiter:
+            b = Run(self, pkg, "await:go", env={"CODEX_TOOL_CALL_ID": "second"})
+            b.wait_for("== tests:", timeout=5)
+            (self.box / "go").touch()
+            self.assertIn(f"superseding previous check: {record}", b.text())
+            self.assertEqual(a.finish(), 1, a.text())
+            data = json.loads(waiter.communicate(timeout=5)[0])
+            self.assertEqual(data["result"], waiter.returncode)
+            self.assertEqual(data["superseded_by"], b.text().splitlines()[0].removeprefix("Completion record: "))
+            self.assertEqual(b.finish(), 0, b.text())
+
+    def test_non_cargo_commands_in_one_package_overlap_without_claiming_or_pruning_cargo(self):
+        pkg = self.package("scripts")
+        (pkg / "target/debug/deps").mkdir(parents=True)
+        a = Run(self, pkg, "touch:a", "await:b", flags=())
+        b = Run(self, pkg, "touch:b", "await:a", flags=())
+        for job in (a, b):
+            self.assertEqual(job.finish(10), 0, job.text())
+            self.assertNotIn("Build output held", job.text())
+            self.assertNotIn("pruning the build cache", job.text())
+
     def test_independent_build_output_runs_overlap(self):
         a = Run(self, self.package("a"), "touch:a.started", "await:b.started")
         b = Run(self, self.package("b"), "touch:b.started", "await:a.started")
         self.assertEqual(a.finish(), 0, a.text())
         self.assertEqual(b.finish(), 0, b.text())
         for run in (a, b):
-            self.assertNotIn("waiting", run.text())
+            self.assertNotIn("== waiting (not testing yet):", run.text())
             self.assertIn("Fixture audit clean (1 owners).", run.text())
 
     def test_shared_build_output_takes_turns_and_says_whose_turn(self):
@@ -617,7 +671,7 @@ class ConcurrencyTests(unittest.TestCase):
         try:
             other = Run(self, self.package("other"), "exit:0")
             self.assertEqual(other.finish(), 0, other.text())
-            self.assertNotIn("waiting", other.text())
+            self.assertNotIn("== waiting (not testing yet):", other.text())
             same = Run(self, busy, "exit:0")
             same.wait_for("(pruning the build cache since")
         finally:
@@ -642,16 +696,63 @@ class ConcurrencyTests(unittest.TestCase):
 
     def test_a_run_inside_a_run_takes_no_lock_its_parent_holds(self):
         pkg = self.package("nested")
-        inner = [sys.executable, "-B", str(HERE / "test-run.py"), "--min-free-gib", "0", "--timeout", "60",
+        inner = [sys.executable, "-B", str(HERE / "test-run.py"), "--cargo-manifest", "Cargo.toml", "--min-free-gib", "0", "--timeout", "60",
                  "--", "true"]
-        outer = subprocess.run([sys.executable, "-B", str(HERE / "test-run.py"), "--min-free-gib", "0",
+        outer = subprocess.run([sys.executable, "-B", str(HERE / "test-run.py"), "--cargo-manifest", "Cargo.toml", "--min-free-gib", "0",
                                 "--timeout", "60", "--", *inner],
                                cwd=pkg, env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(outer.returncode, 0, outer.stdout + outer.stderr)
-        self.assertNotIn("waiting", outer.stdout)
+        self.assertNotIn("== waiting (not testing yet):", outer.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is required for the browser matrix coordinator")
+class BrowserMatrixTests(unittest.TestCase):
+    def test_two_matrices_give_the_same_cell_distinct_screenshot_paths(self):
+        # Exercise the production coordinator. Only the browser cell is a stand-in.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module = HERE.parent / "web/mesophon/ux-matrix.mjs"
+            (root / "package.json").write_text('{"type":"module"}')
+            (root / "ux.test.js").write_text(f"""
+import {{ runMatrix }} from {json.dumps(module.as_uri())};
+import {{ mkdir, writeFile }} from "node:fs/promises";
+import path from "node:path";
+if (process.argv[2] === "--cell") {{
+  const [, , , screenshots, engine, size] = process.argv;
+  const cell = path.join(screenshots, engine, size);
+  await mkdir(cell, {{ recursive: true }});
+  await writeFile(path.join(cell, "notes.png"), "fixture", {{ flag: "wx" }});
+}} else {{
+  await runMatrix(process.cwd(), ["chromium"], {{ phone: {{ notes: true }} }});
+}}
+""")
+            env = dict(os.environ, MESIMON_TEST_RUN="enclosing-check", MESOPHON_UX_ENGINE="chromium",
+                       MESOPHON_UX_SIZES="phone", MESOPHON_UX_FLOW="notes")
+            def launch():
+                return subprocess.Popen(["node", "ux.test.js"], cwd=root, env=env, text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            with launch() as first, launch() as second:
+                for process in (first, second):
+                    log, _ = process.communicate(timeout=10)
+                    self.assertEqual(process.returncode, 0, log)
+            self.assertEqual(len(list(root.glob("test-results/run-*/chromium/phone/notes.png"))), 2)
 
 
 class PruneTests(unittest.TestCase):
+    def test_ticket_prunes_only_above_the_entry_threshold(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            deps = root / "target/debug/deps"
+            deps.mkdir(parents=True)
+            with patch.object(runner.subprocess, "run", return_value=SimpleNamespace(stdout=f"{root}\nmsmn/test\n")), \
+                 patch.object(runner, "TICKET_PRUNE_ENTRIES", 1):
+                (deps / "first").touch()
+                self.assertFalse(runner.needs_prune(deps))
+                (deps / "second").touch()
+                self.assertTrue(runner.needs_prune(deps))
+            with patch.object(runner.subprocess, "run", return_value=SimpleNamespace(stdout=f"{root}\nmain\n")):
+                self.assertTrue(runner.needs_prune(deps))
+
     def test_prune_steps_aside_while_cargo_builds_and_prunes_after(self):
         prune = HERE / "prune-deps.py"
         with tempfile.TemporaryDirectory() as directory:

@@ -5598,8 +5598,8 @@ const bySize = {
 };
 
 if (process.argv[2] === "--cell") {
-  const [, , , engine, size, themes, ...names] = process.argv;
-  output = path.join(root, "test-results", engine, size);
+  const [, , , screenshots, engine, size, themes, ...names] = process.argv;
+  output = path.join(screenshots, engine, size);
   await fs.mkdir(output, { recursive: true });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;

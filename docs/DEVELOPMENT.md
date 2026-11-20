@@ -384,6 +384,29 @@ the first pass (T-1101): it waits on cargo's lock while the suite builds, then b
 their tests at once, each at `--jobs N` threads, the mod road's lines prefixed `mod | `. A
 single-road stamp does not satisfy the release gate. `ci/release-prepare.sh` wraps the gate for
 a release and warms the release builds beside it (the release skill has the order).
+
+For a long check, start the runner in the background and keep the path on its first
+`Completion record` line. Read it after the background notification, or wait for a bounded
+interval with the following command.
+
+```sh
+python3 -B ci/test-run.py --wait "$record" --timeout 30
+```
+
+The command prints JSON and returns the runner's exit code. Exit 124 with `result: null`
+means the check was still running at the end of the interval. A finished record keeps
+`started_at`, `exited_at` (Unix seconds), the numeric `result`, and the absolute path to
+the runner's log. These survive a late read and a check that emitted no output. The
+record and log live together in the user's temporary lock directory.
+
+Starting the same check again in the same working directory supersedes a copy still
+waiting for locks or executing tests. The command, roads, environment and job settings
+identify the check. The earlier runner cleans up its own children and records a nonzero
+result with `superseded_by` pointing to the replacement. Nested runs and exclusive gates
+keep their existing lock order. Standalone scripts take the machine lock. Scripts that
+use the checkout's Cargo artifacts can declare them with `--cargo-manifest path/to/Cargo.toml`,
+as the Codex and agy rigs do.
+
 **Bounded runs in different worktrees overlap** (T-830): a run locks each Cargo target/build
 directory it writes (as cargo resolves them, config included), so only runs sharing build output
 take turns, and the waiting one prints `== waiting (not testing yet)` with the holder's pid,
@@ -406,6 +429,11 @@ after a core edit: 98 s each as cargo ships, 18 to 21 s each under this config. 
 cache is 4 to 6 GB a worktree; the init script deletes it from a worktree whose branch is in the
 checkout's history and that has not built for an hour. The checkout itself, and a worktree kept
 outside mesimon's state directory, build as cargo ships.
+
+On macOS, the runner skips the closing prune for a ticket worktree's own Cargo output
+when `debug/deps` has at most 50,000 entries. The entry count tracks the directory scan
+cost and matches the pruner's existing cleanup threshold. When pruning is needed, the
+runner keeps the output lock through the prune.
 
 **The runner's closing prune reads each executable once** (T-1193): `ci/prune-deps.py` first
 deletes the test executables newer links have superseded (two newest of a target stay), then
