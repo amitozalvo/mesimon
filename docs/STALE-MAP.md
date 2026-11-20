@@ -48556,6 +48556,7 @@ The preview step found in the tenth simplify pass now waits for Chat, clicks
 The tab remembers the choice directly. The Settings switch from T-701 is gone.
 The Chromium phone `chat` and `terminal` flows passed against the UX fixture.
 The real-relay browser pass was not run because no local relay fixture was available.
+
 ## Catch release compile failures before the gate and hand off worktree builds (T-1368, 2026-11-20)
 
 Prep runs all-target clippy before the bump with `--lint` and again on the

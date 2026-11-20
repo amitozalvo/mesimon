@@ -234,6 +234,10 @@ trap 'rm -rf "$tmp"' EXIT
 sha=$(git rev-parse HEAD)
 bundle="target/release-prepared/$sha.zip"
 build_dir=target
+# Only release-lib's build steps set MESIMON_RELEASE=1. The stamp enables the
+# updater to replace its own executable. Guessing from a profile or path could
+# point an update download at somebody's development build tree.
+# Worktree prep builds every binary in the bundle through those same stamped steps.
 if [ -f "$bundle" ]; then
   build_dir="$tmp/prepared"
   python3 -B ci/release-handoff.py unpack "$bundle" "$sha" vendor/tmux/tmux "$build_dir"
@@ -255,6 +259,9 @@ step "smoke test"
 
 if [ "$build_dir" = target ]; then
   step "build for Linux ($LINUX_TARGETS)"
+  # rust-lld cross-links a static musl binary per architecture so it runs
+  # across distros and WSL2. Only release_build_linux sets the stamp here.
+  # It passes the stamp through to build-linux.sh.
   release_build_linux $LINUX_TARGETS
 fi
 
