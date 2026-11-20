@@ -12,15 +12,26 @@ See `AGENTS.md` for the shared development contract. Production deploys — `dep
 `deploy/ship.sh all`. Never verify before the bump — the bump relinks every crate and the run is
 thrown away. `ci/release-prepare.sh` (T-1101) is the one command after the commit: it refuses a
 dirty tree or a CHANGELOG whose top heading is not the version's, runs the stamped gate
-(`ci/test-run.py --both-roads`, the two roads **side by side**, the mod pass waiting on cargo's
-lock while the suite builds, so both take about one road's time), and once the tests are running
+(`ci/test-run.py --both-roads --exclusive`, with hooks and mod running side by side), and once the tests are running
 warms beside them, niced, what `release.sh` and the ship will run again on the same commit: the
 gate's clippy (a red one stops the gate: the commit will change), the drift check, the site, and
 in the main checkout the macOS and two Linux release builds with `MESIMON_RELEASE=1`, so the
 author's ship finds them built. In a worktree the release builds are skipped (cargo keys
-artifacts by source path) and the stamp is the deliverable. `--jobs N` is each road's thread
-count (default 6: twelve e2es at once ran clean at load 25–35; nextest's own 11 a road timed out
-the slowest crown_e2e test at load 60); logs land in `target/release-prepare/`. From the tag on, the author runs **one command, the
+artifacts by source path) and the stamp is the deliverable.
+
+The gate waits for other bounded runs and holds the exclusive lock through both roads and any
+reruns. Both nextest passes use `--no-fail-fast`. After both finish, the runner reruns each
+named failure once, alone on its original road at the same clean SHA. Each result names the
+road, binary and test as `passed-alone` or `failed-alone`. A rerun that could not execute is
+`inconclusive`. Any red in the full runs leaves the gate red and writes no stamp. Bring the
+named results to the person for any exception to the two-green-roads requirement.
+
+Use the default of six jobs per road. T-1101 measured 1,071 s on hooks and 1,038 s on mod at
+six. The observed four-job and six-job gates used different candidates. Record the job count,
+road summaries and elapsed gate time at the next real release before changing the default.
+Logs land in `target/release-prepare/`.
+
+From the tag on, the author runs **one command, the
 relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the relay, then the tag,
 push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses while the live relay
 lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps

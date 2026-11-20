@@ -48415,3 +48415,20 @@ A manual hold alone allowed an earlier rig crown to land BT1.txt. BT1 now starts
 uncrowned against a ticket-specific target with independent Git history, restores
 the prior target on exit, and keeps the worker off the train. The offline case tests
 that restoration on failure. Real main also held its tip during the earlier Sonnet run.
+## Finish both release roads and rerun each failing test alone (T-1364, 2026-11-20)
+
+Release preparation takes the exclusive runner lock. Both nextest roads run with
+`--no-fail-fast` and separate JUnit reports. The runner uses each failing binary and exact
+test name for one isolated rerun on its original road and clean SHA, under the same lock
+and deadline. The release shell prints every verdict. A red full run always withholds the
+stamp, including when every rerun passes.
+
+The original shell stopped mod on the fixture's early hooks failure. Mod missed its finish
+marker, with zero reruns and no stamp. With the change, both roads finished. In binary
+`mesimon::gate`, hooks `transient` passed alone and mod `persistent` failed alone. The
+single-flake case also withheld the stamp. The full green control stamped both roads at
+the fixture SHA. The runner's 41 tests passed, including the release shell fixture.
+
+Six jobs per road stays the default. T-1101 measured 1,071 s on hooks and 1,038 s on mod at
+six. The later four- and six-job releases used different candidates, so their times cannot
+isolate the effect of the job count. Measure wall time at the next real release.

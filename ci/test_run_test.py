@@ -315,6 +315,111 @@ class PassTests(unittest.TestCase):
 
 HERE = Path(__file__).resolve().parent
 
+@unittest.skipUnless(shutil.which("cargo-nextest"), "nextest is required for the release gate fixture")
+class ReleasePrepareTests(unittest.TestCase):
+    def test_an_early_red_finishes_both_roads_and_reruns_only_the_two_named_tests(self):
+        # Exercise the release shell, nextest reports and supervisor together.
+        # Only the unrelated release builds are stubbed. The fixture package
+        # has the name the mod pass selects.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pkg = root / "pkg"
+            ci = pkg / "ci"
+            ci.mkdir(parents=True)
+            for name in ("release-prepare.sh", "release-lib.sh", "test-run.py",
+                         "test_guard.py", "prune-deps.py"):
+                shutil.copy(HERE / name, ci)
+            with (ci / "release-lib.sh").open("a") as lib:
+                for name in ("clippy", "dup_deps", "site", "build_macos", "build_linux"):
+                    lib.write(f"\nrelease_{name}() {{ :; }}\n")
+            (pkg / "Cargo.toml").write_text('[package]\nname = "mesimon"\nversion = "0.1.0"\nedition = "2021"\n')
+            (pkg / "CHANGELOG.md").write_text("## v0.1.0 — 2026-11-20\n")
+            (pkg / ".gitignore").write_text("/target/\n")
+            (pkg / "tests").mkdir()
+            (pkg / "tests/gate.rs").write_text("""
+use std::{env, fs, path::PathBuf, thread, time::Duration};
+fn marker(name: &str) -> PathBuf { PathBuf::from(env::var_os("FIXTURE_MARKERS").unwrap()).join(name) }
+fn on_mod() -> bool { env::var("MESIMON_TEST_ROAD").as_deref() == Ok("mod") }
+
+#[test]
+fn transient() {
+    if !on_mod() && !marker("hooks-red").exists() {
+        fs::write(marker("hooks-red"), "").unwrap();
+        panic!("injected early failure");
+    }
+}
+
+#[test]
+fn persistent() {
+    if on_mod() {
+        for _ in 0..100 {
+            if marker("hooks-red").exists() { break; }
+            thread::sleep(Duration::from_millis(50));
+        }
+        // Let the runner observe the hooks exit before this road finishes.
+        thread::sleep(Duration::from_secs(1));
+        fs::write(marker("mod-finished"), "").unwrap();
+        assert!(marker("repair").exists());
+    }
+}
+
+#[test]
+fn transient_neighbor() {
+    let name = if on_mod() { "mod-neighbor" } else { "hooks-neighbor" };
+    fs::File::create_new(marker(name)).expect("green test ran twice");
+}
+""")
+            # Shorten only the release shell's progress polling in this fixture.
+            (root / "sleep").write_text(f"#!/bin/sh\nexec {shutil.which('sleep')} 0.1\n")
+            (root / "sleep").chmod(0o755)
+            env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                   "MESIMON_TMUX_BIN": shutil.which("true"), "FIXTURE_MARKERS": str(root),
+                   "MESIMON_TEST_AUDIT_ROOT": str(root / "audit"), "MESIMON_TEST_LOCK_DIR": str(root / "locks"),
+                   "MESIMON_TEST_HELD": "", "MESIMON_TEST_ROAD": "hooks", "NEXTEST_PROFILE": "default",
+                   "CARGO_TARGET_DIR": str(pkg / "target")}
+            def run(*argv, check=True):
+                return subprocess.run(argv, cwd=pkg, env=env, check=check, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True, timeout=90)
+            run("cargo", "generate-lockfile", "--offline")
+            run("git", "init", "-q")
+            run("git", "add", ".")
+            run("git", "-c", "user.name=fixture", "-c", "user.email=t@example.invalid",
+                "commit", "-qm", "candidate")
+            candidate = run("git", "rev-parse", "HEAD").stdout.strip()
+            red = run("bash", "ci/release-prepare.sh", check=False)
+            log = (pkg / "target/release-prepare/gate.log").read_text()
+            self.assertNotEqual(red.returncode, 0, red.stdout)
+            self.assertTrue((root / "mod-finished").exists(), log)
+            summaries = [line for line in log.splitlines() if "Summary [" in line]
+            self.assertTrue(summaries[0].lstrip().startswith("Summary"), log)
+            self.assertTrue(summaries[1].startswith("mod |"), log)
+            self.assertIn("Fixture audit clean", log)
+            self.assertEqual([line for line in red.stdout.splitlines() if line.startswith("Rerun ")],
+                             ["Rerun passed-alone hooks mesimon::gate transient",
+                              "Rerun failed-alone mod mesimon::gate persistent"], red.stdout)
+            self.assertEqual(log.count(f"alone at {candidate}"), 2)
+            stamp = pkg / "target/suite-passed.json"
+            self.assertFalse(stamp.exists())
+
+            # A passed-alone flake is still a red gate, even as the only failure.
+            (root / "repair").touch()
+            for name in ("hooks-red", "hooks-neighbor", "mod-neighbor"):
+                (root / name).unlink()
+            transient = run("bash", "ci/release-prepare.sh", check=False)
+            self.assertNotEqual(transient.returncode, 0, transient.stdout)
+            self.assertEqual([line for line in transient.stdout.splitlines() if line.startswith("Rerun ")],
+                             ["Rerun passed-alone hooks mesimon::gate transient"], transient.stdout)
+            self.assertFalse(stamp.exists())
+
+            # A fresh full green gate at the same SHA still earns its stamp.
+            for name in ("hooks-neighbor", "mod-neighbor"):
+                (root / name).unlink()
+            green = run("bash", "ci/release-prepare.sh", check=False)
+            self.assertEqual(green.returncode, 0, green.stdout)
+            self.assertEqual(json.loads(stamp.read_text())["sha"], candidate)
+            self.assertEqual(json.loads(stamp.read_text())["roads"], ["hooks", "mod"])
+
+
 # A run's workload, as steps: touch:<file>, await:<file>, absent:<file>,
 # fixture:<name> (a nested fixture supervisor owning a sleep, its pid in
 # <name>.pid, finished on <name>.end), exit:<code>. Files live in the box.

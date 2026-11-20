@@ -17,7 +17,8 @@ Runs in independent checkouts overlap (T-830): a run holds a lock on each
 Cargo build directory it writes (target dir and build-dir, however
 configured), so only runs sharing build output take turns, and the
 waiting run says whose turn it is. --exclusive (the release gate) waits for
-every other bounded run and holds new ones off.
+every other bounded run and holds new ones off. With --both-roads and nextest,
+the exclusive gate finishes both roads and reruns each failure alone on its road.
 Requires 5 GiB free on build and fixture/state volumes, checked every second;
 low space stops this workload through its cleanup supervisor. --min-free-gib
 changes the reserve (0 disables it). This is not a filesystem quota.
@@ -35,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 
 def build_output(command, env):
@@ -363,7 +365,54 @@ def keeps_going(command):
     return "--no-fail-fast" in words
 
 
-def stamp_pass(command, env, roads, target=None):
+def clean_head():
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    return None if dirty else sha
+
+
+def failure_report(root, road):
+    """Give simultaneous nextest runs separate JUnit reports, preserving their console output."""
+    report = root / f"{road}.xml"
+    config = root / f"{road}.toml"
+    config.write_text(f"[profile.default.junit]\npath = {json.dumps(str(report))}\n")
+    return ["--tool-config-file", f"mesimon:{config}", "--retries", "0"]
+
+
+def failed_tests(report):
+    return [(case.attrib["classname"], case.attrib["name"])
+            for case in ET.parse(report).iter("testcase")
+            if case.find("failure") is not None or case.find("error") is not None]
+
+
+def rerun_failures(codes, root, candidate, execute, interrupted):
+    """Diagnose the red roads under the gate's existing lock and supervisor."""
+    for road, code in codes.items():
+        if not code:
+            continue
+        report = root / f"{road}.xml"
+        if not report.exists():
+            print(f"== {road} exited {code} without a test report; no named tests to rerun", flush=True)
+            continue
+        for binary, test in failed_tests(report):
+            if interrupted:
+                return
+            if clean_head() != candidate:
+                raise RuntimeError("Candidate changed before the isolated rerun")
+            argv = ["cargo", "nextest", "run", "--workspace", "-E", f"binary_id(={binary})",
+                    "--retries", "0", "--no-tests", "fail", "--", "--exact", test]
+            label = f"{road} {binary} {test}"
+            print(f"== rerunning {label} alone at {candidate}", flush=True)
+            retry = execute({road: argv})
+            if clean_head() != candidate:
+                raise RuntimeError("Candidate changed during the isolated rerun")
+            # nextest reserves exit 100 for a test failure. A build error or
+            # empty selection cannot establish how the test did alone.
+            status = {0: "passed-alone", 100: "failed-alone"}.get(retry.get(road), "inconclusive")
+            print(f"Rerun {status} {label}", flush=True)
+
+
+def stamp_pass(command, env, roads, target=None, candidate=None):
     """Record a clean FULL-workspace run so ci/release.sh can accept it as its
     gate instead of running the same suite a second time, serially, paying
     macOS's first-exec hold on every freshly linked e2e binary (~25 s each,
@@ -378,11 +427,13 @@ def stamp_pass(command, env, roads, target=None):
     if command[1] == "nextest" and env.get("NEXTEST_PROFILE", "default") != "default":
         return
     try:
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+        sha = clean_head()
     except (subprocess.CalledProcessError, OSError):
         return
-    if dirty:
+    if candidate is not None and sha != candidate:
+        print("Candidate changed before the release stamp could be written.", file=sys.stderr)
+        return
+    if sha is None:
         print("Suite passed on a dirty tree: not stamped (the commit is not what ran).", flush=True)
         return
     tmux = shutil.which(env.get("MESIMON_TMUX_BIN", "tmux"))
@@ -396,6 +447,7 @@ def stamp_pass(command, env, roads, target=None):
     stamp.write_text(json.dumps(dict(coverage="full-workspace-v2", sha=sha, tmux=tmux, tmux_sha256=digest, roads=roads,
                                      at=int(time.time())), indent=2) + "\n")
     print(f"Suite passed at {sha[:7]} against {tmux}; stamped {stamp}.", flush=True)
+    return True
 
 
 class PassLog:
@@ -448,16 +500,20 @@ def main():
         command = ["cargo", "nextest", "run", "--workspace"]
         if args.jobs:
             command += ["--test-threads", str(args.jobs)]
-    passes = [(command, {})]
+    # Both release entry points take the exclusive two-road nextest gate.
+    release_gate = args.both_roads and args.exclusive and command[:3] == ["cargo", "nextest", "run"]
+    if release_gate and os.environ.get("NEXTEST_PROFILE", "default") != "default":
+        parser.error("the release gate requires the default nextest profile")
+    if release_gate and not keeps_going(command):
+        command = [*command[:3], "--no-fail-fast", *command[3:]]
     first_road = os.environ.get("MESIMON_TEST_ROAD", "hooks")
+    passes = {first_road: command}
     mod = road_pass(command, args.jobs) if args.both_roads and first_road == "hooks" else None
     if args.both_roads and mod is None:
         parser.error("--both-roads needs an unfiltered full workspace suite starting on hooks; "
                      "run a targeted mod check with MESIMON_TEST_ROAD=mod instead")
-    pass_roads = [first_road]
     if mod:
-        passes.append((mod, {"MESIMON_TEST_ROAD": "mod"}))
-        pass_roads.append("mod")
+        passes["mod"] = mod
     if args.timeout is None:
         # One road under load has taken ~1000 s (T-1099); both, side by
         # side, take about one road's time plus the build, and the room
@@ -484,12 +540,12 @@ def main():
         print("Check not started: interrupted while waiting", file=sys.stderr)
         return 128 + signal.SIGINT
     try:
-        return run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, claims)
+        return run_claimed(args, command, passes, build_dirs, watched_paths, claims, release_gate)
     finally:
         claims.release()
 
 
-def run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, claims):
+def run_claimed(args, command, passes, build_dirs, watched_paths, claims, release_gate):
     # Containers can retain audit metadata on their build volume even after
     # their process namespace and temporary fixture directories disappear.
     audit_root = Path(os.environ.get("MESIMON_TEST_AUDIT_ROOT", "/tmp"))
@@ -527,50 +583,64 @@ def run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, cl
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)}
     result = 1
     logs = []
+    candidate = None
     try:
         root = Path(json.loads(guard.stdout.readline())["ok"])
         workers = f", {args.jobs} build/test workers" if args.jobs else ""
         print(f"Bounded check ({args.timeout}s deadline{workers}); audit: {run}", flush=True)
         if build_dirs:
             print(f"Build output held by this run: {', '.join(map(str, build_dirs))}", flush=True)
-        last_disk_check = time.monotonic()
-        # One supervisor and one deadline for every pass, and every pass at
-        # once (T-1101): the mod road's pass waits on cargo's own lock while
-        # the first pass builds, then both run their tests side by side. A
-        # red pass ends the run, and the supervisor's cleanup ends the other
-        # pass with it, unless the suite was asked to run past its first
-        # red: then every pass finishes, and the run fails if any did.
-        result = 0
-        claims.phase("both roads" if len(passes) > 1 else "tests")
-        for index, (argv, extra) in enumerate(passes):
-            label = "the mod road's pass (T-574)" if index else "tests"
-            print(f"== {label}: {' '.join(argv)}", flush=True)
-            pid = request(dict(op="spawn", argv=argv, env=dict(env, **extra)))
-            logs.append(PassLog(pid, open(root / f"child-{index}.log"), "mod | " if index else ""))
-        running = list(logs)
-        while running and not interrupted:
-            for log in list(running):
-                log.relay()
-                code = request(dict(op="poll", pid=log.pid))
-                if code is not None:
-                    log.relay(final=True)
-                    running.remove(log)
-                    if code != 0:
-                        result = 1
-            if not running or (result and not keeps_going(command)):
-                if running:
+
+        def execute(batch):
+            """Start the batch together and supervise it through its last result."""
+            running = {}
+            codes = {}
+            for road, argv in batch.items():
+                mod_pass = road == "mod" and args.both_roads
+                extra = {"MESIMON_TEST_ROAD": "mod"} if mod_pass else {}
+                label = "the mod road's pass (T-574)" if mod_pass else "tests"
+                print(f"== {label}: {' '.join(argv)}", flush=True)
+                pid = request(dict(op="spawn", argv=argv, env=dict(env, **extra)))
+                log = PassLog(pid, open(root / f"child-{len(logs)}.log"), "mod | " if mod_pass else "")
+                logs.append(log)
+                running[road] = log
+            last_disk_check = time.monotonic()
+            while running and not interrupted:
+                for road, log in list(running.items()):
+                    log.relay()
+                    code = request(dict(op="poll", pid=log.pid))
+                    if code is not None:
+                        log.relay(final=True)
+                        log.file.close()
+                        codes[road] = code
+                        del running[road]
+                if running and any(codes.values()) and not keeps_going(command):
                     print("== a pass is red: the other pass is stopped with it (its summary counts "
                           "the tests it was cancelling as failed); --no-fail-fast runs both to the end",
                           flush=True)
-                check_disk_space(watched_paths, args.min_free_gib)
-                break
-            if time.monotonic() - last_disk_check >= 1:
-                check_disk_space(watched_paths, args.min_free_gib)
-                last_disk_check = time.monotonic()
-            time.sleep(0.2)
+                    break
+                if time.monotonic() - last_disk_check >= 1:
+                    check_disk_space(watched_paths, args.min_free_gib)
+                    last_disk_check = time.monotonic()
+                if running:
+                    time.sleep(0.2)
+            check_disk_space(watched_paths, args.min_free_gib)
+            return codes
+
+        claims.phase("both roads" if len(passes) > 1 else "tests")
+        if release_gate:
+            candidate = clean_head()
+            if not candidate:
+                raise RuntimeError("The release gate needs a clean candidate commit")
+            passes = {road: [*argv[:3], *failure_report(root, road), *argv[3:]]
+                      for road, argv in passes.items()}
+        codes = execute(passes)
+        result = int(any(codes.values()))
+        if release_gate and result and not interrupted:
+            rerun_failures(codes, root, candidate, execute, interrupted)
         if interrupted:
             result = 128 + interrupted[0]
-    except (RuntimeError, ValueError, OSError) as exc:
+    except (RuntimeError, ValueError, OSError, ET.ParseError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)
         result = 1
     finally:
@@ -592,8 +662,9 @@ def run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, cl
             result = 1
         guard.stdout.close()
         for log in logs:
-            log.relay(final=True)
-            log.file.close()
+            if not log.file.closed:
+                log.relay(final=True)
+                log.file.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         claims.phase("audit")
@@ -615,7 +686,10 @@ def run_claimed(args, command, passes, pass_roads, build_dirs, watched_paths, cl
             # Evidence is for a failure; a clean pass leaves nothing in /tmp.
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
-            stamp_pass(command, env, pass_roads, build_dirs[0] if build_dirs else None)
+            stamped = stamp_pass(command, env, list(passes), build_dirs[0] if build_dirs else None, candidate)
+            if release_gate and not stamped:
+                print("Release gate could not stamp the candidate.", file=sys.stderr)
+                result = 1
         # Every relink leaves its split-debuginfo objects behind and cargo
         # collects none of them; a week of that made deps/ 879k entries and
         # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned

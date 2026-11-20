@@ -87,8 +87,8 @@ uptime
 
 # --- the gate, then the warm-up beside it ------------------------------------
 
-step "the gate: both roads, side by side (ci/test-run.py --both-roads --jobs $jobs)"
-MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --jobs "$jobs" \
+step "the gate: both roads, side by side (ci/test-run.py --both-roads --exclusive --jobs $jobs)"
+MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --exclusive --jobs "$jobs" \
   > "$logs/gate.log" 2>&1 &
 gate=$!
 trap 'kill -TERM $gate 2>/dev/null || true' EXIT
@@ -150,6 +150,7 @@ mark "the gate ended ($code)"
 grep -E '^(mod \| )?( *Summary|Suite passed|Fixture audit|Check not started|Starting)' "$logs/gate.log" || true
 if [ "$code" != 0 ]; then
   echo
+  grep -E '^Rerun ' "$logs/gate.log" || true
   grep -E '^(mod \| )? *(FAIL|TIMEOUT|LEAK|SIGSEGV|SIGABRT) ' "$logs/gate.log" | head -n 20 || true
   die "the gate failed" "$logs/gate.log"
 fi
