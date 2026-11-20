@@ -1,6 +1,6 @@
 //! M3 adoption + sleep e2e: fabricated `~/.claude` tree → census → attach →
 //! takeover via `--resume` (stub claude records its argv), then hook-driven
-//! Idle → sleep (pane gone, transcript copied, state latched) → wake.
+//! Idle → sleep (pane gone, state latched) → wake.
 //!
 //! Same harness shape as the M2 hook e2e: in-process daemon, real tmux,
 //! real hook binary via CARGO_BIN_EXE. One test fn — env seams are
@@ -263,9 +263,8 @@ fn m3_adoption_and_sleep() {
     let board = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == obs).unwrap();
     assert_eq!(rec.state, SessionState::Sleeping);
-    assert!(rec.detail.is_none(), "transcript copy holds a conversation — no warning");
-    let copy = state_dir.join("transcripts").join(format!("{obs}.jsonl"));
-    assert!(copy.is_file(), "sleep must copy the transcript");
+    assert!(rec.detail.is_none());
+    assert!(!state_dir.join("transcripts").try_exists().unwrap());
     // The pane goes away (TERM'd stub → pane-died harvest, reaper backstop)
     // and the record stays Sleeping — the machine latch swallows the death.
     let deadline = Instant::now() + Duration::from_secs(8);

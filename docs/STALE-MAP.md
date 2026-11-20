@@ -48103,3 +48103,19 @@ Review found that clearing the list on submission left the picker blank througho
 a burst of typing. The picker keeps the last completed rows and their cursor until
 the new rank lands. Enter waits for that rank. A worker in flight uses the same
 8 ms poll interval as a fresh snapshot, including when the terminal is idle.
+
+## Parking leaves the transcript in the agent's store (T-1344, 2026-11-20)
+
+The person retired B-A22's sleep snapshot. Wake resumes the conversation from
+the provider's own store. Nothing in mesimon read the copy. The writer in
+`park_record` and the inactivity worker each copied the transcript on their
+respective paths. Both writes and the `transcripts_dir` helper are
+gone. The manual sleep and inactivity e2es now check that a fresh board creates
+no transcripts directory and that the same conversation wakes.
+
+The ticket had no confirmation to delete the existing folder, so it stayed in
+place. It held 1,105 files and `du -sk` reported 3,075,008 KiB before and after
+the change. Volume-wide `df -k` showed 35,880,000 KiB available before and
+33,760,000 KiB during verification. No files were deleted, so this change
+reclaimed zero bytes. The samples do not measure how much deleting the APFS
+copies would free.

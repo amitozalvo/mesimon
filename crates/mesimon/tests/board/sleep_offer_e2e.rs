@@ -81,8 +81,6 @@ fn z_sleeps_only_the_done_column() {
             Response::Spawned { id, .. } => id,
             other => panic!("spawn failed: {other:?}"),
         };
-        // A transcript with one user + one assistant record keeps the sleep
-        // path's B-A22 cheap check quiet.
         let transcript = dir.join(format!("{name}.jsonl"));
         std::fs::write(
             &transcript,

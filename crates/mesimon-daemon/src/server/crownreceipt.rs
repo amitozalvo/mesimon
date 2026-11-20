@@ -401,7 +401,7 @@ mod tests {
                 let input = d.seen_token(id);
                 let write = d.receipt_write(id, Some(&input));
                 let sid = d.board.live_agent(id).unwrap().id;
-                d.park_record(sid, None, 123, Park::Crown);
+                d.park_record(sid, 123, Park::Crown);
                 d.receipt_seen(id, Some(write));
                 assert!(d.receipt_holds(id, &input), "the park keeps its input read");
                 assert!(d.receipt_holds(id, &seen), "the earlier chain survives");
@@ -427,7 +427,7 @@ mod tests {
                 let seen = d.seen_token(id);
                 rename(d, id, &seen, "own write");
                 let sid = d.board.live_agent(id).unwrap().id;
-                d.park_record(sid, None, 123, park);
+                d.park_record(sid, 123, park);
                 assert!(!d.receipt_holds(id, &seen), "a foreign park still revokes");
             });
         }

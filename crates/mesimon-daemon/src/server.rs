@@ -22802,7 +22802,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
+    /// D23/14 §6.1, tmux-recast: park the record FIRST (the
     /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
     /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
     fn sleep_one(
@@ -22820,7 +22820,7 @@ impl Daemon {
                 .map_err(str::to_owned)?;
         }
         self.sleep_eligible(rec, now, enforce_floor)?;
-        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
+        let sid = rec.sid16();
 
         // A shell's pane IS its record (T-366, the user: "sleep of an adopted
         // shell kills it, remove it from the records"). There is no
@@ -22842,37 +22842,19 @@ impl Daemon {
             return Ok(());
         }
 
-        // B-A22: the conversation belongs to Claude's own store and this is
-        // our snapshot of it — the same copy `park_on_exit` makes, now in the
-        // same silence. It used to also assert the copy held a user+assistant
-        // pair and, failing that, park the record with `resume may lose
-        // context` in its detail: a warning the user asked for the removal of
-        // (2026-09-07). It was wrong twice over. `resume_session` does not
-        // read this copy — it replays argv with `--resume` against Claude's
-        // OWN store — so a thin snapshot costs the wake nothing, and where
-        // there is genuinely no conversation to resume the wake mints a fresh
-        // one under a new uuid rather than losing anything. The other sleep
-        // road never said it, so one gesture answered two ways.
+        self.park_record(id, now, park);
         if park == Park::Inactivity {
-            self.park_record(id, None, now, park);
             let stamp = Instant::now();
             self.reaping.insert(sid.clone(), stamp);
             self.responsive.reaping.insert(sid.clone(), stamp);
             let backend = self.backend.clone();
             let tx = self.tx.clone();
-            let dir = self.paths.transcripts_dir();
             std::thread::spawn(move || {
-                if let Some(path) = transcript {
-                    if std::fs::create_dir_all(&dir).is_ok() {
-                        let _ = std::fs::copy(path, dir.join(format!("{id}.jsonl")));
-                    }
-                }
                 let _ = backend.signal_session(&sid);
                 // Still present: start its normal reaper grace, release waiting wakes.
                 let _ = tx.send(Msg::Reaped(vec![(sid, stamp, false)], stamp.elapsed()));
             });
         } else {
-            self.park_record(id, transcript.as_deref(), now, park);
             let _ = self.backend.signal_session(&sid);
             self.reaping.insert(sid, Instant::now() + REAP_GRACE);
         }
@@ -22885,17 +22867,9 @@ impl Daemon {
         Ok(())
     }
 
-    /// The park both sleep roads share: the conversation snapshotted (B-A22:
-    /// it belongs to the agent's own store, and this is our copy), the
-    /// record parked with its Codex input forgotten, and the machine
-    /// re-minted `Sleeping` so the pane's death echo cannot undo it.
-    fn park_record(&mut self, id: uuid::Uuid, transcript: Option<&str>, now: u64, park: Park) {
-        if let Some(t) = transcript {
-            let dir = self.paths.transcripts_dir();
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
-            }
-        }
+    /// Keep the conversation in the agent's store for wake. Latch the record
+    /// and machine as Sleeping before the pane's death can reach them.
+    fn park_record(&mut self, id: uuid::Uuid, now: u64, park: Park) {
         if let Some(ticket) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
             if park == Park::Crown {
                 // The checked write owns this park (T-1050). Keep its
@@ -22990,11 +22964,11 @@ impl Daemon {
         if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
             return false;
         }
-        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
+        let sid = rec.sid16();
 
         let now = now_ms();
         // The person left the session from inside it: a park of their own.
-        self.park_record(id, transcript.as_deref(), now, Park::Deliberate);
+        self.park_record(id, now, Park::Deliberate);
         // No SIGTERM: the process left on its own. The pane is only still
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.

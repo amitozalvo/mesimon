@@ -152,7 +152,6 @@ fn inactivity_parks_only_idle_resumable_agents_and_wakes_the_same_conversation()
     }
     let rec = board.sessions.iter().find(|s| s.id == idle).unwrap();
     assert_eq!(rec.claude_session_id, Some(conversation));
-    assert!(h.paths.transcripts_dir().join(format!("{idle}.jsonl")).is_file());
     assert!(matches!(
         c.request(Command::WakeSession { id: idle }),
         Response::Spawned { fresh: false, .. }
@@ -161,6 +160,7 @@ fn inactivity_parks_only_idle_resumable_agents_and_wakes_the_same_conversation()
     let rec = board.sessions.iter().find(|s| s.id == idle).unwrap();
     assert_eq!(rec.claude_session_id, Some(conversation));
     assert!(rec.argv.windows(2).any(|a| a == ["--resume", &conversation.to_string()]));
+    assert!(!h.paths.state_dir.join("transcripts").try_exists().unwrap());
     sleep_every_column(&mut c, 0);
 }
 
