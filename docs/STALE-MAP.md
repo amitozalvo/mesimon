@@ -48975,3 +48975,21 @@ input stays mounted. The `tier` flow's new case dispatches
 `#prompt-camera`; with the old store gate the picture never appears.
 Checks: the `tier` flow (Chromium phone) fails without the fix and passes
 with it; all 102 browser cases and the state and asset tests passed once.
+
+## A subagent's message is a quiet line, not the person's prompt (T-1383, 2026-11-20)
+
+A Claude subagent's hand-back (or a named agent's `SendMessage`) showed on
+the ticket page and Remote Control as the person's prompt, with the whole
+`<agent-message from=…>` frame and report inside. Claude Code queues it as a
+`queued_command` attachment, the same record T-1156 reads as words sent
+mid-turn; its `origin.kind` is `peer` and `origin.name` the agent's name
+(66 of 66 in the local corpus, 2.1.295–2.1.329). The `user` copy beside it
+is `isMeta` and was already skipped; the card's peek never reads attachments.
+
+`claude::history::rows` now makes it a Notice row, `subagent web-fetch
+reported back` (or `sent a message` when the body is not a hand-back), and
+leaves the words out: they are the agent's to read. The frame alone
+(`<agent-message`) is read as a peer when `origin` is absent. Considered
+and not done: a new row kind with the crown's mark, which would change the
+phone's wire for one line; the notice already draws as an activity on both
+clients. Checks: a unit case on the real record shape, `cargo ut` green.

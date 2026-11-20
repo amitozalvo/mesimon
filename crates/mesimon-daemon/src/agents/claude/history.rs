@@ -326,6 +326,12 @@ pub(in crate::agents) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
         Some("system") if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") => {
             row(RowKind::Notice, "conversation compacted").into_iter().collect()
         }
+        // A subagent's or teammate's message into the session (T-1383) is
+        // queued the same way, its words the agent's to read: the row says
+        // it came, as the crown's acts do, and not what it said.
+        Some("attachment") if peer_message(v).is_some() => {
+            peer_message(v).and_then(|said| row(RowKind::Notice, &said)).into_iter().collect()
+        }
         // Words sent while the agent works (Claude Code 2.1.319, T-1156):
         // no `user` record, an `attachment` of the queued command, its
         // prompt the person's as typed.
@@ -352,6 +358,38 @@ fn queued_prompt(v: &Value) -> Option<&str> {
         .then(|| a.get("prompt").and_then(Value::as_str))
         .flatten()
         .filter(|p| !p.trim().is_empty())
+}
+
+/// The sentence for another agent's message into this session (T-1383):
+/// a subagent's hand-back or a teammate's `SendMessage`, which Claude Code
+/// queues as a command whose `origin.kind` is `peer` and whose prompt is
+/// `<agent-message from="…">…</agent-message>` (66 of 66 in the local
+/// corpus, 2.1.295–2.1.329; the `user` copy beside it is `isMeta`). The
+/// person never wrote it, and the report is the agent's to read, so the
+/// row names who spoke and leaves the words out. `None` for any other
+/// record.
+fn peer_message(v: &Value) -> Option<String> {
+    /// The most of a sender's name a row keeps.
+    const NAME_CHARS: usize = 40;
+    let a = v.get("attachment")?;
+    if a.get("type").and_then(Value::as_str) != Some("queued_command") {
+        return None;
+    }
+    let origin = a.get("origin");
+    let prompt = a.get("prompt").and_then(Value::as_str).unwrap_or_default().trim_start();
+    let peer = origin.and_then(|o| o.get("kind")).and_then(Value::as_str) == Some("peer");
+    if !peer && !prompt.starts_with("<agent-message") {
+        return None;
+    }
+    let name = origin
+        .and_then(|o| o.get("name"))
+        .and_then(Value::as_str)
+        .map(|n| n.trim().chars().take(NAME_CHARS).collect::<String>())
+        .filter(|n| !n.is_empty());
+    let who = name.map_or_else(|| "a subagent".to_string(), |n| format!("subagent {n}"));
+    let body = prompt.split_once('\n').map_or("", |(_, rest)| rest).trim_start();
+    let did = if body.starts_with("[Subagent hand-back]") { "reported back" } else { "sent a message" };
+    Some(format!("{who} {did}"))
 }
 
 /// A record's identity as a number the board can compare and keep.
@@ -674,6 +712,53 @@ mod tests {
             }
         });
         assert!(rows(9, &wake).is_empty());
+        // Another attachment is nobody's row.
+        let other = serde_json::json!({
+            "type": "attachment", "uuid": "x", "isSidechain": false,
+            "attachment": {"type": "edited_text_file", "filename": "a.rs"}
+        });
+        assert!(rows(8, &other).is_empty());
+    }
+
+    /// T-1383: a subagent's hand-back, queued into the session as a
+    /// command from a `peer`, was drawn as the person's prompt, its whole
+    /// frame and report in the bubble. It is a quiet line naming who spoke.
+    #[test]
+    fn a_subagents_message_is_a_notice_without_its_words() {
+        let queued = |origin: serde_json::Value, prompt: &str| {
+            serde_json::json!({
+                "type": "attachment",
+                "uuid": "354f9df9-381d-45f2-81d8-8688c48d3fcb",
+                "isSidechain": false,
+                "timestamp": "2026-11-14T14:32:32.834Z",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": prompt,
+                    "commandMode": "prompt",
+                    "isMeta": true,
+                    "origin": origin
+                }
+            })
+        };
+        let hand_back = "<agent-message from=\"aba04ec1a5572a690\">\n[Subagent hand-back] The text below is the final report of a subagent this session delegated to. The report follows:\n  Summary: centra.co.il has a Samsung display unit.\n</agent-message>";
+        let peer = |name: &str| {
+            serde_json::json!({"kind": "peer", "from": "aba04ec1a5572a690",
+                "senderTaskId": "aba04ec1a5572a690", "name": name})
+        };
+        let got = rows(7, &queued(peer("web-fetch"), hand_back));
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].kind, RowKind::Notice);
+        assert_eq!(got[0].text, "subagent web-fetch reported back");
+        assert_eq!(got[0].ms, Some(1_794_666_752_834), "the row keeps its time");
+        // A named agent's message mid-run is not a hand-back.
+        let mid = "<agent-message from=\"rev-tests\">\ntests-ci report, findings 1-8\n</agent-message>";
+        assert_eq!(rows(7, &queued(peer("rev-tests"), mid))[0].text, "subagent rev-tests sent a message");
+        // With no origin, the frame alone says whose it is.
+        let bare = rows(7, &queued(serde_json::Value::Null, hand_back));
+        assert_eq!((bare[0].kind, bare[0].text.as_str()), (RowKind::Notice, "a subagent reported back"));
+        // The person's queued words are still theirs.
+        let human = rows(7, &queued(serde_json::json!({"kind": "human"}), "and the tests?"));
+        assert_eq!((human[0].kind, human[0].text.as_str()), (RowKind::Prompt, "and the tests?"));
         // Another attachment is nobody's row.
         let other = serde_json::json!({
             "type": "attachment", "uuid": "x", "isSidechain": false,
