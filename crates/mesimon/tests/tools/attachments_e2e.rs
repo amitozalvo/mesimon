@@ -92,6 +92,14 @@ fn pictures_survive_duplicate_delete_undo_archive_and_daemon_restart() {
     c.request(Command::Shutdown);
     wait_until(Duration::from_secs(5), "daemon shutdown", || !paths.orch_sock().exists());
     drop(c);
+    // An existing board's picture sidecar predates the attachment kind field.
+    let sidecar =
+        mesimon_daemon::attachments::directory(&paths, &board.ticket(id).unwrap().short_key)
+            .join(format!("{attachment}.json"));
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("kind");
+    std::fs::write(sidecar, legacy.to_string()).unwrap();
     let _restarted = fixture.daemon(&repo);
     wait_until(Duration::from_secs(5), "restarted daemon", || paths.orch_sock().exists());
     let mut c = TestClient::connect(&paths.orch_sock());
@@ -371,6 +379,14 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
     std::fs::remove_dir(dir.join(format!("{empty}.json"))).unwrap();
     let r = c.request(ask);
     assert!(matches!(r, Response::Queued { .. }), "{r:?}");
+    let pending = pending_of(&mut c, Some(ticket));
+    assert!(
+        pending.iter().any(|p| p
+            .text
+            .as_deref()
+            .is_some_and(|s| s.contains(&first.to_string()) && s.contains(&empty.to_string()))),
+        "the accepted follow-up carries both links"
+    );
     drop(c);
     h.restart();
     let mut c = h.client("after restart");
@@ -412,4 +428,61 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
         mesimon_daemon::attachments::read(&h.paths, &copy_key, first).unwrap().1,
         b"abc\xff"
     );
+}
+
+#[test]
+fn queued_start_keeps_its_file_and_words_across_daemon_restart() {
+    let Some(h) = Harness::boot_with_env(
+        "file-queued-start",
+        Some(RECORDING_STUB),
+        &[("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let mut c = h.client("queue a start");
+    let holder = c.create_ticket("holder");
+    let waiter = c.create_ticket("waiter");
+    let session = c.spawn_claude(holder);
+    h.prompt_turn(&mut c, session);
+    let upload = match c.request(Command::UploadAttachment {
+        file: Some(mesimon_core::attachment::FileUpload {
+            ticket: waiter,
+            name: "report.csv".into(),
+        }),
+        upload: None,
+        offset: 0,
+        data: "NDI=".into(),
+        complete: true,
+    }) {
+        Response::AttachmentUploaded { upload } => upload,
+        other => panic!("{other:?}"),
+    };
+    let words = format!("Read [report.csv](mesimon-attachment:{upload})");
+    let response = c.request(Command::PromptSession {
+        ticket: waiter,
+        text: words.clone(),
+        queued: true,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: vec![upload],
+    });
+    assert!(matches!(response, Response::Queued { .. }), "{response:?}");
+    drop(c);
+    h.restart();
+    let mut c = h.client("restored start");
+    assert!(pending_of(&mut c, Some(waiter)).iter().any(|p| p.text.as_ref() == Some(&words)));
+    h.end_turn(&mut c, session);
+    wait_until(Duration::from_secs(10), "restored start gets its own agent", || {
+        c.board().live_agent(waiter).is_some()
+    });
+    let sid = c.board().live_agent(waiter).unwrap().id;
+    let mut shim = Shim::start(&h.paths.orch_sock(), sid);
+    let result = shim.call("read_attachment", json!({"attachment": upload, "offset": 0}));
+    assert_eq!(result["isError"], false, "{result}");
+    let file: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(file["part"]["data"], "42");
 }

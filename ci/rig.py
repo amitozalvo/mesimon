@@ -75,7 +75,7 @@ from typing import NamedTuple
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "rig"))
 from topology import AGENTLESS_CHECKS, summary_rows, validate_case  # noqa: E402
-from wire import Subscription, Wire, WireError, board_paths, feed_all, read_feed, ulid  # noqa: E402
+from wire import Subscription, Wire, WireError, board_paths, feed_all, file_prompt, read_feed, ulid  # noqa: E402
 
 TIER_NAME = "rig"
 # The workers' model, by its full id: the `sonnet` alias resolved to another
@@ -2798,15 +2798,9 @@ Reply with the single word ready and end your turn."""
                 return False
             return True
         if what == "file_ask":
-            import base64
-            data = base64.b64encode(b"juniper").decode("ascii")
             try:
-                upload = self.wire.request({"cmd": "upload_attachment", "upload": None,
-                    "file": {"ticket": test["ticket"], "name": "sample.bin"},
-                    "offset": 0, "data": data, "complete": True})["upload"]
-                link = f"[sample.bin](mesimon-attachment:{upload})"
-                self.wire.prompt(test["ticket"], step["text"].replace("{link}", link),
-                                 queued=False, uploads=[upload])
+                file_prompt(lambda cmd, **fields: self.wire.request({"cmd": cmd, **fields}),
+                            test["ticket"], "juniper", step["text"])
             except WireError as e:
                 record["failures"].append(f"file prompt: {e}")
                 return False

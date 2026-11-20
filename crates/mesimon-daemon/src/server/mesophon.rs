@@ -1014,6 +1014,7 @@ impl Daemon {
                     // Pictures with the words to an agent, `Prompt`'s and
                     // `Start`'s `uploads` (T-853).
                     "ask_pictures",
+                    "ask_files",
                     // The conversation read from its transcript (T-626).
                     "transcript",
                     // A tier picked for a start or a prompt (T-643).
@@ -1273,10 +1274,18 @@ impl Daemon {
                     self.control_write_pictured(&by, &ticket, note.as_deref(), text, rev, pictures)
                 }
             }
-            api::Request::Upload { ticket, upload, offset, data, complete } => {
-                let ticket = ticket.as_deref();
-                self.control_upload(&by, grant, ticket, upload.as_deref(), offset, &data, complete)
-            }
+            api::Request::Upload { ticket, file, restart, upload, offset, data, complete } => self
+                .control_upload(
+                    &by,
+                    grant,
+                    ticket.as_deref(),
+                    file,
+                    restart,
+                    upload.as_deref(),
+                    offset,
+                    &data,
+                    complete,
+                ),
             api::Request::TellAgent { ticket, note } => {
                 self.control_tell_agent(&by, &ticket, &note)
             }
@@ -4149,6 +4158,8 @@ impl Daemon {
         by: &Principal,
         grant: BoardId,
         ticket: Option<&str>,
+        file: Option<String>,
+        restart: Option<ulid::Ulid>,
         upload: Option<&str>,
         offset: usize,
         data: &str,
@@ -4183,7 +4194,30 @@ impl Daemon {
             Err(_) => return reject("unknown picture"),
         };
         let owner = crate::attachments::Owner::Grant(grant.to_hex());
-        match self.uploads.chunk(&owner, None, upload, offset, data, complete) {
+        let file = match file {
+            Some(name) => {
+                let Some(id) = ticket.and_then(|key| self.control_ticket(key)) else {
+                    return reject("a file needs a ticket");
+                };
+                if self.agent_tools_for(id) == mesimon_core::board::AgentTools::Off {
+                    return reject("board tools are off for this ticket");
+                }
+                Some(mesimon_core::attachment::FileUpload { ticket: id, name })
+            }
+            None => None,
+        };
+        if let Some(previous) = restart {
+            let Some(f) = &file else {
+                return reject("only files can restart");
+            };
+            if offset != 0 || upload.is_some() {
+                return reject("restart needs a first piece");
+            }
+            if let Err(e) = self.uploads.restart_file(&owner, previous, f) {
+                return reject(&e.to_string());
+            }
+        }
+        match self.uploads.chunk(&owner, file, upload, offset, data, complete) {
             Ok(upload) => Reply::Uploaded { upload: upload.to_string() },
             Err(e) => reject(&format!("{e:#}")),
         }
@@ -4442,6 +4476,7 @@ impl Daemon {
     /// words, which only a ticket on the board has.
     fn control_card(&self, t: &Ticket, book: &mesimon_core::tier::Book<'_>) -> api::Ticket {
         api::Ticket {
+            file_tools_off: self.agent_tools_for(t.id) == mesimon_core::board::AgentTools::Off,
             id: t.id.to_string(),
             queued: None,
             queue: None,
@@ -7491,6 +7526,7 @@ mod tests {
             assert!(mark.ends_with(&format!("of {} KiB", clean.len().div_ceil(1024))), "{mark}");
             // The board answer it rides, two agents on such plans at once.
             let ticket = |n: u32| api::Ticket {
+                file_tools_off: false,
                 queued: None,
                 queue: None,
                 id: format!("01J{n}"),

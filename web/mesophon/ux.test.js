@@ -554,13 +554,17 @@ function fixture() {
           // answer waiting in `heldUploads` (T-1312).
           if (request.op === "upload") {
             const id = request.upload || `pic-${Object.keys(state.uploads).length}`;
+            if (request.restart && state.uploads[request.restart]) state.uploads[request.restart].discarded = true;
             const u = (state.uploads[id] ||= { bytes: 0, pieces: 0, complete: false });
             const reply = (body) => (state.holdUploads ? state.heldUploads.push(() => answer(body)) : answer(body));
-            if (request.offset !== u.bytes || u.complete)
+            if (state.interruptFile && request.file && request.offset > 0) {
+              state.interruptFile = false;
+              state.channel().close();
+            } else if (request.offset !== u.bytes || u.complete)
               reply({ result: "rejected", message: "attachment upload offset mismatch" });
             else {
               Object.assign(u, { bytes: u.bytes + atob(request.data).length, pieces: u.pieces + 1, complete: request.complete,
-                ticket: request.ticket });
+                ticket: request.ticket, file: request.file, last: request.data });
               reply({ result: "uploaded", upload: id });
             }
           }
@@ -1588,7 +1592,7 @@ async function startFlow(browser, engineName, size, viewport) {
   const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
-    window.fixture.features.push("start");
+    window.fixture.features.push("start", "ask_files");
     window.fixture.tickets[5].agent = null;
     window.fixture.tickets[9].agent.state = "sleeping";
   });
@@ -1752,6 +1756,16 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.deepEqual(await page.evaluate(() => fixture.starts.at(-1)), { op: "start", ticket: "ticket-3", prompt: "Rebase first." });
     assert.equal(await prompt.inputValue(), "", "the words left with the start");
     assert(await pageStart.isEnabled(), "a refusal leaves the button to try again");
+
+    // A refused first turn gives the person back the selected file.
+    await page.locator("#prompt-file").setInputFiles({ name: "trace.log", mimeType: "text/plain", buffer: Buffer.from("trace") });
+    await until(page, () => document.querySelector("#prompt").value.includes("[trace.log]"));
+    await page.locator("#send").click();
+    await until(page, () => fixture.starts.at(-1)?.uploads?.length === 1);
+    await receiptIs("rejected");
+    assert.match(await prompt.inputValue(), /\[trace\.log\]/);
+    await page.getByRole("button", { name: "Remove trace.log" }).click();
+    await prompt.fill("");
 
     // The sheet asks for the first prompt. Blank, the request names the
     // ticket and nothing else: the words and the provider are the host's.
@@ -2035,6 +2049,7 @@ async function tierFlow(browser, engineName, size, viewport) {
     assert.deepEqual(await page.locator("#attach-menu > .note-pic-add, #attach-menu > .attach-item").evaluateAll((all) => all.map((n) => n.textContent.trim())),
       ["Take a photo", "Choose from library", "Another ticket"]);
     assert.equal(await page.locator("#prompt-camera").getAttribute("capture"), "environment");
+    assert.equal(await page.locator("#prompt-file").count(), 0, "an older host only offers supported attachments");
     await page.locator("#attach-ticket").click();
     const other = await page.locator(".attach-pick b").first().textContent();
     assert.notEqual(other, "T-0", "another ticket, never this one");
@@ -3560,7 +3575,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
   await context.addInitScript(fixture);
   await context.addInitScript(() => {
     const f = window.fixture;
-    f.features.push("transcript", "keys", "resume", "start", "tiers", "ask_pictures");
+    f.features.push("transcript", "keys", "resume", "start", "tiers", "ask_pictures", "ask_files");
     f.tiers = [
       { id: "claude", name: "claude", provider: "claude", summary: "Claude Code ∙ its own model" },
       { id: "01K", name: "coder", provider: "claude", summary: "Claude Code ∙ opus ∙ high" },
@@ -3658,7 +3673,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => fixture.resumes.length === 2);
     // T-1245: said as a line in the conversation on screen, where the start
     // is, with no receipt above the conversation and no pill over it.
-    await until(page, () => /Not started: a prompt is queued for this ticket at your terminal/.test(document.querySelector("#chat .chat-said-err")?.textContent || ""));
+    await until(page, () => /Not started: a prompt is queued for this ticket at your terminal/.test(document.querySelector("#chat")?.textContent || ""));
     assert.equal(await page.locator("#detail .start-receipt").count(), 0, "no line above the conversation");
     assert(!/Not started/.test(await page.locator("#toast").textContent()), "no pill over the conversation");
     await page.evaluate(() => (fixture.resumeRefusal = ""));
@@ -3707,11 +3722,12 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#resume-agent").disabled && !document.querySelector("#prompt").disabled);
     await page.locator("#prompt").fill("Again, with the shot");
     await page.locator("#prompt-picture").setInputFiles({ name: "again.png", mimeType: "image/png", buffer: noisePng(50, 30) });
-    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#prompt-file").setInputFiles({ name: "empty.log", mimeType: "text/plain", buffer: Buffer.alloc(0) });
+    await until(page, () => document.querySelector("#prompt").value.includes("[empty.log]") && !document.querySelector("#send").disabled);
     await page.locator("#resume-agent").click();
     await until(page, () => fixture.resumes.length === 4);
     const again = await page.evaluate(() => fixture.resumes[3]);
-    assert.equal(again.uploads?.length, 1, "the picture goes with the page's Resume");
+    assert.equal(again.uploads?.length, 2, "the picture goes with the page's Resume");
     assert.match(again.prompt, /^Again, with the shot/);
     await overview();
 
@@ -3724,8 +3740,23 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#prompt").disabled);
     const told = await page.evaluate(() => fixture.prompts.length);
     await page.locator("#prompt").fill("Look at this");
-    await page.locator("#prompt-picture").setInputFiles({ name: "ring.png", mimeType: "image/png", buffer: noisePng(240, 160) });
-    await page.locator(".composer-pics .note-pic").first().waitFor();
+    await page.locator("#attach").click();
+    const picker = page.getByLabel("Choose file", { exact: true }).first();
+    assert(await picker.isVisible());
+    await page.locator("#prompt-file").dispatchEvent("cancel");
+    assert(await page.locator("#attach-menu").isVisible());
+    const data = Buffer.alloc(81 * 1024, 0xab);
+    await page.locator("#prompt-file").setInputFiles({ name: "sample.dat", mimeType: "application/octet-stream", buffer: data });
+    await until(page, () => document.querySelector("#prompt").value.includes("[sample.dat]"));
+    await page.getByRole("button", { name: "Remove sample.dat" }).click();
+    assert(!(await page.locator("#prompt").inputValue()).includes("[sample.dat]"));
+    await page.locator("#prompt-file").setInputFiles({ name: "sample.dat", mimeType: "application/octet-stream", buffer: data });
+    await until(page, () => document.querySelector("#prompt").value.includes("[sample.dat]"));
+    await page.evaluate(() => { fixture.interruptFile = true; });
+    await page.locator("#send").click();
+    await until(page, () => document.querySelector("#chat")?.textContent.includes("connection dropped"));
+    assert.equal(await page.evaluate(() => fixture.prompts.length), told, "incomplete file sends no words");
+    assert(await page.getByRole("button", { name: "Remove sample.dat" }).isVisible());
     await page.evaluate(() => (fixture.holdUploads = true));
     await until(page, () => !document.querySelector("#send").disabled);
     await page.locator("#send").click();
@@ -3738,18 +3769,21 @@ async function terminalFlow(browser, engineName, size, viewport) {
     await page.evaluate(() => fixture.heldUploads.shift()());
     await until(page, () => Number(document.querySelector('.composer-pics [role="progressbar"]')?.getAttribute("aria-valuenow")) > 0);
     assert(Number(await ring.getAttribute("aria-valuenow")) < 100, "a picture of several pieces fills as they go");
-    await shot("picture-going");
+    await shot("file-going");
     await page.evaluate(() => {
       fixture.holdUploads = false;
       while (fixture.heldUploads.length) fixture.heldUploads.shift()();
     });
     await until(page, (n) => fixture.prompts.length === n, told + 1);
     assert.equal((await page.evaluate(() => fixture.prompts.at(-1))).uploads?.length, 1);
+    const file = await page.evaluate(() => fixture.uploads[fixture.prompts.at(-1).uploads[0]]);
+    assert(await page.evaluate(() => Object.values(fixture.uploads).some(u => u.file === "sample.dat" && u.discarded)), "retry releases the partial upload");
+    assert.deepEqual([file.file, file.bytes, file.last], ["sample.dat", data.length, data.subarray(80 * 1024).toString("base64")]);
     await until(page, () => !document.querySelector(".composer-pics"));
     await page.evaluate(() => (fixture.disposition = "rejected"));
     await page.locator("#prompt").fill("Not this one");
     await page.locator("#send").click();
-    await until(page, () => /Rejected: Session is no longer promptable/.test(document.querySelector("#chat .chat-said-err")?.textContent || ""));
+    await until(page, () => /Rejected: Session is no longer promptable/.test(document.querySelector("#chat")?.textContent || ""));
     assert(await page.locator("#delivery").isHidden(), "said in the conversation, not under the field");
     assert.equal(await page.locator("#prompt").inputValue(), "Not this one", "the words come back to the field");
     await page.evaluate(() => (fixture.disposition = "submitted"));

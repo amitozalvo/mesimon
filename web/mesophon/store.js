@@ -12,7 +12,7 @@ import { Edits } from "./edits.js";
 import { NoteBook, NoteMail, NOTE_MAX_BYTES, nameOf } from "./notes.js";
 import { toggle as toggleBox } from "./summary.js";
 import { showAlert, clearAlerts } from "./awareness.js";
-import { insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
+import { fileLabel, promptFile, promptMarkers, insertToken, linked, nextNumber, picture, pieceOf, unlinked, withoutPicture } from "./pictures.js";
 import { mergePage, tailAsk } from "./transcript.js";
 import { Peeks, shelfItem } from "./shelf.js";
 import { PromptMail } from "./letters.js";
@@ -932,6 +932,19 @@ export class Store {
     if (!item) return;
     const before = item.status;
     this.starts.reply(item, reply);
+    if (item.fileDraft && ["started", "starting", "provisioning"].includes(item.status)) {
+      const { entry, words } = item.fileDraft;
+      const current = this.sessions.get(item.board, this.board?.tickets.find(t => t.id === id));
+      for (const draft of new Set([entry, current])) {
+        if (draft?.draft === words) {
+          draft.draft = "";
+          draft.tier = undefined;
+          draft.delivery = "";
+          dropPictures(draft);
+        }
+      }
+      delete item.fileDraft;
+    }
     if (item.status !== before) {
       // The start's own line follows it (T-1245); the pill says the news
       // only where that line and the start's receipt are both off screen.
@@ -1769,6 +1782,17 @@ export class Store {
     if (entry.error) this.refuseError(entry);
     return placed;
   }
+  get canAskFiles() {
+    return this.live && !!this.connection?.features?.includes("ask_files");
+  }
+  async addPromptFiles(files, at) {
+    const entry = this.entry;
+    if (!entry || !this.canAskFiles) return;
+    if (this.board.current?.file_tools_off) return this.refuse(entry, "Board tools are off for this ticket.");
+    const placed = await this.readPictures(entry, "draft", files, at, () => this.entry === entry, true);
+    if (entry.error) this.refuseError(entry);
+    return placed;
+  }
   removePromptPicture(n) {
     this.dropPicture(this.entry, "draft", n);
   }
@@ -1972,25 +1996,26 @@ export class Store {
     return this.readPictures(draft, "description", files, at, () => this.composer === draft);
   }
   // Each file read into `draft`, named in its `field` while `current()`.
-  async readPictures(draft, field, files, at, current) {
+  async readPictures(draft, field, files, at, current, asFile = false) {
     if (draft.sending) return;
     for (const file of files) {
       draft.reading += 1;
       this.emit();
       let made;
       try {
-        made = await picture(file);
+        made = asFile ? await promptFile(file, draft) : await picture(file);
       } catch (e) {
         draft.error = e.message;
       }
       draft.reading -= 1;
       if (!current() || draft.sending) {
-        made?.thumb.close?.();
+        made?.thumb?.close?.();
         return undefined;
       }
       if (made) {
         const n = nextNumber(draft[field], draft.pictures.map((p) => p.n));
-        const placed = insertToken(draft[field], at, n);
+        if (asFile) made.label = fileLabel(made.name, draft[field], draft.pictures);
+        const placed = insertToken(draft[field], at, n, made.label);
         Object.assign(draft, { [field]: placed.text, error: "", confirmDelete: false });
         at = placed.at;
         draft.pictures.push({ n, ...made });
@@ -2016,9 +2041,10 @@ export class Store {
     if (!draft || draft.sending) return;
     const at = draft.pictures.findIndex((p) => p.n === n);
     if (at < 0) return;
-    draft.pictures[at].thumb?.close?.();
+    const item = draft.pictures[at];
+    item.thumb?.close?.();
     draft.pictures.splice(at, 1);
-    draft[field] = withoutPicture(draft[field], n);
+    draft[field] = item.label ? promptMarkers(draft[field], [item], () => "") : withoutPicture(draft[field], n);
     this.emit();
   }
   // One request answered as a promise, for an upload's pieces in turn. A
@@ -2035,19 +2061,20 @@ export class Store {
   }
   // One picture's pieces in order, for a note on `ticket`, or with none
   // for a ticket not filed yet (T-670). `went` hears each piece taken.
-  async uploadPicture(bytes, ticket, current, went = () => {}) {
+  async uploadPicture(bytes, ticket, current, went = () => {}, attachment) {
     let upload;
     let offset = 0;
-    while (offset < bytes.length) {
+    do {
       if (!current()) throw new Error("cancelled");
       const { data, end } = pieceOf(bytes, offset);
-      const reply = await this.ask({ op: "upload", ...(ticket ? { ticket } : {}), ...(upload ? { upload } : {}),
+      const reply = await this.ask({ op: "upload", ...(attachment?.name ? { file: attachment.name, ...(!upload && attachment.staged ? { restart: attachment.staged } : {}) } : {}), ...(ticket ? { ticket } : {}), ...(upload ? { upload } : {}),
         offset, data, complete: end >= bytes.length });
       if (reply.result !== "uploaded") throw new Error(reply.message || "the terminal refused it");
       upload = reply.upload;
+      if (attachment?.name) attachment.staged = upload;
       offset = end;
-      went(offset / bytes.length);
-    }
+      went(bytes.length ? offset / bytes.length : 1);
+    } while (offset < bytes.length);
     return upload;
   }
   // `pictures` up one by one, saying so on `draft`: their host ids by
@@ -2068,12 +2095,12 @@ export class Store {
         ids.set(p.n, await this.uploadPicture(p.bytes, ticket, current, (up) => {
           p.up = up;
           this.emit();
-        }));
+        }, p));
       }
     } catch (e) {
       settle();
       if (current()) {
-        draft.error = `Picture not sent: ${e.message}.`;
+        draft.error = `${pictures.some(p => p.name) ? "File" : "Picture"} not sent: ${e.message}.`;
         this.emit();
       }
       return undefined;
@@ -2772,11 +2799,12 @@ export class Store {
     // The pictures the words name go up first (T-853), then the words
     // linked to them, as a note's do; the draft keeps its own words and
     // its pictures until the host has taken them.
-    const held = new Map(entry.pictures.map((p) => [p.n, p]));
-    const pictures = unlinked(entry.draft).filter((n) => held.has(n)).map((n) => held.get(n));
+    const picked = new Set();
+    promptMarkers(entry.draft, entry.pictures, (marker, item) => { picked.add(item); return marker; });
+    const pictures = [...picked];
     if (pictures.length) {
-      if (!this.canAskPictures) {
-        this.refuse(entry, "Pictures need your terminal online.");
+      if (pictures.some(p => p.name ? !this.canAskFiles : !this.canAskPictures)) {
+        this.refuse(entry, "Attachments need a compatible terminal online.");
         return;
       }
       this.sendPicturedPrompt(entry, pictures, starts);
@@ -2791,7 +2819,8 @@ export class Store {
     if (!ids && current() && entry.error) return this.refuseError(entry);
     this.sync();
     if (!ids || !current()) return;
-    this.sendPrompt(entry, linked(words, ids), [...ids.values()], starts);
+    const text = promptMarkers(words, pictures, (marker, p) => `${marker}(mesimon-attachment:${ids.get(p.n)})`);
+    this.sendPrompt(entry, text, [...ids.values()], starts);
   }
   // The words to the agent as the host reads them (`text`, the draft with
   // its pictures linked), with the pictures' ids. The receipt keeps the
@@ -2806,10 +2835,15 @@ export class Store {
       // The conversation first, so the start's news is said there (T-1245).
       this.showChat(entry.ticket);
       if (resumes ? this.resumeAgent(entry.ticket, text, entry.tier, uploads) : this.startAgent(entry.ticket, text, entry.tier, uploads)) {
-        entry.draft = "";
-        entry.tier = undefined;
-        entry.delivery = "";
-        dropPictures(entry);
+        if (entry.pictures.some(p => p.name)) {
+          const item = this.startOf(this.board.current);
+          item.fileDraft = { entry, words: entry.draft };
+        } else {
+          entry.draft = "";
+          entry.tier = undefined;
+          entry.delivery = "";
+          dropPictures(entry);
+        }
       }
       this.sync();
       return;
@@ -2851,7 +2885,7 @@ export class Store {
     const ticket = this.board?.current;
     if (!this.mailsPrompt(ticket) || this.letterOf(ticket)) return;
     if (entry.pictures.length) {
-      this.refuse(entry, "Pictures need your terminal online.");
+      this.refuse(entry, entry.pictures.some(p => p.name) ? "Files need your terminal online." : "Pictures need your terminal online.");
       return;
     }
     // Too long to wait is said before the sheet explains waiting.

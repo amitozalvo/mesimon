@@ -48894,3 +48894,59 @@ instant agy selected the first request's tools is unavailable.
 Zero additional live Neon turns. The sandbox denied private sockets in the
 initial checks. Supervised reruns passed `cargo ut` (3,362 passed, 13 ignored)
 and all six `agy_e2e` cases, with clean fixture audits on both reruns.
+## Files travel with ticket prompts from the board and Remote Control (T-1375, 2026-11-20)
+
+Ctrl+O in a ticket prompt or its expanded editor picks a regular file.
+On a paired phone, + › Choose file keeps the original bytes, including the
+bytes of a picture chosen as a file. Each draft marker becomes a
+`mesimon-attachment:` link at its place in the person's words. A source path
+would be meaningless on another machine. A working-tree copy could enter a
+commit or disappear with the worktree. The daemon therefore stores each
+accepted file under the ticket's existing `attachments/` directory by its
+own ID, with the basename and size in the sidecar. The 10 MiB limit applies
+to the original bytes. The phone sends acknowledged 80 KiB pieces on the
+existing sealed connection. A retry can reclaim that grant's previous
+staging allowance for the same ticket and file.
+
+An authorized `read_attachment` returns the local path, name and byte count.
+Offset and limit request up to 16 KiB, including a base64 representation
+when the exact bytes cannot travel as plain text. Old PNG sidecars still
+return MCP images. The board keeps accepted attachments across restart and
+ticket lifecycle operations. Its queue policy still distinguishes a durable
+queued start from an in-memory follow-up to a live pane.
+
+Verification included the TUI goldens, the browser matrix, the daemon, tool
+and lifecycle tests, and a live Claude P9 worker reading a value found only
+in the file. The largest sealed piece and its receipt round-tripped locally.
+There was no compatible relay listening at the configured local endpoint.
+The Codex and agy file cases were laid out without live model turns.
+
+Verification reruns on this ticket:
+
+- The daemon attachment filters initially stopped at an old upload initializer.
+  The attachment group passed after adapting it. The team control-frame test
+  ran again in the unit suite with the maximum file piece and its receipt.
+- The first attachment e2e needed socket access. It passed with its private
+  fixtures and again in the affected e2e batch. The legacy-sidecar and
+  restart assertions prompted another run. The first restart assertion
+  expected a live-pane follow-up to persist. Separate fixtures now check
+  both accepted live-pane links and a durable queued start. The queued start
+  passed alone after replacing a stub stdin timeout with a read by the
+  agent that actually received the restored seat.
+- The first TUI golden build used an undeclared test dependency. The golden
+  filter passed with a standard temporary directory. The TUI suite reminted
+  the hint priority, and the golden filter ran again after excluding shell
+  fields. The final unit suite compared the resulting snapshots.
+- The Chromium terminal flow initially selected an earlier error after the
+  disconnect test added a second one. It passed alone with the corrected
+  selector. All 102 browser cases passed. After the retry began reclaiming
+  staged bytes, terminal passed again across both engines and three sizes.
+  The web state and assets tests also passed on their final run.
+- The first unit sweep found the tool schema six bytes over its existing
+  limit. The full unit rerun passed with shorter argument text. The Python
+  peer fixture passed alone with socket access. P9 preflight and the Codex
+  and agy harness tests ran again after sharing the rig upload helper.
+- A final rebase overlapped the agy rig's case list. Both the default trust
+  case and the opt-in file case were retained. Rebase verification covers
+  the unit suite, workspace build, agy e2e, and the agy rig's unit and
+  case-selection checks.

@@ -3212,6 +3212,18 @@ select {
   justify-items: center;
   gap: 2px;
 }
+.file-thumb {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  background: var(--s2);
+  border-radius: 8px;
+}
+.note-pic:has(.file-thumb) .note-pic-name {
+  max-width: 15ch;
+  overflow-wrap: anywhere;
+}
 .note-pic-thumb {
   width: 56px;
   height: 56px;

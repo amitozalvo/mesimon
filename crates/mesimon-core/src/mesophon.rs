@@ -280,6 +280,12 @@ pub enum Request {
     /// description of a ticket not filed yet (T-670), which only a host
     /// that says `filed_pictures` reads.
     Upload {
+        /// On a fresh attempt, release this grant's earlier staging for the same file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restart: Option<ulid::Ulid>,
+        /// Basename of a regular file for a ticket prompt. Absent for a PNG.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ticket: Option<String>,
         #[serde(default)]
@@ -524,6 +530,8 @@ pub struct Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ticket {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file_tools_off: bool,
     /// The words queued for the ticket's agent.
     #[serde(default)]
     pub queued: Option<String>,
@@ -1353,6 +1361,8 @@ mod tests {
         };
         assert_eq!((ticket, upload), (None, None));
         let filed = Request::Upload {
+            restart: None,
+            file: None,
             ticket: None,
             upload: None,
             offset: 0,
@@ -1575,6 +1585,7 @@ mod tests {
     #[test]
     fn a_ticket_carries_tags_pickup_and_the_agent_s_step_only_when_known() {
         let bare = Ticket {
+            file_tools_off: false,
             queued: None,
             queue: None,
             id: "01J".into(),
@@ -1894,6 +1905,7 @@ mod tests {
     #[test]
     fn the_queue_s_facts_ride_beside_its_words() {
         let ticket = |queue| Ticket {
+            file_tools_off: false,
             queued: Some("next".into()),
             queue,
             id: "01J".into(),

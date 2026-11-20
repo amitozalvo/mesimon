@@ -99,7 +99,7 @@ export class Sessions {
         // Pictures picked for the words (T-853), named `[Image #N]` in the
         // draft as a note's are; `reading` while one is decoded, `sending`
         // the words of the piece going up, `error` a picture refused.
-        pictures: [],
+        pictures: previous?.draft ? [...previous.pictures] : [],
         reading: 0,
         sending: "",
         error: "",

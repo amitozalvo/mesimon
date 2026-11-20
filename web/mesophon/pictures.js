@@ -44,11 +44,11 @@ export function withoutPicture(text, n) {
 }
 
 // `[Image #N]` placed at `at`, with a space either side where words touch.
-export function insertToken(text, at, n) {
+export function insertToken(text, at, n, label = `Image #${n}`) {
   const where = Math.max(0, Math.min(at ?? text.length, text.length));
   const before = text.slice(0, where);
   const after = text.slice(where);
-  const token = `${before && !/\s$/.test(before) ? " " : ""}[Image #${n}]${after && !/^\s/.test(after) ? " " : ""}`;
+  const token = `${before && !/\s$/.test(before) ? " " : ""}[${label}]${after && !/^\s/.test(after) ? " " : ""}`;
   return { text: before + token + after, at: where + token.length };
 }
 
@@ -109,4 +109,30 @@ export function pieceOf(bytes, offset) {
   let binary = "";
   for (let i = 0; i < slice.length; i += 0x8000) binary += String.fromCharCode(...slice.subarray(i, i + 0x8000));
   return { data: btoa(binary), end: offset + slice.length };
+}
+
+// Match only draft markers. A Markdown target the person already supplied stays theirs.
+export function promptMarkers(text, attachments, replace) {
+  const labels = new Map(attachments.map((p) => [p.label || `Image #${p.n}`, p]));
+  return text.replace(/\[([^\[\]\n]+)\](?!\()/g, (marker, label) => {
+    const item = labels.get(label);
+    return item ? replace(marker, item) : marker;
+  });
+}
+
+export async function promptFile(file, draft) {
+  if (!file.name || /[\x00-\x1f\x7f/\\]/u.test(file.name) || new TextEncoder().encode(file.name).length > 255)
+    throw new Error("Choose a file with a valid name.");
+  if (file.size > PICTURE_MAX_BYTES) throw new Error("File exceeds 10 MiB.");
+  if (draft.pictures.length >= 8 || draft.pictures.reduce((n, p) => n + p.bytes.length, file.size) > 25 * 1024 * 1024)
+    throw new Error("The draft can hold eight attachments and 25 MiB.");
+  return { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+}
+
+export function fileLabel(name, text, held) {
+  const base = name.replaceAll("[", "(").replaceAll("]", ")");
+  let label = base;
+  for (let n = 2; /^Image #\d+$/.test(label) || text.includes(`[${label}]`) || held.some(p => p.label === label); n++)
+    label = `${base} #${n}`;
+  return label;
 }

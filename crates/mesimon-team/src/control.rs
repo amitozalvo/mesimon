@@ -536,11 +536,11 @@ mod tests {
     /// relay carries it, stays under the frame cap: base64 and then hex
     /// nearly triple it, which is what `PICTURE_CHUNK_BYTES` was cut for.
     #[test]
-    fn a_whole_picture_piece_fits_one_frame() {
+    fn a_maximum_file_piece_and_its_receipt_fit_the_sealed_control_channel() {
         use mesimon_core::mesophon::{Request, PICTURE_CHUNK_BYTES};
         let host = DeviceKeys::generate();
         let browser = DeviceKeys::generate();
-        let (_, w) = Channel::host(
+        let (mut a, w) = Channel::host(
             BoardId::random(),
             BoardId::random(),
             ObjectId::random(),
@@ -552,16 +552,22 @@ mod tests {
         .unwrap();
         let (mut b, _) = Channel::client(&w, &browser).unwrap();
         let request = Request::Upload {
+            restart: None,
+            file: Some("\"".repeat(255)),
             ticket: Some("01JZZZZZZZZZZZZZZZZZZZZZZZ".into()),
             upload: Some("01JZZZZZZZZZZZZZZZZZZZZZZZ".into()),
             offset: 9 * 1024 * 1024,
-            data: "A".repeat(PICTURE_CHUNK_BYTES.div_ceil(3) * 4),
+            data: format!("{}=", "A".repeat(PICTURE_CHUNK_BYTES.div_ceil(3) * 4 - 1)),
             complete: true,
         };
         let command = serde_json::json!({
             "incarnation": "f".repeat(64), "id": 9_007_199_254_740_000u64, "request": request,
         });
-        let record = b.seal(&browser, command).unwrap();
+        let record = b.seal(&browser, command.clone()).unwrap();
+        assert_eq!(a.open(&record).unwrap(), command);
+        let reply = serde_json::json!({"result":"uploaded","upload":"01JZZZZZZZZZZZZZZZZZZZZZZZ"});
+        let ack = a.seal(&host, reply.clone()).unwrap();
+        assert_eq!(b.open(&ack).unwrap(), reply);
         let frame = Wire::Packet { peer: "p".repeat(64), record };
         let bytes = serde_json::to_vec(&frame).unwrap().len();
         assert!(bytes < MAX_BYTES - 16 * 1024, "{bytes} bytes");

@@ -377,6 +377,8 @@ function Composer({ store, ticket, entry, live }) {
             onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Take a photo</span></${PicturePick}>
           <${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Choose from library"
             onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Choose from library</span></${PicturePick}>`}
+          ${store.canAskFiles && html`<${PicturePick} id="prompt-file" draft=${entry} caret=${caret} anyFile=${true} label="Choose file"
+            onAdd=${(files, at) => store.addPromptFiles(files, at)}><span>Choose file</span></${PicturePick}>`}
           ${named.length > 0 && html`<button id="attach-note" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "note")}
             onClick=${() => setAttach(attach === "note" ? "menu" : "note")}><${Icon} name="file" size=${17} /><span>A note on this ticket</span></button>`}
           ${attach === "note" && html`<div class="attach-picks">${named.map((p) => html`<button type="button" class="attach-pick" key=${p.key}

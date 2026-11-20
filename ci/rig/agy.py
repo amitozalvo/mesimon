@@ -25,7 +25,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ("brief", "worktree-trust")
+CASES = ("brief", "worktree-trust", "file")
 TITLE = "Answer the question on this ticket"
 BRIEF_MARK = "This session was started by mesimon on a ticket."
 
@@ -125,7 +125,7 @@ class Case:
         # settings are written here; agy keeps its own home and sign-in.
         trust = guard.root / "agy-trust"
         trust.mkdir(mode=0o700)
-        trusted = [str(self.repo.resolve())] if result["case"] == "brief" else []
+        trusted = [] if result["case"] == "worktree-trust" else [str(self.repo.resolve())]
         (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": trusted}))
         env.update(TERM="xterm-256color", MESIMON_AGY="1", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
                    MESIMON_HOOK_BIN=str(args.binary), MESIMON_NO_DAEMON_AUTORESTART="1",
@@ -184,8 +184,9 @@ class Case:
         title = TITLE if self.args.live else "/mcp"
         ticket = self.request("create_ticket", column="TODO", title=title,
                               workspace="shared_checkout")["id"]
+        first_word = self.nonce if self.result["case"] == "brief" else "READY"
         self.request("write_note", ticket=ticket, note=None, text=(
-            f"# Question\n\nReply with the word {self.nonce} and nothing else. "
+            f"# Question\n\nReply with the word {first_word} and nothing else. "
             "Run no command and change no file."))
         if self.args.model:
             tier = dict(id="rig-agy", name="rig-agy", provider="agy", model=self.args.model)
@@ -222,6 +223,11 @@ class Case:
                 raise AssertionError(f"agy asked the person: {state}")
             return state["state"] == "idle"
         self.wait("the turn's end", ended, self.args.timeout)
+        if self.result["case"] == "file":
+            from wire import file_prompt
+            file_prompt(self.request, ticket, self.nonce)
+            self.wait("the file turn", lambda: self.session()["state"]["state"] == "running", 60)
+            self.wait("file turn complete", ended, self.args.timeout)
         self.mark("no board tool asked the person", True)
         (self.out / "screen-end.txt").write_text(self.screen())
         conversation = self.session().get("agy_conversation_id")
@@ -233,6 +239,12 @@ class Case:
         shutil.copyfile(path, self.out / "transcript_full.jsonl")
         models = sorted({row["model"] for row in rows if row.get("model")})
         self.result["model"] = ", ".join(models)
+        if self.result["case"] == "file":
+            replied = any(self.nonce in row.get("content", "") for row in rows if row.get("type") == "PLANNER_RESPONSE")
+            self.mark("agy replies with the word held only in the file", replied)
+            self.mark("agy reads the ticket attachment", any(name.endswith("read_attachment") or "read_attachment" in str(args)
+                      for name, args in tool_calls(rows)))
+            return
         for name, passed, detail in verdict(rows, self.nonce):
             self.mark(name, passed, detail)
 
@@ -266,13 +278,15 @@ class Case:
 def run(repo, args, parser):
     if args.effort:
         parser.error("pass agy's model variant including its level with --model")
-    cases = args.only.split(",") if args.only else list(CASES)
+    cases = args.only.split(",") if args.only else ["brief", "worktree-trust"]
     unknown = set(cases) - set(CASES)
     if unknown:
         parser.error(f"unknown agy cases: {', '.join(sorted(unknown))}")
     print(f"agy rig: {', '.join(cases)}; {'live' if args.live else 'no model call'}", flush=True)
     if args.lay:
         return 0
+    if "file" in cases and not args.live:
+        parser.error("the file case needs --live to verify the agent's answer")
     if not os.environ.get("MESIMON_TEST_RUN"):
         command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--cargo-manifest", str(Path(repo) / "Cargo.toml"),
                    "--timeout", "900", "--",

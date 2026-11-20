@@ -69,6 +69,19 @@ impl Uploads {
         self.0.retain(|_, u| u.owner.alive() && u.touched.elapsed() < Duration::from_secs(600));
     }
 
+    /// An interrupted phone draft starts again from byte zero. Reclaim its previous
+    /// allowance before taking the first new piece, even if its last ack was lost.
+    pub fn restart_file(&mut self, owner: &Owner, previous: Ulid, file: &FileUpload) -> Result<()> {
+        if let Some(old) = self.0.get(&previous) {
+            anyhow::ensure!(
+                old.owner.is(owner) && old.file.as_ref() == Some(file) && !old.held,
+                "previous upload does not belong to this draft"
+            );
+            self.0.remove(&previous);
+        }
+        Ok(())
+    }
+
     pub fn chunk(
         &mut self,
         owner: &Owner,
@@ -284,12 +297,12 @@ pub fn save(paths: &Paths, key: &str, meta: &Attachment, bytes: &[u8]) -> Result
     let dir = directory(paths, key);
     std::fs::create_dir_all(&dir)?;
     check_dir(&dir)?;
-    store::write_atomic_bytes(&payload_path(&dir, meta), bytes, 0o644)?;
-    store::write_atomic(
-        &dir.join(format!("{}.json", meta.id)),
-        &serde_json::to_string(meta)?,
-        0o644,
-    )
+    let mode = match meta.kind {
+        Kind::Png => 0o644,
+        Kind::File { .. } => 0o600,
+    };
+    store::write_atomic_bytes(&payload_path(&dir, meta), bytes, mode)?;
+    store::write_atomic(&dir.join(format!("{}.json", meta.id)), &serde_json::to_string(meta)?, mode)
 }
 
 /// Roll back only IDs from a validated, still-owned upload batch. These IDs
@@ -470,6 +483,10 @@ mod tests {
         let result = uploads.prepare(&phone, Some(ticket), &[id, empty], &words).unwrap();
         assert_eq!(result[0].1, [255, 0]);
         assert!(result[1].1.is_empty());
+        let same = FileUpload { ticket, name: "sales.csv".into() };
+        assert!(uploads.restart_file(&other, id, &same).is_err());
+        uploads.restart_file(&phone, id, &same).unwrap();
+        assert!(uploads.prepare(&phone, Some(ticket), &[id], &words).is_err());
         uploads.discard_all(&phone);
         assert!(uploads.prepare(&phone, Some(ticket), &[id], &words).is_err());
         for name in ["..", "../foo", "two/parts", "two\\parts", "line\nfeed"] {
@@ -477,6 +494,42 @@ mod tests {
                 .chunk(&phone, Some(FileUpload { ticket, name: name.into() }), None, 0, "", true)
                 .is_err());
         }
+    }
+
+    #[test]
+    fn files_accept_exactly_ten_mib_and_expired_handles_cannot_resume() {
+        let ticket = Ulid::new();
+        let file = FileUpload { ticket, name: "data".into() };
+        let phone = Owner::Grant("a".into());
+        let mut staged = Uploads::default();
+        let chunk = STANDARD.encode(vec![255; CHUNK_BYTES]);
+        let mut id = None;
+        for offset in (0..MAX_BYTES).step_by(CHUNK_BYTES) {
+            id = Some(staged.chunk(&phone, Some(file.clone()), id, offset, &chunk, false).unwrap());
+        }
+        assert!(staged.chunk(&phone, Some(file.clone()), id, MAX_BYTES, "AA==", true).is_err());
+        let id = id.unwrap();
+        staged.0.get_mut(&id).unwrap().touched -= Duration::from_secs(601);
+        assert!(staged
+            .chunk(&phone, Some(file.clone()), Some(id), MAX_BYTES, "AA==", true)
+            .is_err());
+        assert!(staged.0.is_empty());
+        let mut id = None;
+        for offset in (0..MAX_BYTES).step_by(CHUNK_BYTES) {
+            id = Some(
+                staged
+                    .chunk(
+                        &phone,
+                        Some(file.clone()),
+                        id,
+                        offset,
+                        &chunk,
+                        offset + CHUNK_BYTES == MAX_BYTES,
+                    )
+                    .unwrap(),
+            );
+        }
+        assert_eq!(staged.0[&id.unwrap()].meta.as_ref().unwrap().bytes, MAX_BYTES);
     }
 
     #[test]

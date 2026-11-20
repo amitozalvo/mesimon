@@ -205,12 +205,13 @@ export function PictureBar({ id, can, draft, caret, onAdd, onRemove }) {
 export function PictureList({ draft, onRemove }) {
   if (!draft.pictures.length) return null;
   const busy = !!draft.sending;
-  return html`<ul class="note-pic-list" aria-label="Pictures">
+  return html`<ul class="note-pic-list" aria-label=${draft.pictures.some(p => p.name) ? "Attachments" : "Pictures"}>
     ${draft.pictures.map((p) => html`<li key=${p.n} class="note-pic" data-up=${p.up === undefined ? undefined : String(p.up >= 1 ? "done" : p.up > 0 ? "going" : "waiting")}>
-      <${Thumb} bitmap=${p.thumb} />
-      ${p.up !== undefined && html`<${Going} n=${p.n} up=${p.up} />`}
-      <span class="note-pic-name">Image #${p.n}</span>
-      ${p.up === undefined && html`<button type="button" class="note-pic-drop" aria-label=${`Remove Image #${p.n}`} disabled=${busy}
+      ${p.name ? html`<span class="file-thumb"><${Icon} name="file" size=${22} /></span>` : html`<${Thumb} bitmap=${p.thumb} />`}
+      ${p.up !== undefined && html`<${Going} label=${p.label || `Image #${p.n}`} up=${p.up} />`}
+      <span class="note-pic-name" title=${p.name}>${p.label || `Image #${p.n}`}</span>
+      ${p.name && html`<span class="note-pic-name">${p.bytes.length < 1024 ? p.bytes.length + " B" : Math.ceil(p.bytes.length / 1024) + " KiB"}</span>`}
+      ${p.up === undefined && html`<button type="button" class="note-pic-drop" aria-label=${`Remove ${p.label || `Image #${p.n}`}`} disabled=${busy}
         onClick=${() => onRemove(p.n)}><${Icon} name="x" size=${14} /></button>`}
     </li>`)}
   </ul>`;
@@ -220,9 +221,9 @@ export function PictureList({ draft, onRemove }) {
 // the arc from the top, clockwise. A picture waiting its turn shows the
 // track alone.
 const RING = 2 * Math.PI * 11;
-function Going({ n, up }) {
+function Going({ label, up }) {
   const done = Math.max(0, Math.min(1, up));
-  return html`<span class="note-pic-going" role="progressbar" aria-label=${`Sending Image #${n}`}
+  return html`<span class="note-pic-going" role="progressbar" aria-label=${`Sending ${label}`}
       aria-valuemin="0" aria-valuemax="100" aria-valuenow=${Math.round(done * 100)}>
     <svg viewBox="0 0 28 28" width="28" height="28" aria-hidden="true">
       <circle class="ring-track" cx="14" cy="14" r="11" />
@@ -236,11 +237,11 @@ function Going({ n, up }) {
 // the picture icon and whatever `children` says beside it. A picker the
 // person dismisses fires a `cancel` that bubbles, and every sheet it sits
 // in takes a `cancel` for Escape and closes (T-1307): it stops here.
-export function PicturePick({ id, draft, caret, onAdd, label, capture, children }) {
+export function PicturePick({ id, draft, caret, onAdd, label, capture, anyFile, children }) {
   const busy = !!draft.sending;
   return html`<label class="btn btn-quiet note-pic-add" data-busy=${String(busy || draft.reading > 0)}
     aria-label=${label}>
-    <input id=${id} type="file" accept="image/*" multiple=${!capture} capture=${capture} class="sr-only" disabled=${busy}
+    <input id=${id} type="file" accept=${anyFile ? undefined : "image/*"} multiple=${!capture} capture=${capture} class="sr-only" disabled=${busy}
       onCancel=${(e) => e.stopPropagation()}
       onChange=${async (e) => {
         const files = [...e.currentTarget.files];
@@ -248,7 +249,7 @@ export function PicturePick({ id, draft, caret, onAdd, label, capture, children 
         const at = await onAdd(files, caret.current);
         if (at !== undefined) caret.current = at;
       }} />
-    <${Icon} name="image" size=${17} />${children}</label>`;
+    <${Icon} name=${anyFile ? "file" : "image"} size=${17} />${children}</label>`;
 }
 
 // A pasted image goes in as a picked one; anything else pastes as text.

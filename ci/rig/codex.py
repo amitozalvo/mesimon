@@ -21,11 +21,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question", "delegate", "forge", "read-other", "shell")
+            "identity", "question", "delegate", "forge", "read-other", "shell", "file")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
          "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1,
-         "read-other": 1, "shell": 4}
+         "read-other": 1, "shell": 4, "file": 2}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 # T-916: a crowned Codex seat asked one thing by the person, in words a person
 # would use. Everything after that one submission is the crown's own doing and
@@ -615,7 +615,7 @@ def adapter(base):
             original = wrapper.read_text()
             wrapper.write_text(original.replace("#!/bin/sh\n", "#!/bin/sh\n" +
                 "unset OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY AZURE_OPENAI_API_KEY\n", 1))
-            if args.case in ("mcp", "brief"):
+            if args.case in ("mcp", "brief", "file"):
                 for column in self.client.board()["columns"]:
                     settings = {key: value for key, value in column.items() if key not in ("name", "order")}
                     settings["agent_tools"] = "read"
@@ -1256,6 +1256,17 @@ def adapter(base):
                     self.wait(sid, f"the {size.lower()} shell line ran and released terminal input",
                               lambda s, t, p: f"└ MESIMON_{size}" in p and not s.get("pending_submit")
                               and not s.get("observation_hold"))
+                return
+            if self.args.case == "file":
+                from wire import file_prompt
+                sid = self.start("Reply with exactly FILE_READY.")
+                session, _, _ = self.completed(sid, "FILE_READY")
+                word = "FILE_" + uuid.uuid4().hex[:10]
+                self.reserve_turn()
+                self.calls += 1
+                file_prompt(self.request, session["ticket"], word)
+                self.completed(sid, word)
+                self.mark(assertion="reply contains the word held only in the attached file", passed=True)
                 return
             if self.args.case == "read-other":
                 return self.read_other()
