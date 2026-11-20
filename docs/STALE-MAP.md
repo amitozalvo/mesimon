@@ -48869,3 +48869,28 @@ sandbox-denied tmux socket tests. Its supervised rerun passed all 3,360 tests
 run (13 ignored). Both supervised fixture audits were clean. The agy rig gained
 a worktree-trust case. Its selection and the seven offline rig tests passed.
 The person requested no real agy launch.
+
+## agy's interactive first turn can precede MCP discovery (T-1380, 2026-11-20)
+
+The installed `agy --version` reports 1.5.13. Its `agy changelog` entry for
+1.1.9 documents background MCP startup in interactive sessions. Headless and
+one-shot runs wait for the toolset. Mesimon opens an interactive seat, so
+marking `get_ticket` eager controls how agy presents the connected tool but
+cannot guarantee its presence in the first request. The CLI documents
+`<workspace>/.agents/mcp_config.json` as a supported server configuration.
+[CLI changelog](https://antigravity.google/docs/changelog?tab=cli#:~:text=Improved%20interactive%20startup%20so%20a%20slow)
+and [workspace MCP configuration](https://antigravity.google/docs/mcp?tab=cli).
+
+T-1334's title-only `brief` run (`20261120T184358Z`, `gemini-4-neon-high`)
+shows the ordering. The CLI logged Mesimon's added session directory at startup
+and forwarded the title at 18:44:02.015 UTC. The cached Mesimon
+`get_ticket.json` was written at 18:44:02.119 UTC. The CLI also logged the
+Mesimon connection closing at teardown. These observations establish that
+agy loaded the workspace server during the run. The transcript records the
+brief at step 1 and `run_command` at step 2. The retained final model
+request lacks the native `mcp_mesimon_get_ticket` declaration. The exact
+instant agy selected the first request's tools is unavailable.
+
+Zero additional live Neon turns. The sandbox denied private sockets in the
+initial checks. Supervised reruns passed `cargo ut` (3,362 passed, 13 ignored)
+and all six `agy_e2e` cases, with clean fixture audits on both reruns.
