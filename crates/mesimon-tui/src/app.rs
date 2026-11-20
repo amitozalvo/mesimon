@@ -5069,10 +5069,12 @@ impl App {
     /// A snapshot in flight gets `SNAPSHOT_FRAME` (T-911): nothing wakes
     /// the terminal's poll when the lane answers, so at 100 ms a key's
     /// board landed up to 100 ms after it was in, on a ~15 ms round trip.
-    /// Past `SNAPSHOT_SOON` the daemon is slow, and the idle pace waits.
+    /// The same wait applies while focus advances through preview cleanup,
+    /// the gate and the attachment grant. Past `SNAPSHOT_SOON` the idle pace waits.
     fn frame_wait(&self, moving: bool) -> Duration {
         if self.ranking.active.is_some()
             || (self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON)
+            || self.focus_ask.as_ref().is_some_and(|ask| ask.started.elapsed() < SNAPSHOT_SOON)
         {
             SNAPSHOT_FRAME
         } else if moving {
@@ -6812,10 +6814,13 @@ impl App {
         self.ctx_dirty();
     }
 
-    /// The window's newest capture of `session`'s pane, if the window is
-    /// on it and has read it once.
+    /// The window's newest capture, kept on screen while Enter prepares the attachment.
     pub(crate) fn live_shot(&self, session: uuid::Uuid) -> Option<std::rc::Rc<crate::live::Shot>> {
-        self.live.as_ref().filter(|l| l.session == session).and_then(|l| l.shot.clone())
+        self.live
+            .as_ref()
+            .filter(|l| l.session == session)
+            .and_then(|l| l.shot.clone())
+            .or_else(|| self.focus_preview(session))
     }
 
     /// `shot` as the ticket page draws it (`Shot::for_page`; on the folder
@@ -19702,15 +19707,34 @@ mod tests {
     fn entering_a_pane_waits_off_thread_for_preview_cleanup() {
         let (mut app, _, sid) = app_with_claude(SessionState::Running, false);
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        let (live, finish) = crate::live::Live::held(sid);
+        let (mut live, finish) = crate::live::Live::held(sid);
+        live.shot = Some(std::rc::Rc::new(crate::live::Shot {
+            cols: 80,
+            rows: crate::live::parse("preview still here"),
+            cursor: None,
+        }));
         app.live = Some(live);
         let hold = hold_background(&mut app);
+        let preview_row = |app: &App| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+            terminal.backend().buffer().content.chunks(120).position(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("preview still here")
+            })
+        };
+        let row = preview_row(&app).expect("preview drawn before Enter");
         let began = Instant::now();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(began.elapsed() < Duration::from_millis(100));
         assert_eq!(hold.borrow().asks, 0, "cleanup precedes the focus grant");
+        assert_eq!(app.frame_wait(false), SNAPSHOT_FRAME, "look for cleanup promptly");
         assert!(!app.prepare_handover(), "the old fit still owns its size");
         assert!(!app.poll_live(), "no replacement reader overtakes cleanup");
+        assert_eq!(preview_row(&app), Some(row), "cleanup keeps the pane in place");
         finish.send(()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         while !app.live_stopped() {
@@ -19718,8 +19742,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         app.poll_focus();
+        assert_eq!(preview_row(&app), Some(row), "the gate is still pending");
         release(&hold);
         app.poll_focus();
+        assert_eq!(preview_row(&app), Some(row), "the grant is still pending");
+        app.focus_ask.as_mut().unwrap().started = Instant::now() - SNAPSHOT_SOON;
+        assert_eq!(app.frame_wait(false), Duration::from_millis(100), "a stalled grant can idle");
         release(&hold);
         app.poll_focus();
         assert!(app.pending_attach.is_some());

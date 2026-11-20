@@ -48281,3 +48281,20 @@ GPT-6.2-Astra high, including a send during an active turn. It checks for
 shell output and the idle seat's pending-input release. The provider regression
 covers a changed draft, and the Chromium phone fixture checks focused Enter
 with an unsent draft and while a line is in flight.
+
+## The ticket preview stays in place while Enter attaches (T-1353, 2026-11-20)
+
+Enter retired the pane reader immediately to restore tmux's window sizing. The
+ticket page then lost its picture while cleanup and the daemon's gate and focus
+replies were pending. The focus request now keeps the capture shown at Enter
+for the same session and ticket-page row. The reader can stop as before.
+
+The terminal event loop could also sleep for 100 ms between completed steps.
+For the first second of a pending focus request it now checks every 8 ms.
+The delayed-reply test draws the page during cleanup and both waits, checking
+that the same pane text stays on the same row. The real-terminal test times
+Enter to the board leaving the alternate screen and to the attached pane's text.
+In two local runs with a capture deliberately held, the board released the
+terminal at 262 ms with idle polling and 33 ms with the shorter poll. The
+pane was visible by 273 ms and 45 ms respectively. The work computer's
+reported second still has no measurement on that machine.

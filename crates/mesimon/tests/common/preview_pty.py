@@ -110,10 +110,24 @@ try:
     key(b' ')
     until(lambda: b'LIVE_PREVIEW_READY' in output, 'preview recovered after cleanup')
     until(reached.exists, 'new preview capture held before Enter')
+    entered = time.monotonic()
     key(b'\r')
-    until(attached, 'ticket Enter cancelled capture and attached to a real pane', seconds=1)
+    # LeaveAlternateScreen ends the board's part of the handoff. Only the
+    # stub's marker after that boundary proves the attached pane was drawn.
+    left_board = b'\x1b[?1049l'
+    until(lambda: left_board in output, 'ticket handed over the terminal', seconds=1)
+    released = time.monotonic()
+    until(attached, 'ticket Enter cancelled capture and attached to a real pane',
+          seconds=1 - (released - entered))
     marker.unlink()
-    until(lambda: b'LIVE_PREVIEW_READY' in output, 'ticket handover rendered')
+    def pane_drawn():
+        return b'LIVE_PREVIEW_READY' in output.partition(left_board)[2]
+
+    if not pane_drawn():
+        until(pane_drawn, 'ticket handover rendered')
+    drawn = time.monotonic()
+    print(f'Ticket Enter: board released terminal after {(released-entered)*1000:.0f} ms, '
+          f'pane observed after {(drawn-entered)*1000:.0f} ms')
     key(b'\x1d')
     until(lambda: not attached(), 'ticket detach completed')
     print('PTY passed: board Enter, real pane rendering, preview, held-capture page exit and typing in creation/prompt fields, ticket Enter and detach')

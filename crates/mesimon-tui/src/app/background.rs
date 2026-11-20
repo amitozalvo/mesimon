@@ -54,8 +54,10 @@ pub(super) struct CreatedFollow {
 }
 
 pub(super) struct FocusAsk {
+    pub(super) started: Instant,
     target: FocusTarget,
     screen: Screen,
+    preview: Option<std::rc::Rc<crate::live::Shot>>,
     subject: Option<ulid::Ulid>,
     scope: Scope,
     phase: Phase,
@@ -68,6 +70,22 @@ enum Phase {
 }
 
 impl App {
+    /// Keep the picture that was on the page when Enter stopped its reader.
+    /// A different rail row or ticket must never inherit that picture.
+    pub(super) fn focus_preview(
+        &self,
+        session: uuid::Uuid,
+    ) -> Option<std::rc::Rc<crate::live::Shot>> {
+        let ask = self.focus_ask.as_ref()?;
+        if ask.screen == self.screen
+            && ask.target == FocusTarget::Session(session, FocusOrigin::Ticket)
+        {
+            ask.preview.clone()
+        } else {
+            None
+        }
+    }
+
     pub(super) fn submit(
         &mut self,
         command: Command,
@@ -285,10 +303,16 @@ impl App {
         if self.focus_ask.is_some() {
             return;
         }
+        let preview = match target {
+            FocusTarget::Session(id, FocusOrigin::Ticket) => self.live_shot(id),
+            _ => None,
+        };
         self.park_live();
         self.focus_ask = Some(FocusAsk {
+            started: Instant::now(),
             target,
             screen: self.screen.clone(),
+            preview,
             subject: self.subject(),
             scope: self.scope(),
             phase: Phase::Gate(grant),
