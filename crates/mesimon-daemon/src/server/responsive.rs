@@ -16,7 +16,6 @@ pub(super) struct Jobs {
 pub(super) struct Opening {
     ticket: Option<ulid::Ulid>,
     by: Weak<Mutex<UnixStream>>,
-    peer: UnixStream,
     pub reply: Option<Sender<ClientReply>>,
 }
 
@@ -102,21 +101,23 @@ impl Daemon {
         cwd: std::path::PathBuf,
         vars: Vec<(String, String)>,
     ) -> Response {
-        let peer = match by.lock().ok().and_then(|s| s.try_clone().ok()) {
-            Some(peer) => peer,
-            None => return Response::Err { message: "terminal client disconnected".into() },
-        };
         self.focus = Some(FocusHold { what: Focus::Terminal { ticket }, by: Arc::downgrade(by) });
-        self.responsive.opening =
-            Some(Opening { ticket, by: Arc::downgrade(by), peer, reply: None });
+        self.responsive.opening = Some(Opening { ticket, by: Arc::downgrade(by), reply: None });
         self.responsive.park_terminal = true;
         let backend = self.backend.clone();
         let tx = self.tx.clone();
         let launch = self.launch(std::slice::from_ref(&self.shell), &vars);
+        let by = by.clone();
         std::thread::spawn(move || {
             let name = terminal_name(ticket);
             let mut timings = Vec::new();
-            let result = (|| -> Result<(), String> {
+            let result = (|| -> Result<UnixStream, String> {
+                // A subscriber may be finishing a partial frame under this lock.
+                let peer = by
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.try_clone().ok())
+                    .ok_or("terminal client disconnected")?;
                 let began = Instant::now();
                 // An inspection failure is not permission to destroy a live shell.
                 let snapshot = backend.snapshot().map_err(|e| e.to_string());
@@ -131,7 +132,7 @@ impl Daemon {
                     timings.push(("spawn", began.elapsed()));
                     spawned?;
                 }
-                Ok(())
+                Ok(peer)
             })();
             let _ = tx.send(Msg::TerminalOpened(result, timings));
         });
@@ -140,7 +141,7 @@ impl Daemon {
 
     pub(super) fn terminal_opened(
         &mut self,
-        result: Result<(), String>,
+        result: Result<UnixStream, String>,
         timings: Vec<(&'static str, Duration)>,
     ) {
         let Some(opening) = self.responsive.opening.take() else { return };
@@ -155,11 +156,10 @@ impl Daemon {
         let owns = self.focus.as_ref().is_some_and(|f| {
             f.by.ptr_eq(&opening.by) && f.what == (Focus::Terminal { ticket: opening.ticket })
         });
-        let connected = !mesophon::permission_peer_closed(&opening.peer);
         let response = match result {
-            Ok(()) => {
+            Ok(peer) => {
                 self.terminals.entry(opening.ticket).or_insert(None);
-                if owns && connected {
+                if owns && !mesophon::permission_peer_closed(&peer) {
                     self.focus_label = "terminal".into();
                     self.refresh_status_line();
                     Response::Attach {
@@ -191,9 +191,9 @@ mod tests {
         let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
         let ticket = ulid::Ulid(1);
         let (peer, _client) = UnixStream::pair().unwrap();
-        let writer = Arc::new(Mutex::new(peer.try_clone().unwrap()));
+        let writer = Arc::new(Mutex::new(peer));
         d.responsive.opening =
-            Some(Opening { ticket: Some(ticket), by: Arc::downgrade(&writer), peer, reply: None });
+            Some(Opening { ticket: Some(ticket), by: Arc::downgrade(&writer), reply: None });
         d.pending_teardown.push(Teardown { ticket, why: TeardownWhy::Archived, sids: Vec::new() });
         d.process_teardowns();
         assert_eq!(d.pending_teardown.len(), 1, "opening still owns its cwd");

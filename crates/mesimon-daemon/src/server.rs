@@ -505,7 +505,7 @@ enum Msg {
     TeardownChecked(Teardown, gate_reads::BranchQuery, Vec<gate_reads::LegRead>),
     PeerAnswered(ulid::Ulid, Box<Result<Response, String>>),
     Reaped(Vec<(String, Instant, bool)>, Duration),
-    TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
+    TerminalOpened(Result<UnixStream, String>, Vec<(&'static str, Duration)>),
     StatusWritten(String, bool),
     SessionsSaved(Result<(), String>),
     Request(Envelope, u32, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
@@ -3648,23 +3648,99 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
 fn subscriber(stream: Arc<Mutex<UnixStream>>) -> std::sync::mpsc::SyncSender<()> {
     let (notify, pending) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        use std::os::fd::AsRawFd;
+        let Some(peer) = stream.lock().ok().and_then(|s| s.try_clone().ok()) else { return };
         let mut line = serde_json::to_vec(&Event::BoardChanged).expect("unit event");
         line.push(b'\n');
         while pending.recv().is_ok() {
-            let Ok(writer) = stream.lock() else { break };
-            // A full subscriber must also leave the socket mutex available
-            // to a terminal-open request. A partial frame ends the stream.
-            let sent = unsafe {
-                libc::send(writer.as_raw_fd(), line.as_ptr().cast(), line.len(), libc::MSG_DONTWAIT)
-            };
-            if sent != line.len() as isize {
-                let _ = writer.shutdown(std::net::Shutdown::Both);
+            if write_notification(&stream, &peer, &line).is_err() {
+                let _ = peer.shutdown(std::net::Shutdown::Both);
                 break;
             }
         }
     });
     notify
+}
+
+fn write_notification(
+    stream: &Mutex<UnixStream>,
+    peer: &UnixStream,
+    line: &[u8],
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::os::fd::AsRawFd;
+    let lock = || stream.lock().map_err(|_| Error::other("socket lock poisoned"));
+    let mut writer = lock()?;
+    let deadline = Instant::now() + SUBSCRIBER_WRITE_TIMEOUT;
+    loop {
+        let sent = unsafe {
+            libc::send(writer.as_raw_fd(), line.as_ptr().cast(), line.len(), libc::MSG_DONTWAIT)
+        };
+        if sent == line.len() as isize {
+            return Ok(());
+        }
+        if sent > 0 {
+            // The reply writer must not interleave a reply with this suffix.
+            let mut rest = &line[sent as usize..];
+            while !rest.is_empty() {
+                writer.set_write_timeout(Some(notification_time_left(deadline)?))?;
+                match writer.write(rest) {
+                    Ok(0) => return Err(ErrorKind::WriteZero.into()),
+                    Ok(n) => rest = &rest[n..],
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            return writer.set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT));
+        }
+        if sent == 0 {
+            return Err(ErrorKind::WriteZero.into());
+        }
+        let error = Error::last_os_error();
+        match error.kind() {
+            ErrorKind::Interrupted => {}
+            ErrorKind::WouldBlock => {
+                // No frame started. Replies may use the stream while the peer drains.
+                drop(writer);
+                wait_writable(peer, deadline)?;
+                writer = lock()?;
+            }
+            _ => return Err(error),
+        }
+        notification_time_left(deadline)?;
+    }
+}
+
+fn notification_time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| std::io::ErrorKind::TimedOut.into())
+}
+
+fn wait_writable(peer: &UnixStream, deadline: Instant) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd { fd: peer.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
+    loop {
+        let millis = notification_time_left(deadline)?.as_millis() as i32 + 1;
+        match unsafe { libc::poll(&mut fd, 1, millis) } {
+            n if n > 0 => return Ok(()),
+            0 => return Err(ErrorKind::TimedOut.into()),
+            _ => {
+                let error = Error::last_os_error();
+                if error.kind() != ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+        }
+    }
 }
 
 /// One reply line on a connection, and only once it is written the crown's
@@ -7403,12 +7479,8 @@ impl Daemon {
     /// drops the ask: they talked to the agent ahead of it, and the parked
     /// words may now be moot. The one settling site for every road (T-244).
     fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
-        if self.owed.get(&id).is_some_and(|o| o.steer.is_some() && o.sent_at.is_none()) {
-            // The runtime observed someone else's words while ours were
-            // still being checked. Invalidate the worker's reservation.
-            self.control_unsent(id);
-            self.drop_owed(id);
-        }
+        let ahead_of_steer =
+            self.owed.get(&id).is_some_and(|o| o.steer.is_some() && o.sent_at.is_none());
         // A `/` command or a `!` line acked off the screen (T-876, T-894)
         // is the box's own, not a prompt: words still unsent stay so, and
         // a queued ask stays queued.
@@ -7434,9 +7506,11 @@ impl Daemon {
         // a person's, typed ahead of them, and it supersedes the words still
         // waiting, as it does a launch's (T-570). The entry goes and the ask
         // is dropped by the person: no ack, no mark, nothing kept to resend.
-        let ahead = crate::agents::pastes(rec.kind)
-            .then(|| self.owed.get(&id).filter(|o| o.parked.is_some()).and_then(|o| o.ask))
-            .flatten();
+        let ahead = self
+            .owed
+            .get(&id)
+            .filter(|o| ahead_of_steer || (crate::agents::pastes(rec.kind) && o.parked.is_some()))
+            .and_then(|o| o.ask);
         // Words a launch could not deliver (T-570) are moot once the agent
         // takes a prompt, whoever typed it.
         let mut changed = !command && rec.unsent.take().is_some();
@@ -7454,10 +7528,14 @@ impl Daemon {
             o.parked.is_some() && o.next_press.is_some() && o.ack.word != Ack::CROWN_WAKE.word
         }) && crate::agents::pastes(self.session_kind(id));
         if !command {
-            self.receipt_prompt(id, ahead.is_some() || ahead_of_launch);
+            self.receipt_prompt(id, ahead.is_some() || ahead_of_launch || ahead_of_steer);
             // A prompt begins a turn of its own: only the notice's ack,
             // below, marks it as the notice's (T-1247).
             self.notice_turns.remove(&id);
+        }
+        if ahead_of_steer {
+            self.control_unsent(id);
+            self.feed.board_outcome("local", "prompt_not_sent", Some(ticket), PROMPT_AHEAD_OF_ASK);
         }
         if let Some(ask) = ahead {
             self.drop_owed(id);
@@ -7470,6 +7548,9 @@ impl Daemon {
                 Some(ask),
                 &[],
             );
+            changed = true;
+        } else if ahead_of_steer {
+            self.drop_owed(id);
             changed = true;
         } else if ahead_of_launch {
             self.drop_owed(id);
@@ -24177,6 +24258,77 @@ mod queued_person_push_tests {
             took: Duration::ZERO,
             forks: 0,
         }
+    }
+
+    #[test]
+    fn a_subscriber_that_drains_a_full_reply_keeps_its_connection() {
+        use std::io::Read;
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        server.set_nonblocking(true).unwrap();
+        // Measure how much this socket accepts, including the shape of its
+        // writes. Replay those writes as one complete, padded JSON reply.
+        let mut chunks = Vec::new();
+        loop {
+            match server.write(&[b' '; 8192]) {
+                Ok(n) if n > 0 => chunks.push(n),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("filling reply buffer: {other:?}"),
+            }
+        }
+        let mut reply = vec![0; chunks.iter().sum()];
+        client.read_exact(&mut reply).unwrap();
+        reply[..2].copy_from_slice(b"{}");
+        *reply.last_mut().unwrap() = b'\n';
+        let mut offset = 0;
+        for len in chunks {
+            server.write_all(&reply[offset..offset + len]).unwrap();
+            offset += len;
+        }
+        assert_eq!(server.write(b"\n").unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        server.set_nonblocking(false).unwrap();
+        let stream = Arc::new(Mutex::new(server));
+        let notify = subscriber(stream.clone());
+        notify.send(()).unwrap();
+        // Leave the complete reply in the socket while the notification encounters it.
+        std::thread::sleep(Duration::from_millis(75));
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.as_bytes(), reply);
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(matches!(serde_json::from_str(&line), Ok(Event::BoardChanged)));
+        let (tx, _rx) = channel();
+        assert!(write_reply(&stream, "{}", None, &tx));
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line, "{}\n");
+    }
+
+    #[test]
+    fn a_partial_notification_finishes_before_a_competing_reply() {
+        use std::io::Read;
+        let (server, mut client) = UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let peer = server.try_clone().unwrap();
+        let stream = Arc::new(Mutex::new(server));
+        let sender = stream.clone();
+        let frame = vec![b'x'; 2 << 20];
+        let size = frame.len();
+        let notify = std::thread::spawn(move || write_notification(&sender, &peer, &frame));
+        let mut first = [0];
+        client.read_exact(&mut first).unwrap();
+        assert_eq!(first, [b'x']);
+        let reply = std::thread::spawn(move || write_reply(&stream, "{}", None, &channel().0));
+        let mut rest = vec![0; size - 1];
+        client.read_exact(&mut rest).unwrap();
+        assert!(rest.iter().all(|&b| b == b'x'));
+        let mut line = String::new();
+        BufReader::new(client).read_line(&mut line).unwrap();
+        assert_eq!(line, "{}\n");
+        notify.join().unwrap().unwrap();
+        assert!(reply.join().unwrap());
     }
 
     #[test]

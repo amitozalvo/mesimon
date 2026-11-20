@@ -47940,7 +47940,7 @@ and incomplete-hook cases used disposable socket pairs.
 
 | Road | Time before the change | Decision |
 | --- | ---: | --- |
-| Subscriber | 5,002 ms for one write to a full socket; journalled broadcast 1,495 ms on Nov 10 | One buffered invalidation per connection. The board never takes the socket mutex to broadcast. A notification writer encountering a full socket or partial write disconnects the client. |
+| Subscriber | 5,002 ms for one write to a full socket; journalled broadcast 1,495 ms on Nov 10 | One buffered invalidation per connection. The board never takes the socket mutex to broadcast. The notification worker allows five seconds for the client to drain a full socket and keeps a partial frame serialized with replies. |
 | Teardown | 1,592 ms in the Nov 13 tick | Reserve the binding, read fresh branch/ancestor evidence on a worker, recheck the binding and archive on receipt, then kill the terminal and remove the tree on the removal worker. |
 | Inactivity park | 633 ms on Nov 15 and 342 ms on Nov 18; 4.79 ms median for the client-activity fork alone | The worker reads pane ownership, history and client activity. The writer checks the idle spell, conversation, authorization, pending words and column again before parking. The copy and signal hold the seat against a racing wake. |
 | Codex steer | 5.25 ms median for one live capture; 233.2 ms for three with the two gaps, before paste | The worker checks the receipt and the pane, reads the composer and pastes. A caller gets the paste's actual result. The due Enter reads the screen at the key on a worker. Concurrent pastes have separate tmux buffers. |
@@ -47962,3 +47962,17 @@ immediately after provisioning.
 A crown merge issued just after switching to pull requests now waits for the
 new target's flags before its refusal is judged. An empty cache during that
 refresh had made an ahead branch read as having no commits.
+
+### Crown review of subscriber backpressure and preempted steers
+
+A large reply can fill a healthy subscriber's socket just before an invalidation.
+The worker releases the reply lock while polling for space before the first byte
+and holds it to finish a partial frame within the same deadline. Terminal-open
+acquires its copy of the socket on its worker. Socket-pair cases cover a delayed
+reader, competing replies, and an independent subscriber.
+
+When a person's prompt overtakes a pending Codex steer, the board records the
+crown ask as dropped by hand and the prompt as unsent. A late successful tmux
+paste can leave words in the box after their receipt is gone. The caller and
+deferred effects receive a failed delivery in that case, and the replacement
+receipt retains its own Enter schedule.

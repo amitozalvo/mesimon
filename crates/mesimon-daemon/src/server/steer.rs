@@ -144,11 +144,16 @@ impl Daemon {
 
     pub(super) fn steer_pasted(&mut self, job: Attempt, result: Result<(), String>) {
         let id = job.session;
-        for apply in self.steer_effects.remove(&job.receipt).unwrap_or_default() {
-            apply(self, result.is_ok());
-        }
+        let effects = self.steer_effects.remove(&job.receipt).unwrap_or_default();
         let Some(owed) = self.owed.get_mut(&id).filter(|o| o.receipt_id == job.receipt) else {
-            let _ = job.result.send(result);
+            // A physical paste can land after another prompt took the seat.
+            // There is no Enter owed for these words. Release held resources.
+            for apply in effects {
+                apply(self, false);
+            }
+            let _ = job
+                .result
+                .send(result.and(Err("the prompt is no longer pending for this pane".into())));
             return;
         };
         match &result {
@@ -168,6 +173,9 @@ impl Daemon {
                 self.drop_owed(id);
                 self.feed.board_outcome("daemon", "prompt_not_sent", Some(ticket), message);
             }
+        }
+        for apply in effects {
+            apply(self, result.is_ok());
         }
         self.broadcast();
         let _ = job.result.send(result);
@@ -205,4 +213,52 @@ pub(super) fn reply_after_pastes(
         };
         let _ = reply.send(ClientReply { response, told, delivered: None });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_persons_prompt_drops_the_pending_crown_ask_even_if_its_paste_later_succeeds() {
+        let mut b = crownask::ledger_tests::bed("steer-race");
+        let rec = &mut b.d.board.sessions[0];
+        rec.kind = SessionKind::Codex;
+        let id = rec.id;
+        let owed =
+            Owed { steer: Some(1), sent_at: None, ..Owed::pasted(b.worker, Ack::PROMPT, now_ms()) };
+        let receipt = owed.receipt_id;
+        b.d.owed.insert(id, owed);
+        b.d.crown_ask_queued(b.worker, b.crown);
+        b.d.crown_ask_sent(b.worker, id, true, Some("review it".into()));
+        let ask = b.d.owed[&id].ask.unwrap();
+        let (effect, applied) = channel();
+        b.d.after_paste(b.worker, move |_, pasted| effect.send(pasted).unwrap());
+
+        assert!(b.d.ack_owed(id));
+        assert!(!b.d.owed.contains_key(&id));
+        let recorded = b.d.crown_ask_latest_clone(b.worker).unwrap();
+        assert_eq!(recorded.id, ask);
+        assert_eq!(
+            recorded.stage,
+            crownask::Stage::Dropped { by: "person", why: PROMPT_AHEAD_OF_ASK.into() }
+        );
+        b.d.feed.flush().unwrap();
+        let feed = std::fs::read_to_string(b.d.paths.activity_log()).unwrap();
+        assert!(feed
+            .lines()
+            .any(|l| l.contains("crown_ask_dropped_by_hand") && l.contains(&ask.to_string())));
+        assert!(feed.contains("prompt_not_sent"));
+        assert!(!feed.contains(Ack::PROMPT.word));
+
+        let next = Owed::pasted(b.worker, Ack::PROMPT, now_ms());
+        let next_receipt = next.receipt_id;
+        b.d.owed.insert(id, next);
+        let (result, reported) = channel();
+        b.d.steer_pasted(Attempt { session: id, receipt, result }, Ok(()));
+        assert!(!applied.recv().unwrap());
+        assert!(reported.recv().unwrap().is_err());
+        assert_eq!(b.d.owed[&id].receipt_id, next_receipt);
+        assert!(b.d.owed[&id].next_press.is_none());
+    }
 }
