@@ -823,23 +823,17 @@ pub(super) fn tasks_stretch(
     }
 }
 
-/// A worker due the lingering wake (T-599, T-944): a Claude seat the crown
-/// started, on another ticket, idle on tasks (`SessionState::on_tasks`)
+/// A Claude seat old enough for the lingering alert (T-599, T-944), idle on tasks (`SessionState::on_tasks`)
 /// for `after` since its stretch began (`since`, else the state's own
 /// stamp). How many tasks is the registry's; it is empty after a restart,
 /// and the clause then says no number.
 pub(super) fn linger_due(
     s: &SessionRecord,
-    crown: ulid::Ulid,
     since: Option<u64>,
     now: u64,
     after: u64,
 ) -> Option<Linger> {
-    if s.kind != SessionKind::Claude
-        || s.ticket == crown
-        || s.started_by.is_none()
-        || !s.state.on_tasks()
-    {
+    if s.kind != SessionKind::Claude || !s.state.on_tasks() {
         return None;
     }
     let age = now.saturating_sub(since.or(s.state_changed_at)?);
@@ -3071,7 +3065,11 @@ impl Daemon {
         self.owe_said(crown, worker, WakeCause::Failed, |w| w.failed = Some(failed));
     }
 
-    /// Workers the crown started that have sat idle at their composer with
+    pub(super) fn committed_branch_waits(&self, ticket: ulid::Ulid) -> bool {
+        self.wt_agg.get(&ticket).is_some_and(|a| a.ahead > 0 && !a.merged && !a.unchecked)
+    }
+
+    /// Crown-started workers and other committed branches idle at their composer with
     /// background tasks for `LINGER_MS` with no foreground turn (T-599), on
     /// the tick: the crown is woken once per stretch, `has been idle with 3
     /// background tasks for 30 min`, and nothing else happens — no merge,
@@ -3092,25 +3090,42 @@ impl Daemon {
         // (a sleep, a death) leaves no stretch behind.
         let parked = |id: &uuid::Uuid| sessions.iter().any(|s| s.id == *id && s.state.on_tasks());
         self.tasks_since.retain(|id, _| parked(id));
-        let Some(crown) = self.board.crown_holder().map(|t| t.id) else { return false };
-        let now = now_ms();
-        let after = super::linger_ms();
-        let due: Vec<(uuid::Uuid, ulid::Ulid, Linger)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| !self.lingered.contains(&s.id))
-            .filter_map(|s| {
-                let since = self.tasks_since.get(&s.id).copied();
-                linger_due(s, crown, since, now, after).map(|l| (s.id, s.ticket, l))
-            })
-            .collect();
-        for (id, worker, linger) in &due {
-            self.lingered.insert(*id);
-            let owed = Owed { linger: Some(*linger), ..Owed::default() };
-            self.owe_wake(crown, *worker, WakeCause::Lingering, None, None, owed);
+        self.route_lingering(now_ms(), super::linger_ms())
+    }
+
+    pub(super) fn route_lingering(&mut self, now: u64, after: u64) -> bool {
+        let crown = self.board.crown_holder().map(|t| t.id);
+        let mut due = Vec::new();
+        let mut lights = Vec::new();
+        for s in &self.board.sessions {
+            let linger = linger_due(s, self.tasks_since.get(&s.id).copied(), now, after)
+                .filter(|_| self.board.ticket(s.ticket).is_some_and(|t| !t.is_archived()));
+            let committed = linger.is_some() && self.committed_branch_waits(s.ticket);
+            let light = crown.is_none() && committed;
+            if s.tasks_need_you != light {
+                lights.push((s.id, light));
+            }
+            if let (Some(crown), Some(linger)) = (crown, linger) {
+                if crown != s.ticket
+                    && (s.started_by.is_some() || committed)
+                    && !self.lingered.contains(&s.id)
+                {
+                    due.push((crown, s.id, s.ticket, linger));
+                }
+            }
         }
-        !due.is_empty()
+        let changed = !due.is_empty() || !lights.is_empty();
+        for (id, light) in lights {
+            if let Some(s) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                s.tasks_need_you = light;
+            }
+        }
+        for (crown, id, worker, linger) in due {
+            self.lingered.insert(id);
+            let owed = Owed { linger: Some(linger), ..Owed::default() };
+            self.owe_wake(crown, worker, WakeCause::Lingering, None, None, owed);
+        }
+        changed
     }
 
     /// A worker's pull request has news (T-739, T-744): the forge pass saw
@@ -4013,18 +4028,13 @@ pub(in crate::server) mod tests {
         };
         let bg = SessionState::Idle { stop_reason: StopReason::Background };
         let mon = SessionState::Idle { stop_reason: StopReason::Monitoring };
-        let due = |r: &SessionRecord, since| linger_due(r, crown, since, now, after);
+        let due = |r: &SessionRecord, since| linger_due(r, since, now, after);
         for park in [bg.clone(), mon.clone()] {
             let r = rec(SessionKind::Claude, worker, park.clone());
             assert_eq!(due(&r, None), Some(Linger { tasks: 1, minutes: 30 }), "{park:?}");
             let mut early = r.clone();
             early.state_changed_at = Some(now - after + 1);
             assert_eq!(due(&early, None), None, "{park:?}: inside the grace");
-            let mut unasked = r.clone();
-            unasked.started_by = None;
-            assert_eq!(due(&unasked, None), None, "{park:?}: not the crown's start");
-            let own = rec(SessionKind::Claude, crown, park.clone());
-            assert_eq!(due(&own, None), None, "{park:?}: the crown's own seat");
             let codex = rec(SessionKind::Codex, worker, park.clone());
             assert_eq!(due(&codex, None), None, "{park:?}: a Claude seat alone");
         }

@@ -753,7 +753,11 @@ pub(super) fn render(
     // ticket page still says what the session is at.
     // Words a launch never delivered (T-570) are the third: the agent sits
     // at an empty prompt and the person is the only way forward.
-    let glyph = if ticket.is_woke() || ticket.hand_raised() || is_unsent(sessions) {
+    let glyph = if ticket.is_woke()
+        || ticket.hand_raised()
+        || is_unsent(sessions)
+        || sessions.iter().any(|s| s.tasks_need_you && s.state.on_tasks())
+    {
         Some(('!', Register::Attn))
     } else {
         glyphs::card_glyph(sessions, terminal_busy, tier, ctx.spin).or_else(|| {
@@ -1768,7 +1772,11 @@ fn underline_row(
 /// (T-570)? The one predicate the off-screen `!N` badge and the collapsed
 /// spine read, and it agrees with `Board::needs_you_count` term for term.
 pub(super) fn needs_you(ticket: &Ticket, sessions: &[&SessionRecord]) -> bool {
-    ticket.is_woke() || ticket.hand_raised() || is_waiting(sessions) || is_unsent(sessions)
+    ticket.is_woke()
+        || ticket.hand_raised()
+        || is_waiting(sessions)
+        || is_unsent(sessions)
+        || sessions.iter().any(|s| s.tasks_need_you && s.state.on_tasks())
 }
 
 /// Does a seat of this ticket hold words its launch never delivered

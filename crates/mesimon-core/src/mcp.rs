@@ -214,7 +214,7 @@ pub const CROWN_WAKES: &str = concat!(
      included, holds the merge train and its own wake. A background task or monitor left \
      running does not hold the wake or a queued word: they reach this session as at any \
      idle one. A background command left running does hold the merge train, as a busy \
-     session does; a monitor's watch does not. A worker the crown started \
+     session does; a monitor's watch does not. A worker the crown started, or any worker with commits ahead, \
      that sits idle with background tasks for 30 minutes wakes this session once (has been \
      idle with N background tasks), and get_ticket on it carries background (tasks, \
      since_secs). The wait may be the work (a long suite, a build) or a loop that will not end, \
@@ -283,7 +283,7 @@ pub const CROWN_WAKES: &str = concat!(
      into ends), and with deliver now or immediately into a running turn it goes beside it as an \
      ask of its own, asked then reading it and earlier the one still out. A steer leaves an \
      earlier submitted prompt in place; the board has no recall for it. \
-     A ticket a person started wakes this session only once watch_ticket watches it or \
+     Other news from a ticket a person started wakes this session once watch_ticket watches it or \
      hold_ticket holds it; while watched, sleep_agent parks its agent as one this session \
      started. A ticket with no agent that carries a pull request (one \
      this session opened and named under its Summary) wakes this session for the forge's news \
@@ -3783,11 +3783,10 @@ mod tests {
         assert!(!description.contains("Asked to wait"), "the script is the crown's own");
         assert_eq!(watch["inputSchema"]["required"], json!(["key", "seen"]));
         assert_eq!(tier_needed_by_tool("watch_ticket"), Some(AgentTools::Full));
-        // T-930: the tool says what a watch does; the wake words say only
-        // that a person's ticket wakes nobody without one.
+        // A committed branch that lingers is heard without a watch (T-1362).
         // T-927: a crown's hold subscribes as a watch does.
         assert!(CROWN_WAKES.contains(
-            "A ticket a person started wakes this session only once watch_ticket watches it or \
+            "Other news from a ticket a person started wakes this session once watch_ticket watches it or \
              hold_ticket holds it"
         ));
         assert!(CROWN_WAKES.contains("a loop that polls included, holds the merge train"));

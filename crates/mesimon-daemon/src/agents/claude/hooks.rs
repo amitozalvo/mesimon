@@ -50,6 +50,7 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
                         Transition::Listed,
                         owner,
                     );
+                    tasks.label(id, task.get("command").and_then(Value::as_str));
                 }
             }
         }
@@ -78,6 +79,10 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
             Some("Monitor") => {
                 if let Some(id) = response.get("taskId").and_then(Value::as_str) {
                     tasks.record(id, Some("monitor"), None, Transition::Started, owner);
+                    tasks.label(
+                        id,
+                        frame.payload.pointer("/tool_input/command").and_then(Value::as_str),
+                    );
                 }
             }
             // The lead's own command, backgrounded (T-483). A subagent's is
@@ -87,6 +92,10 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
             Some("Bash") if owner.is_none() => {
                 if let Some(id) = response.get("backgroundTaskId").and_then(Value::as_str) {
                     tasks.record(id, Some(BACKGROUND_COMMAND), None, Transition::Started, None);
+                    tasks.label(
+                        id,
+                        frame.payload.pointer("/tool_input/command").and_then(Value::as_str),
+                    );
                 }
             }
             Some("TaskStop") => {

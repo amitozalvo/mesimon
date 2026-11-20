@@ -126,6 +126,8 @@ up](https://mesimon.dev/relay/) is on mesimon.dev. Sharing a board with teammate
    itself.
 3. **Zero prompt injection.** mesimon adds, removes and reorders no token of your conversation.
    The board tools it gives its agents, and the agent brief below, are shown in full.
+   When a worker ends its turn on a clean branch with commits ahead and tasks still running,
+   the board sends a separate message naming the tasks and their effect on the merge train.
 
 The agent brief is the one paragraph mesimon adds to the system prompt of the agents it starts,
 word for word (*Settings › Agents › Agent brief* turns it off):

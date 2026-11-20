@@ -78,7 +78,10 @@ you started yourself — telling the agent to read its ticket before it starts w
 unless you turn it off: the [README](../README.md#three-promises) shows the exact text,
 `mesimon doctor` prints it, and *Settings › Agents › Agent brief* turns it off, for good on that
 board. Together with the tool registry
-it is everything mesimon adds to model input.
+it describes what mesimon supplies when starting an agent. If a worker ends a turn with live
+tasks on a clean branch ahead of its base, mesimon sends a separate board message to that
+worker with the task count, commands where known, and the merge hold. A reported task can
+keep running without triggering the same message on the worker’s reply.
 
 What the tools can and cannot do is in
 [What your agents can see](USING.md#what-your-agents-can-see).

@@ -77,11 +77,53 @@ impl Daemon {
         self.through_prs() && self.worktrees.get(&ticket).is_some_and(|b| !b.branch.is_empty())
     }
 
+    /// The settled Stop and the seat that owns it. A fresh flags sample checks
+    /// every leg's tree on its worker only when this Stop has new tasks to name.
+    pub(super) fn parked_for_task_fact(&self, ticket: ulid::Ulid) -> Option<(uuid::Uuid, u64)> {
+        let seat = self.board.pane_target(ticket)?;
+        let since = self.tasks_since.get(&seat.id).copied()?;
+        (seat.kind == SessionKind::Claude
+            && seat.state.on_tasks()
+            && !seat.observe_only()
+            && seat.background_tasks.needs_report()
+            && !self.async_stop_pending(seat.id))
+        .then_some((seat.id, since))
+    }
+
+    fn tell_parked_worker(&mut self, ticket: ulid::Ulid, park: (uuid::Uuid, u64)) -> bool {
+        if self.parked_for_task_fact(ticket) != Some(park)
+            || !self.committed_branch_waits(ticket)
+            || self.board.ticket(ticket).is_none_or(|t| {
+                t.is_archived()
+                    || t.hand_raised()
+                    || !t.effective_execution_policy().allows_automation()
+            })
+            || !self.session_takes_words(park.0)
+            || self.owed.contains_key(&park.0)
+            || self.queued.iter().any(|q| q.ticket == ticket)
+        {
+            return false;
+        }
+        let by = Principal::Automation { rule: "background_task_notice".into() };
+        if authorize(&by, &Action::Mutate, &Resource::Session { id: park.0 }).denied() {
+            return false;
+        }
+        let text = self.board.session(park.0).unwrap().background_tasks.merge_hold_fact();
+        let ack = Ack { by: "automation", word: "background_task_notice" };
+        if self.paste_to_ticket(ticket, &text, ack).is_err() {
+            return false;
+        }
+        if let Some(s) = self.board.sessions.iter_mut().find(|s| s.id == park.0) {
+            s.background_tasks.mark_reported();
+        }
+        true
+    }
+
     /// The ticket's own flags sample on a worker, landing as
     /// `Msg::TicketFlags`. One in flight per ticket: asked again while one
     /// is out, the next goes when it lands, so the look a later turn waits
     /// for began after that turn.
-    fn queue_ticket_flags(&mut self, ticket: ulid::Ulid) {
+    pub(super) fn queue_ticket_flags(&mut self, ticket: ulid::Ulid) {
         if let Some(again) = self.ticket_looks.get_mut(&ticket) {
             *again = true;
             return;
@@ -106,6 +148,10 @@ impl Daemon {
         if !forge_legs.is_empty() {
             self.forge.looking.insert(ticket);
         }
+        let park = self.parked_for_task_fact(ticket).and_then(|park| {
+            let binding = self.worktrees.get(&ticket)?;
+            Some((park, self.binding_legs(binding)))
+        });
         let uncached = self.uncached_upstreams(&queries);
         self.off_writer(move || {
             let local =
@@ -114,7 +160,14 @@ impl Daemon {
             // and the upstream filled in here where the writer had none.
             sample_terms(&mut queries, base.as_ref(), &uncached);
             let samples = worktree::compute_repo_flags(&queries);
-            Msg::TicketFlags(ticket, gen, seq, samples, local)
+            let clean_park = park.and_then(|(park, legs)| {
+                (!legs.is_empty()
+                    && legs
+                        .iter()
+                        .all(|l| worktree::audit(&l.path).is_ok_and(|(dirty, _)| dirty == 0)))
+                .then_some(park)
+            });
+            Msg::TicketFlags(ticket, gen, seq, samples, local, clean_park)
         });
     }
 
@@ -128,6 +181,7 @@ impl Daemon {
         seq: u64,
         samples: Vec<worktree::RepoSample>,
         local: Option<crate::forge::Local>,
+        clean_park: Option<(uuid::Uuid, u64)>,
     ) {
         let again = self.ticket_looks.remove(&ticket).unwrap_or(false);
         self.forge.looking.remove(&ticket);
@@ -153,6 +207,9 @@ impl Daemon {
         if !samples.is_empty() && !self.tearing_down.contains(&ticket) {
             changed = self.absorb_worktree_flags(samples, seq, Some(ticket));
             acted = self.train_pass();
+            if let Some(park) = clean_park.filter(|_| self.wt_fresh.get(&ticket) == Some(&seq)) {
+                acted |= self.tell_parked_worker(ticket, park);
+            }
             if acted {
                 self.persist_sessions();
             }
@@ -260,5 +317,67 @@ impl Daemon {
         out.sort();
         out.dedup();
         out
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+    use mesimon_core::background::{Transition, BACKGROUND_COMMAND};
+    use mesimon_core::train::{seat, Seat};
+
+    #[test]
+    fn committed_suite_gets_one_fact_and_holds_the_train_through_the_linger_alert() {
+        let mut b = crownask::ledger_tests::bed("committed-suite");
+        let d = &mut b.d;
+        d.board.crown = None;
+        let rec = &mut d.board.sessions[0];
+        let id = rec.id;
+        rec.road = Road::Mod;
+        rec.set_state(SessionState::Idle { stop_reason: StopReason::Background });
+        rec.background_tasks.record(
+            "suite",
+            Some(BACKGROUND_COMMAND),
+            None,
+            Transition::Started,
+            None,
+        );
+        rec.background_tasks.label("suite", Some("cargo nextest run --workspace"));
+        d.modroad.seat_bridge(id, &["submit"]);
+        d.tasks_since.insert(id, 100);
+        let park = (id, 100);
+        assert!(!d.tell_parked_worker(b.worker, park), "no commits yet");
+        d.wt_agg.insert(b.worker, worktree::Aggregate { ahead: 1, ..Default::default() });
+        assert!(!d.tell_parked_worker(b.worker, (id, 99)), "late sample from another turn");
+        assert!(d.tell_parked_worker(b.worker, park));
+        let sent = d.owed.remove(&id).unwrap().sent.unwrap().text;
+        assert!(
+            sent.contains("1 background task is still running")
+                && sent.contains("cargo nextest run --workspace"),
+            "{sent}"
+        );
+        assert!(sent.contains("merge train waits"), "{sent}");
+        // Claude names the running suite and stops again with the same task.
+        d.board.sessions[0].background_tasks.record(
+            "suite",
+            Some("shell"),
+            Some("running"),
+            Transition::Listed,
+            None,
+        );
+        assert!(!d.tell_parked_worker(b.worker, park), "the fact cannot start a loop");
+        assert_eq!(seat(&d.board, b.worker, false), Seat::Busy);
+        d.board.sessions[0].set_state(SessionState::Idle { stop_reason: StopReason::Monitoring });
+        let due = 100 + crownwake::LINGER_MS;
+        assert!(!d.route_lingering(due - 1, crownwake::LINGER_MS));
+        assert!(d.route_lingering(due, crownwake::LINGER_MS));
+        assert!(d.board.needs_you_tickets(due).contains(&b.worker));
+        assert_eq!(seat(&d.board, b.worker, false), Seat::Busy);
+        d.board.crown = Some(b.crown);
+        assert!(d.route_lingering(due, crownwake::LINGER_MS));
+        assert!(!d.board.needs_you_tickets(due).contains(&b.worker));
+        assert!(d.crown_wakes.iter().any(|w| w.worker == b.worker));
+        assert!(!d.route_lingering(due + 1, crownwake::LINGER_MS));
+        assert_eq!(seat(&d.board, b.worker, false), Seat::Busy);
     }
 }

@@ -2750,3 +2750,16 @@ checks = ["road:mod", "started_by_person"]
   [[test.steps]]
   rig = "rebase"
   conflict = "code"
+
+[[test]]
+id = "BT1"
+title = "BT1 · commit the fixture and start its background timer: do the steps below"
+uncrowned = true
+workspace = "worktree"
+brief = "Create BT1.txt containing timer and commit it. Then start the shell command sleep 3600 using Bash with run_in_background. End this turn with the single word ready."
+expect = "A committed worker leaves sleep 3600 running at Stop. The board names the timer and merge hold once. In its next turn the worker either stops the timer or names it in its answer."
+checks = ["started_by_person", "unlanded", "file:BT1.txt", "fed:background_task_notice=1", "task_notice:sleep 3600"]
+
+  [[test.steps]]
+  rig = "person_start"
+  stops = 2

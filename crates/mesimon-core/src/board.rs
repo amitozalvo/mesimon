@@ -613,6 +613,9 @@ pub struct SessionRecord {
     /// as `tasks_running` is; the daemon keeps it in memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tasks_since: Option<u64>,
+    /// The uncrowned board has a committed branch waiting on this parked seat.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tasks_need_you: bool,
     /// Snapshot-only evidence that Stop is held for hook processes or their
     /// rewake grace. Older snapshots omit it; older readers ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -806,6 +809,7 @@ impl SessionRecord {
             unsent: None,
             tasks_running: None,
             tasks_since: None,
+            tasks_need_you: false,
             hook_wait: None,
             unprompted: false,
             compacting: false,
@@ -835,6 +839,7 @@ impl SessionRecord {
             self.dialog_call = None;
             self.dialog_print = None;
         }
+        self.tasks_need_you &= state.on_tasks();
         self.state = state;
     }
 
@@ -4019,6 +4024,12 @@ impl Board {
             .map(|s| s.ticket)
             .chain(self.woke_tickets().iter().map(|t| t.id))
             .chain(self.raised_tickets().iter().map(|t| t.id))
+            .chain(
+                self.sessions
+                    .iter()
+                    .filter(|s| s.tasks_need_you && s.state.on_tasks())
+                    .map(|s| s.ticket),
+            )
             .chain(self.unsent_tickets().iter().map(|t| t.id))
             .chain(
                 self.sessions

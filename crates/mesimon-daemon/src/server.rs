@@ -609,7 +609,14 @@ enum Msg {
     /// One ticket's own flags sample (T-678): a turn's end on a branch the
     /// train may take, and the number it started under; with the look at
     /// what its legs pushed (T-761) where a forge may read them.
-    TicketFlags(ulid::Ulid, u64, u64, Vec<worktree::RepoSample>, Option<crate::forge::Local>),
+    TicketFlags(
+        ulid::Ulid,
+        u64,
+        u64,
+        Vec<worktree::RepoSample>,
+        Option<crate::forge::Local>,
+        Option<(uuid::Uuid, u64)>,
+    ),
     /// A worktree's teardown finished on a worker (T-561): `worktree remove
     /// --force` walks and unlinks the whole tree, `target/` included, and
     /// an `archive_all` queued a dozen of them for one tick, so the board
@@ -2007,8 +2014,8 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
             Msg::Backfilled(found) => d.on_backfilled(found),
-            Msg::TicketFlags(ticket, gen, seq, flags, local) => {
-                d.on_ticket_flags(ticket, gen, seq, flags, local)
+            Msg::TicketFlags(ticket, gen, seq, flags, local, clean_park) => {
+                d.on_ticket_flags(ticket, gen, seq, flags, local, clean_park)
             }
             Msg::ColumnEvicted { ticket, outcome } => d.on_column_evicted(ticket, outcome),
             Msg::TornDown { ticket, archived, branch_kept, took } => {
@@ -8629,6 +8636,13 @@ impl Daemon {
         match crownwake::tasks_stretch(&change.from, &change.to, now, kept) {
             Some(at) => _ = self.tasks_since.insert(id, at),
             None => _ = self.tasks_since.remove(&id),
+        }
+        if !held_stop
+            && !change.from.on_tasks()
+            && change.to.on_tasks()
+            && self.parked_for_task_fact(snapshot.ticket).is_some()
+        {
+            self.queue_ticket_flags(snapshot.ticket);
         }
         // A turn's age, and the crown's expectation of it (T-973): from the
         // edge that begins the turn to the edge that leaves it.
@@ -25325,7 +25339,7 @@ mod shell_archive_regressions {
         d.on_worktree_flags(old);
         assert!(!d.wt_agg.contains_key(&ticket), "the rejected board sample restored no flags");
         d.on_worktree_flags(board_sample(&rx));
-        d.on_ticket_flags(ticket, queued_gen, 0, old_samples, None);
+        d.on_ticket_flags(ticket, queued_gen, 0, old_samples, None, None);
         assert!(!d.wt_conflicts.contains(&"topic".to_string()));
         let after = d.wt_agg.get(&ticket).expect("stale delivery must not clear current flags");
         assert!(after.needs_rebase && !after.merged, "old target A sample was dropped: {after:?}");
@@ -25340,11 +25354,11 @@ mod shell_archive_regressions {
         // The rejected per-ticket read schedules a fresh one. Wait for its
         // worker before dropping the disposable repository.
         loop {
-            if let Msg::TicketFlags(id, gen, seq, samples, local) =
+            if let Msg::TicketFlags(id, gen, seq, samples, local, park) =
                 rx.recv_timeout(Duration::from_secs(10)).unwrap()
             {
                 assert_eq!(gen, d.wt_gen);
-                d.on_ticket_flags(id, gen, seq, samples, local);
+                d.on_ticket_flags(id, gen, seq, samples, local, park);
                 break;
             }
         }

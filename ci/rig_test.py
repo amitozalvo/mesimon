@@ -9,6 +9,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest.mock import Mock
 
 SPEC = importlib.util.spec_from_file_location("claude_rig", Path(__file__).parent / "rig.py")
 rig = importlib.util.module_from_spec(SPEC)
@@ -56,6 +57,33 @@ class SuiteTests(unittest.TestCase):
                 f.write('[[test]]\nid = "A2"\n\n[[test]]\nid = "B1"\n\n[[test]]\nid = "A2"\n')
             with self.assertRaisesRegex(ValueError, "two tests are named A2"):
                 rig.load_tests(path)
+
+    def test_bt1_uses_unrelated_history_and_restores_the_target_on_failure(self):
+        from rebase import git
+        case = next(t for t in rig.load_tests(Path(__file__).parent / "rig" / "tests.toml")
+                    if t["id"] == "BT1")
+        self.assertTrue(case["uncrowned"])
+        with tempfile.TemporaryDirectory() as repo:
+            git(repo, "init", "-b", "main")
+            git(repo, "commit", "--allow-empty", "-m", "Real history")
+            before = git(repo, "rev-parse", "main")
+            subject = object.__new__(rig.Rig)
+            subject.repo, subject.crown, subject.wire = repo, "control", Mock()
+            subject.board = lambda: {"merge_into": "pull_requests"}
+            def fail_after_spawn(test):
+                target = subject.wire.set_merge_into.call_args.args[0]
+                mode, branch = target.split(":", 1)
+                self.assertEqual(mode, "branch")
+                self.assertTrue(git(repo, "rev-parse", "--verify", branch))
+                self.assertIsNone(rig.git(repo, "merge-base", branch, "main"))
+                raise RuntimeError("interrupted case")
+            subject.run_test = fail_after_spawn
+            with self.assertRaisesRegex(RuntimeError, "interrupted case"):
+                subject.run_uncrowned_fixture({**case, "ticket": "fixture"})
+            subject.wire.set_merge_into.assert_called_with("pull_requests")
+            subject.wire.set_manual_merge.assert_called_with("fixture", True)
+            self.assertEqual(git(repo, "rev-parse", "main"), before)
+            self.assertEqual(git(repo, "branch", "--format=%(refname:short)"), "main")
 
     def test_incoming_board_ask_does_not_teach_the_crown_how_to_reply(self):
         test = next(t for t in rig.load_tests(Path(__file__).parent / "rig" / "tests.toml")

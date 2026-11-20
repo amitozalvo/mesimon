@@ -65,6 +65,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -2318,7 +2319,7 @@ Reply with the single word ready and end your turn."""
         say(f"  gave up waiting for {what} after {timeout} s")
         return None
 
-    def start_crown(self):
+    def wait_claude_road(self):
         # A fresh board probes its Claude Code when the shell environment
         # lands (T-588); a crown started before the verdict launches on the
         # hook set, and every step would then reach it by paste.
@@ -2326,6 +2327,8 @@ Reply with the single word ready and end your turn."""
         say(f"\n  road.json: {line}")
         if not self.wait_this_mod():
             say("  no probe of this build's mod passed in 120 s: launches take the hook set")
+
+    def start_crown(self):
         say(f"\n▶ starting the crown {self.crown_key} (its brief is its first prompt)")
         r = self.wire.spawn(self.crown, "claude", submit_prompt=True)
         say(f"  spawn: {r.get('resp')}")
@@ -2685,15 +2688,17 @@ Reply with the single word ready and end your turn."""
             r = self.wire.spawn(test["ticket"], "claude", submit_prompt=True)
             self.log(f"the person started {test['key']}: {r.get('resp')}")
 
-            def first_turn():
+            def turns_ended():
                 rec = self.agent_of(self.board(), test["ticket"])
-                return rec and word_of(rec["state"]) == "idle" and any(
-                    l.get("kind") == "hook" and l.get("event") == "Stop"
-                    for l in self.worker_lines(rec["id"], mark))
+                if not rec:
+                    return False
+                parked = rec["state"].get("state") == "idle" if step.get("stops") else word_of(rec["state"]) == "idle"
+                stops = sum(l.get("kind") == "hook" and l.get("event") == "Stop"
+                            for l in self.worker_lines(rec["id"], mark))
+                return parked and stops >= step.get("stops", 1)
 
-            if not self.wait_for("the person's agent's first turn", first_turn, STEP_TIMEOUT,
-                                 self.watch):
-                record["failures"].append("the person's agent never finished its first turn")
+            if not self.wait_for("the person's agent to finish", turns_ended, STEP_TIMEOUT, self.watch):
+                record["failures"].append("the person's agent never finished the expected turns")
                 return False
             return True
         if what == "press_enter":
@@ -4733,6 +4738,15 @@ Reply with the single word ready and end your turn."""
                 ok = bool(second and stops and stops[0] - 1000 <= second)
                 check(c, ok, f"first Stop at {stops[0] if stops else None}, second prompt entered "
                       f"at {second}" + (f" ({(second - stops[0]) / 1000:+.1f} s)" if ok else ""))
+            elif name == "task_notice":
+                notice = next((i for i, row in enumerate(rows) if any(
+                    "The merge train waits" in prompt and arg in prompt
+                    for prompt in user_prompts([row]))), None)
+                after = rows[notice + 1:] if notice is not None else []
+                named = arg in last_reply(after)
+                stopped = any(tool == "TaskStop" and result and not result["is_error"]
+                              for tool, result in tool_calls(after))
+                check(c, named or stopped, f"notice row {notice}, stopped {stopped}, named {named}")
             elif name == "replies":
                 want = arg.split(",")
                 said = replies(rows)
@@ -5274,7 +5288,7 @@ Reply with the single word ready and end your turn."""
         # turn of its own; a failure stays where automove left it, in
         # REVIEW, for a person.
         v["column"] = self.ticket(self.board(), test["ticket"])["column"]
-        if v["pass"]:
+        if v["pass"] and not test.get("uncrowned"):
             self.close_out.append(test)
         self.verdicts.append(v)
 
@@ -5344,6 +5358,31 @@ Reply with the single word ready and end your turn."""
 
     # ---- the whole run
 
+    def run_uncrowned_fixture(self, test):
+        # A manual hold alone still lets a crown merge. Cut the worker from
+        # unrelated history so even a later fast-forward to main is impossible.
+        from rebase import git as fixture_git
+        target = "rig-background-" + test["ticket"].lower()
+        ref = "refs/heads/" + target
+        previous = self.board().get("merge_into", "main")
+        with tempfile.TemporaryDirectory() as base:
+            fixture_git(base, "init", "-b", "fixture")
+            fixture_git(base, "commit", "--allow-empty", "-m", "Initial background task fixture")
+            tip = fixture_git(base, "rev-parse", "HEAD")
+            fixture_git(self.repo, "fetch", "--no-tags", "--no-write-fetch-head", base, "fixture:" + ref)
+        try:
+            self.wire.set_merge_into("branch:" + target)
+            self.wire.request({"cmd": "uncrown"})
+            try:
+                return self.run_test(test)
+            finally:
+                self.wire.set_manual_merge(test["ticket"], True)
+                self.wire.crown(self.crown)
+        finally:
+            self.wire.set_merge_into(previous)
+            # Compare-and-delete only our own unchanged fixture ref.
+            fixture_git(self.repo, "update-ref", "-d", ref, tip)
+
     def run(self, tests, lay_only):
         self.run_id = time.strftime("%Y%m%d-%H%M%S")
         self.feed_lines, self.feed_off = [], 0
@@ -5363,9 +5402,15 @@ Reply with the single word ready and end your turn."""
         if lay_only:
             say("\nlaid; nothing started. Run again without --lay to run the tests.")
             return
-        self.start_crown()
+        self.wait_claude_road()
+        self.crown_model = None
+        if any(not test.get("uncrowned") for test in tests):
+            self.start_crown()
         for test in tests:
-            self.run_test(test)
+            if test.get("uncrowned"):
+                self.run_uncrowned_fixture(test)
+            else:
+                self.run_test(test)
             # The peer board a test laid (T-733) goes with the test, and the
             # link with it: the next test lays its own.
             if self.peer:

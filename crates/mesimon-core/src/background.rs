@@ -34,6 +34,8 @@ struct Task {
     /// both `shell`, so only the tool that started a task can say which it
     /// is. A status still ends it.
     armed: bool,
+    label: Option<String>,
+    reported: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -100,6 +102,48 @@ impl Registry {
         self.tasks.len()
     }
 
+    /// Keep the command with its live row until it exits.
+    pub fn label(&mut self, id: &str, label: Option<&str>) {
+        if let (Some(task), Some(label)) = (self.tasks.get_mut(id), label) {
+            let label = crate::text::scrub_text(label);
+            if !label.is_empty() {
+                task.label = Some(crate::text::cap_bytes(&label, 256).to_owned());
+            }
+        }
+    }
+
+    pub fn needs_report(&self) -> bool {
+        self.tasks.values().any(|task| !task.reported)
+    }
+
+    pub fn mark_reported(&mut self) {
+        for task in self.tasks.values_mut() {
+            task.reported = true;
+        }
+    }
+
+    pub fn merge_hold_fact(&self) -> String {
+        let n = self.count();
+        let tasks = if n == 1 {
+            "1 background task is".into()
+        } else {
+            format!("{n} background tasks are")
+        };
+        let mut words = format!("Mesimon reports {tasks} still running. The merge train waits for background work to finish before merging this branch.");
+        for (id, task) in &self.tasks {
+            let id = crate::text::scrub_text(id);
+            let row =
+                task.label.as_ref().map_or_else(|| id.clone(), |label| format!("{id} — {label}"));
+            if words.len() + row.len() + 3 > 4000 {
+                words.push_str("\n…");
+                break;
+            }
+            words.push_str("\n- ");
+            words.push_str(&row);
+        }
+        words
+    }
+
     pub fn liveness(&self) -> Liveness {
         if self.tasks.values().any(|t| t.liveness == Liveness::Working) {
             Liveness::Working
@@ -157,18 +201,19 @@ impl Registry {
             // Ambient housekeeping (`is_monitor_kind`): no tool armed it.
             return;
         }
-        let task = match known {
-            Some((liveness, true)) if transition != Transition::Started => {
-                Task { liveness, owner: owner.map(str::to_string), armed: true }
-            }
-            _ => Task {
-                liveness: classification,
-                owner: owner.map(str::to_string),
-                armed: transition == Transition::Started,
-            },
-        };
         if self.tasks.len() < 1024 || known.is_some() {
-            self.tasks.insert(id.to_string(), task);
+            let task = self.tasks.entry(id.to_owned()).or_insert_with(|| Task {
+                liveness: classification,
+                owner: None,
+                armed: false,
+                label: None,
+                reported: false,
+            });
+            task.owner = owner.map(str::to_owned);
+            if !task.armed || transition == Transition::Started {
+                task.liveness = classification;
+                task.armed = transition == Transition::Started;
+            }
         }
     }
 }
