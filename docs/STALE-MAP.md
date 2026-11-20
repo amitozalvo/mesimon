@@ -48516,3 +48516,21 @@ After rebasing onto T-1372, MN1 used the shared isolated merge fixture. It passe
 the same crown tier. The merge prompt reached the crown at +107 ms, the worker stopped at
 +4.59 s and the close-out prompt arrived at +9.36 s. On that base the train e2e observed
 the two landing wakes at +523 ms and +953 ms.
+
+## T-1371 — a silent Stop observer gets no rewake grace (2026-11-20)
+
+Claude Code's interactive transcript records the command and duration of a
+completed Stop hook. The recorded async review has a command with no duration.
+The daemon still waits while a sampled child lives. After exit, a silent,
+error-free summary for this Stop can account for that child when the command
+and lifetime match one completed invocation. An ambiguous match, an unreadable
+summary or an async review keeps its three-second grace. The daemon reads the
+last 64 KiB of the session transcript only when the grace could delay release.
+
+On the fixture clock the observer's Stop reached idle in 4.0 s before and
+1.5 s after. With an async review alongside, idle came 3.0 s after the first
+sample that saw the review gone. The production feed still showed 36 holds
+across 38 Claude Stops from 16:04 to 17:20 UTC after the two apps' hooks were
+removed, against 314 across 389 Stops in the preceding six days. The feed
+records child counts only. Those measurements rule out attributing every
+hold to the removed hooks.

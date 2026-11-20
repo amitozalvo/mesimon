@@ -1,6 +1,6 @@
 //! T-1044: interactive Claude exposes no async-hook completion ledger.
 //! Hold the Stop while unaccounted children remain, then allow a rewake
-//! grace. This is process evidence, not a claim that a review passed.
+//! grace unless Claude records their silent completion at this Stop.
 
 use super::*;
 use crate::panes::HookProcess;
@@ -13,7 +13,14 @@ const CAP_MS: u64 = 10 * 60_000;
 pub(super) struct Holds {
     pending: HashMap<uuid::Uuid, PendingStop>,
     // A hook from an earlier turn can survive a rewake and the next Stop.
-    known: HashMap<uuid::Uuid, HashMap<i32, u64>>,
+    known: HashMap<uuid::Uuid, HashMap<i32, Child>>,
+}
+
+#[derive(Clone)]
+struct Child {
+    born: u64,
+    last_seen: u64,
+    argv: String,
 }
 
 struct PendingStop {
@@ -23,7 +30,8 @@ struct PendingStop {
     began: u64,
     shells: Vec<String>,
     saw_child: bool,
-    empty_since: Option<u64>,
+    // Keep each vanished child's evidence until its own rewake grace expires.
+    exited: Vec<(Child, u64)>,
     /// The resting state this Stop lifted to `Running` with no turn open
     /// (T-1200): a `/clear`'s `Idle{Unknown}`, say. `None` when a turn was
     /// already running and the lift only kept it so.
@@ -103,6 +111,69 @@ fn on_argv(argv: &str, command: &str) -> bool {
     found
 }
 
+/// The full command as launched directly, by a shell -c, or by a script's
+/// shebang. A command mentioned in another program's arguments is no match.
+fn hook_command(argv: &str, command: &str) -> bool {
+    if argv == command {
+        return true;
+    }
+    let Some((shell, args)) = argv.split_once(' ') else { return false };
+    matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh" | "dash"))
+        && args.strip_prefix("-c ").unwrap_or(args) == command
+}
+
+/// Interactive Claude's Stop summary gives a duration to completed hooks.
+/// An async dispatch has a command too, but no duration. Only consult the
+/// bounded transcript tail when a grace is all that still holds the Stop.
+fn silent_observers(path: &str, stopped: u64, at: u64, exited: &[(Child, u64)]) -> bool {
+    let path = std::path::Path::new(path);
+    let Ok(meta) = path.metadata() else { return false };
+    if !meta.is_file() {
+        return false;
+    }
+    let Some(text) = crate::agents::claude::tail::window_text(path, meta.len(), 64 * 1024) else {
+        return false;
+    };
+    let Some(summary) = text
+        .lines()
+        .rev()
+        .filter(|line| line.contains("\"stop_hook_summary\""))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|v| {
+            v["type"] == "system"
+                && v["subtype"] == "stop_hook_summary"
+                && v["isSidechain"] == false
+                && v["hookLabel"].is_null()
+        })
+    else {
+        return false;
+    };
+    let Some(finished) = mesimon_core::adopt::record_ms(&summary) else { return false };
+    if !(stopped..=at).contains(&finished)
+        || summary["hasOutput"] != false
+        || summary["preventedContinuation"] != false
+        || !summary["hookErrors"].as_array().is_some_and(Vec::is_empty)
+    {
+        return false;
+    }
+    let Some(infos) = summary["hookInfos"].as_array() else { return false };
+    exited.iter().all(|(child, _)| {
+        let mut matches = infos.iter().filter_map(|info| {
+            let cmd = info["command"].as_str()?;
+            hook_command(&child.argv, cmd).then_some((cmd, info["durationMs"].as_u64()))
+        });
+        let Some((command, Some(duration))) = matches.next() else { return false };
+        // One completed invocation must account for exactly one sampled
+        // process. A child that predates the dispatch or outlived the
+        // summary cannot be the hook that completed.
+        matches.next().is_none()
+            && child.last_seen.saturating_sub(child.born) <= duration
+            // A sampler dates its rows at query start, before ps reads them.
+            && child.born.max(child.last_seen) <= finished
+            && exited.iter().filter(|(c, _)| hook_command(&c.argv, command)).count() == 1
+    })
+}
+
 impl Daemon {
     /// The signal the machine reads, and with it the resting state a lifted
     /// hold left when this frame began a turn over it (T-1200): the lift's
@@ -178,7 +249,7 @@ impl Daemon {
                 began: self.turn_since.get(&id).copied().or(rec.launched_at).unwrap_or(now),
                 shells,
                 saw_child: false,
-                empty_since: None,
+                exited: Vec::new(),
                 lifted_from: (!mesimon_core::quiet::is_working(rec)).then(|| rec.state.clone()),
             },
         );
@@ -303,14 +374,21 @@ impl Daemon {
             // list too (T-1292): a background shell or watch this Stop lists
             // is the agent's, whatever an earlier reading made of it. An
             // async hook is never listed, so it stays held.
-            known.retain(|pid, born| {
-                rows.iter().any(|r| {
-                    r.pid == *pid
-                        && r.ppid == pane.pane_pid
-                        && same_process(r, *born)
-                        && !accounted(&r.argv, &pending.shells)
-                })
+            known.retain(|pid, child| {
+                if let Some(row) = rows.iter().find(|r| {
+                    r.pid == *pid && r.ppid == pane.pane_pid && same_process(r, child.born)
+                }) {
+                    if !accounted(&row.argv, &pending.shells) {
+                        child.last_seen = at;
+                        return true;
+                    }
+                }
+                if child.last_seen >= pending.stopped {
+                    pending.exited.push((child.clone(), at));
+                }
+                false
             });
+            pending.exited.retain(|(_, gone)| at.saturating_sub(*gone) < REWAKE_MS);
             for row in rows.iter().filter(|r| r.ppid == pane.pane_pid) {
                 let born = row.born_ms;
                 // Stop hooks may be dispatched after our own Stop observer.
@@ -321,7 +399,11 @@ impl Daemon {
                 {
                     continue;
                 }
-                known.entry(row.pid).or_insert(born);
+                known.entry(row.pid).or_insert_with(|| Child {
+                    born,
+                    last_seen: at,
+                    argv: row.argv.clone(),
+                });
             }
             changed |= known.len() != before;
             if !known.is_empty() {
@@ -337,14 +419,13 @@ impl Daemon {
                     );
                 }
                 pending.saw_child = true;
-                pending.empty_since = None;
-            } else {
-                let empty = *pending.empty_since.get_or_insert(at);
-                if at.saturating_sub(pending.stopped) >= SCAN_MS
-                    && (!pending.saw_child || at.saturating_sub(empty) >= REWAKE_MS)
-                {
-                    ready.push((*id, None));
-                }
+            } else if at.saturating_sub(pending.stopped) >= SCAN_MS
+                && (pending.exited.is_empty()
+                    || rec.transcript_path.as_deref().is_some_and(|path| {
+                        silent_observers(path, pending.stopped, at, &pending.exited)
+                    }))
+            {
+                ready.push((*id, None));
             }
         }
         for (id, missing) in ready {
@@ -754,6 +835,137 @@ mod tests {
         assert!(!d.async_stop_pending(id));
         drop(d);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_silent_stop_observer_releases_on_exit_and_an_async_review_keeps_its_grace() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let (mut d, sid, _rx) = crate::server::queued_person_push_tests::daemon(dir);
+        let transcript = dir.join("session.jsonl");
+        let observer = dir.join("observer.sh");
+        std::fs::write(&observer, "cat >/dev/null\n").unwrap();
+        let command = format!("sh {}", observer.display());
+        let output = std::process::Command::new("sh").arg(&observer).output().unwrap();
+        assert!(output.status.success() && output.stdout.is_empty());
+
+        let rec = &mut d.board.sessions[0];
+        let id = rec.id;
+        rec.state = SessionState::Running;
+        rec.pane_key = Some("1:%0".into());
+        rec.launched_at = Some(0);
+        rec.transcript_path = Some(transcript.display().to_string());
+        let mut facts = [pane(false)];
+        facts[0].session_name = sid;
+        let frame = HookFrame {
+            session: id.to_string(),
+            event: "Stop".into(),
+            reason: None,
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            monitoring_tasks: false,
+            teammates: 0,
+        };
+        let process = |pid, argv: &str| HookProcess {
+            pid,
+            ppid: if pid == 10 { 1 } else { 10 },
+            pgid: pid,
+            born_ms: 1_000,
+            argv: argv.into(),
+        };
+        let sample = |d: &mut Daemon, rows: &[HookProcess], at| {
+            d.sample_async_stops(Some(&facts), Ok(rows), at);
+        };
+        let review = "python3 /fixture/review.py";
+        for with_review in [false, true] {
+            d.machines.insert(id, Machine::new(SessionState::Running, 0));
+            d.hold_async_stop(id, stop.clone(), &frame, None, 1_000);
+            let mut rows = vec![process(10, "claude"), process(20, &command)];
+            if with_review {
+                rows.push(process(30, review));
+            }
+            sample(&mut d, &rows, 1_010);
+            assert_eq!(d.async_hook_view(id).unwrap().count, rows.len() as u32 - 1);
+            // Claude's real summary shape: only a finished command has a duration.
+            let mut infos = vec![serde_json::json!({"command": command, "durationMs": 30})];
+            if with_review {
+                infos.push(serde_json::json!({"command": review}));
+            }
+            std::fs::write(
+                &transcript,
+                serde_json::json!({
+                    "type": "system", "subtype": "stop_hook_summary", "isSidechain": false,
+                    "timestamp": "1970-01-01T00:00:01.040Z", "hookInfos": infos,
+                    "hookErrors": [], "hasOutput": false, "preventedContinuation": false,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            rows.remove(1);
+            let mut idle_after = None;
+            for at in (2_000..=9_000).step_by(500) {
+                if with_review && at == 5_000 {
+                    rows.pop();
+                }
+                sample(&mut d, &rows, at);
+                if let Some(change) = d.machines.get_mut(&id).unwrap().tick(at) {
+                    assert_eq!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+                    idle_after = Some(at - 1_000);
+                    break;
+                }
+            }
+            assert_eq!(idle_after, Some(if with_review { 4_000 + REWAKE_MS } else { SCAN_MS }));
+        }
+    }
+
+    #[test]
+    fn a_summary_only_accounts_for_a_unique_silent_completion_at_this_stop() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let command = "/opt/observer/hook.sh";
+        let completed = json!({"command": command, "durationMs": 50});
+        let summary = json!({
+            "type": "system", "subtype": "stop_hook_summary", "isSidechain": false,
+            "timestamp": "1970-01-01T00:00:01.050Z", "hookInfos": [completed],
+            "hookErrors": [], "hasOutput": false, "preventedContinuation": false,
+        });
+        let check = |record: &serde_json::Value, children: &[&str]| {
+            std::fs::write(&path, record.to_string()).unwrap();
+            let exited = children
+                .iter()
+                .map(|argv| {
+                    (Child { argv: argv.to_string(), born: 1_000, last_seen: 1_020 }, 2_000)
+                })
+                .collect::<Vec<_>>();
+            silent_observers(path.to_str().unwrap(), 1_000, 2_000, &exited)
+        };
+        let shell = "/bin/sh -c /opt/observer/hook.sh";
+        assert!(check(&summary, &[shell]));
+        assert!(check(&summary, &["/bin/bash /opt/observer/hook.sh"]));
+        assert!(!check(&summary, &[shell, command]));
+        assert!(!check(&summary, &["python3 review.py /opt/observer/hook.sh"]));
+        // A query that started before completion can sample a later process.
+        let late = Child { argv: shell.into(), born: 1_055, last_seen: 1_025 };
+        assert!(!silent_observers(path.to_str().unwrap(), 1_000, 2_000, &[(late, 2_000)]));
+        for (field, value) in [
+            ("hasOutput", json!(true)),
+            ("hookErrors", json!(["exit 1"])),
+            ("preventedContinuation", json!(true)),
+            ("timestamp", json!("1970-01-01T00:00:00.999Z")),
+            ("hookInfos", json!([{"command": command}])),
+            ("hookInfos", json!([completed, {"command": command}])),
+        ] {
+            let mut record = summary.clone();
+            record[field] = value;
+            assert!(!check(&record, &[shell]), "{record}");
+        }
     }
 
     /// Claude Code lists at most 1000 characters of a command and marks the
