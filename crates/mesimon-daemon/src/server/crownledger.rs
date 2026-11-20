@@ -35,7 +35,10 @@ use super::*;
 /// is left untouched with its writes barred instead. A schema-1 file reads
 /// as it is. T-973's `WakeCause::Overrun` and `expects` ride 2 for the same
 /// reason: no released build carried it.
-pub const CROWN_SCHEMA: u32 = 2;
+const PRE_EXIT_SCHEMA: u32 = 2;
+/// A build reading schema 2 cannot decode an exited wake. Stamp 3 only
+/// while one is queued or in delivery, so a downgrade leaves it intact.
+pub const CROWN_SCHEMA: u32 = 3;
 
 /// How long after a start the restart's look waits for a worker's agent to
 /// settle (`hear_restored`) before letting it go to its turn's end.
@@ -132,6 +135,17 @@ pub(super) struct Ledger {
     rules: BTreeMap<uuid::Uuid, crownrules::Told>,
 }
 
+impl Ledger {
+    fn write_schema(&self) -> u32 {
+        let in_delivery = self.entering.iter().chain(&self.taken).flat_map(|e| &e.wakes);
+        if self.wakes.iter().chain(in_delivery).any(|w| w.cause == crownwake::WakeCause::Exited) {
+            CROWN_SCHEMA
+        } else {
+            PRE_EXIT_SCHEMA
+        }
+    }
+}
+
 /// Startup loader: the ledger, any notices, and whether writes are barred.
 pub(super) fn load_or_recover(paths: &Paths) -> (Ledger, Vec<Notice>, bool) {
     let (ledger, notices, barred) =
@@ -147,13 +161,15 @@ macro_rules! ledger_fields {
         /// Empty while no crown is worn: nothing past the first empty file.
         fn ledger(&$this) -> Ledger {
             if $this.board.crown.is_none() {
-                return Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
+                return Ledger { schema_version: PRE_EXIT_SCHEMA, ..Ledger::default() };
             }
-            Ledger {
-                schema_version: CROWN_SCHEMA,
+            let mut ledger = Ledger {
+                schema_version: PRE_EXIT_SCHEMA,
                 crown: $this.board.crown,
                 $($saved: $value,)+
-            }
+            };
+            ledger.schema_version = ledger.write_schema();
+            ledger
         }
 
         /// A tracked source was reached for writing, or the crown changed hands.
@@ -215,7 +231,7 @@ impl Daemon {
     /// restart`. A ticket gone from the board takes its part with it.
     pub(super) fn restore_crown(&mut self, mut ledger: Ledger) {
         // No file reads as the empty ledger, which is then not written.
-        ledger.schema_version = CROWN_SCHEMA;
+        ledger.schema_version = ledger.write_schema();
         self.crown_written = serde_json::to_string_pretty(&ledger).unwrap_or_default();
         let Some(crown) = self.board.crown.filter(|c| ledger.crown == Some(*c)) else {
             return;
@@ -474,7 +490,7 @@ mod tests {
     #[test]
     fn the_ledger_round_trips_and_a_newer_one_is_refused() {
         let w = ulid::Ulid::from_parts(1, 7);
-        let mut ledger = Ledger { schema_version: CROWN_SCHEMA, ..Ledger::default() };
+        let mut ledger = Ledger { schema_version: PRE_EXIT_SCHEMA, ..Ledger::default() };
         ledger.crown = Some(ulid::Ulid::from_parts(1, 1));
         ledger.wakes = serde_json::from_str(&format!(
             r#"[{{"worker":"{w}","cause":"answered","finished":false,"late":false}}]"#

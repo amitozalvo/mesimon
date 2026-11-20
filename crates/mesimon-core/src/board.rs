@@ -334,6 +334,9 @@ pub struct SessionRecord {
     pub argv: Vec<String>,
     pub cwd: String,
     pub state: SessionState,
+    /// Observation was lost during a foreground turn. Kept across daemon handover.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lost_during_turn: bool,
     /// Epoch ms when the session entered the attention set; None otherwise.
     /// Minted by the daemon only — orders the Tab queue.
     #[serde(default)]
@@ -759,6 +762,7 @@ impl SessionRecord {
             argv,
             cwd,
             state,
+            lost_during_turn: false,
             waiting_since: None,
             state_changed_at: None,
             transcript_path: None,
@@ -827,6 +831,24 @@ impl SessionRecord {
         self.shell_close_request.as_ref().filter(|q| q.expires_ms > now)
     }
 
+    /// Positive evidence that an exit would cut a turn short, including a
+    /// runtime that reports observation lost just before its pane dies.
+    pub fn observed_in_turn(&self) -> bool {
+        match self.state {
+            SessionState::Running
+            | SessionState::RequiresAction {
+                reason:
+                    Reason::Permission
+                    | Reason::Question
+                    | Reason::Plan
+                    | Reason::Secret
+                    | Reason::Elicitation,
+            } => true,
+            SessionState::Unknown { .. } => self.lost_during_turn,
+            _ => false,
+        }
+    }
+
     /// The state written, and the held call (`dialog_call`, T-957 round 10)
     /// let go whenever the record is not on a plan or a question: every
     /// departure, a park, a death or a supervisor's loss as much as the
@@ -839,6 +861,9 @@ impl SessionRecord {
             self.dialog_call = None;
             self.dialog_print = None;
         }
+        self.lost_during_turn = self.kind.is_agent()
+            && matches!(state, SessionState::Unknown { .. })
+            && self.observed_in_turn();
         self.tasks_need_you &= state.on_tasks();
         self.state = state;
     }

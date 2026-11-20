@@ -1472,6 +1472,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let mut owed_abandoned = Vec::new();
     let mut owed_handed = Vec::new();
     let mut found_dead = Vec::new();
+    let mut found_exited_mid_turn = Vec::new();
     for (id, link) in &rec.links {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
@@ -1480,6 +1481,7 @@ pub fn run(paths: Paths) -> Result<()> {
             if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
                 continue;
             }
+            let in_turn = r.observed_in_turn();
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
             r.set_state(state_for(link, &r.state, r.kind.is_agent()));
@@ -1491,6 +1493,8 @@ pub fn run(paths: Paths) -> Result<()> {
                     _ => None,
                 };
                 found_dead.push((*id, status));
+            } else if in_turn && matches!(r.state, SessionState::Exited { .. }) {
+                found_exited_mid_turn.push(*id);
             }
             if r.kind == SessionKind::Codex && (had_pane || r.state.has_pane()) {
                 // The owed ledger is memory (the same policy as Claude's). A
@@ -1799,6 +1803,9 @@ pub fn run(paths: Paths) -> Result<()> {
     let mut parked = false;
     for id in just_exited {
         parked |= d.park_on_exit(id);
+    }
+    for id in found_exited_mid_turn {
+        d.hear_turn_exit(id);
     }
     for ticket in owed_abandoned {
         d.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
@@ -6555,6 +6562,9 @@ impl Daemon {
             self.feed.state_decision(id, &frame.event, &decision);
             let crashed = SessionState::Exited { reason: ExitReason::Crashed };
             let crashed_now = change.as_ref().is_some_and(|c| c.to == crashed && c.from != c.to);
+            let exited_mid_turn =
+                change.as_ref().is_some_and(|c| matches!(c.to, SessionState::Exited { .. }))
+                    && self.board.session(id).is_some_and(SessionRecord::observed_in_turn);
             // A compaction window's edge moves no state (T-894), and the
             // record carries the window: the card paints it, and auto-park
             // waits it out.
@@ -6614,6 +6624,8 @@ impl Daemon {
                     _ => None,
                 };
                 self.hear_launch_death(heard, id, status, false);
+            } else if exited_mid_turn {
+                self.hear_turn_exit(id);
             }
             // The composer's Shift+Enter, second half: the pane is provably
             // alive and reading, so press the Enter its prefilled title has
@@ -22105,6 +22117,7 @@ impl Daemon {
         // Kill on a live session ends the process; the conversation survives
         // and its corpse stays on the ticket rail. Kill on an already-dead
         // record is the rail's dismissal gesture — the one exit the rail hides.
+        let exited_mid_turn = rec.observed_in_turn();
         let reason = if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
         rec.set_state(SessionState::Exited { reason });
         if rec.kind == SessionKind::Codex && reap.is_some() {
@@ -22128,6 +22141,9 @@ impl Daemon {
         if let Some(sid) = reap {
             let _ = self.backend.signal_session(&sid);
             self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        }
+        if exited_mid_turn {
+            self.hear_turn_exit(id);
         }
         // The user ended the session an ask was waiting for.
         self.forget_queued(ticket, "queued_ask_dropped", "local", "board");

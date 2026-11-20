@@ -3262,11 +3262,13 @@ Reply with the single word ready and end your turn."""
             # WD1 (T-1190): the worker's Claude Code killed under it, as a
             # reboot ends an idle agent: SIGKILL to its pane's process, so
             # tmux's pane-died files the record exited (crashed), a corpse
-            # whose conversation is still in Claude's store. A crash ends no
-            # turn and wakes no crown, so the step ends at the record.
+            # whose conversation is still in Claude's store. EX1 does the
+            # same during a foreground turn and waits for the crown's reply.
             rec = self.agent_of(self.board(), test["ticket"])
-            if word_of(rec["state"]) != "idle":
-                record["failures"].append(f"the crash came to a worker not idle ({word_of(rec['state'])})")
+            mark = len(self.feed_lines)
+            expected = "working" if step.get("live") else "idle"
+            if word_of(rec["state"]) != expected:
+                record["failures"].append(f"expected a {expected} worker to crash, got {word_of(rec['state'])}")
                 return False
             pid = self.tmux("list-panes", "-t", sid16(rec["id"]), "-F", "#{pane_pid}").stdout.strip()
             if not pid.isdigit():
@@ -3281,7 +3283,8 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the worker's record never read exited after its process was killed")
                 return False
             self.log(f"crashed {test['key']}'s agent (pid {pid}): exited, {dead['state'].get('reason')}")
-            return True
+            if not step.get("live"):
+                return True
         if what in ("limit", "fail"):
             # L1 (T-802): the account's usage limit, as Claude Code reports
             # it — a `StopFailure` whose class is `rate_limit` — sent through
@@ -3309,6 +3312,7 @@ Reply with the single word ready and end your turn."""
                                 "--session", rec["id"], "--event", "StopFailure",
                                 "--reason", cls, *road],
                                input=body, text=True, capture_output=True, timeout=10)
+        if what in ("limit", "fail", "crash"):
             wake = self.wait_for(f"the board's {what} wake for the crown", lambda: next((
                 l for l in self.feed_lines[mark:] if l.get("kind") == "crown_wake"
                 and l.get("worker") == test["ticket"]), None), WAKE_GRACE, self.watch)

@@ -50,7 +50,8 @@
 //! their ack never came. A seat a daemon restart finds dead so is told the
 //! same way, `found at a restart`, where the restart's own never-prompted
 //! reading (the resend's) says no prompt was taken while no daemon ran. A
-//! watched or held ticket's death is heard too.
+//! watched or held ticket's death is heard too. If a foreground turn was
+//! interrupted by the exit, its own wake names the exit reason (T-1378).
 //!
 //! And one that is no event at all (T-599): **lingering** — a worker it
 //! started has sat idle at its composer with background tasks running for
@@ -379,6 +380,8 @@ pub(super) enum WakeCause {
     Raised,
     Planned,
     Asked,
+    /// Its agent exited during a foreground turn.
+    Exited,
     /// A start the crown asked for whose worktree could not be cut (T-777),
     /// or whose agent died before its first turn (T-1220). The
     /// strongest: no agent exists, so nothing else about the worker
@@ -410,6 +413,7 @@ impl WakeCause {
             // Never the question's words (T-414): the crown reads them
             // with `get_ticket`.
             WakeCause::Asked => "asks a question",
+            WakeCause::Exited => "exited mid-turn",
             WakeCause::Unstarted => "could not start",
             WakeCause::Promotion => "integration branch promoted to main",
         }
@@ -430,6 +434,7 @@ impl WakeCause {
             WakeCause::Raised => "raised",
             WakeCause::Planned => "planned",
             WakeCause::Asked => "asked",
+            WakeCause::Exited => "exited",
             WakeCause::Unstarted => "unstarted",
             WakeCause::Promotion => "promotion",
         }
@@ -442,7 +447,7 @@ impl WakeCause {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct CrownWake {
     pub(super) worker: ulid::Ulid,
-    cause: WakeCause,
+    pub(super) cause: WakeCause,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     from: Option<Told>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -464,6 +469,8 @@ pub(super) struct CrownWake {
     /// said in the line's brackets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unstarted: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exited: Option<mesimon_core::board::ExitReason>,
     /// The failed turn this wake is about (T-936), as the board saw it fail:
     /// its reason said first in the line's brackets, never read off a later
     /// state, and its identity what a refined reason must match.
@@ -894,6 +901,7 @@ impl CrownWake {
             && self.overrun.is_none()
             && self.failed.is_none()
             && self.unstarted.is_none()
+            && self.exited.is_none()
             && self.promotion.is_none()
     }
 
@@ -960,6 +968,7 @@ impl CrownWake {
             linger,
             late,
             unstarted: None,
+            exited: None,
             failed: None,
             ask,
             overrun,
@@ -1093,6 +1102,9 @@ impl CrownWake {
         });
         if let Some(reason) = failed {
             out.insert(0, mesimon_core::board::agent_fail_word(reason.reason).to_string());
+        }
+        if let (WakeCause::Exited, Some(reason)) = (self.cause, self.exited) {
+            out.insert(0, mesimon_core::board::agent_exit_word(reason).to_owned());
         }
         if self.late {
             out.push("after a restart".to_string());
@@ -2961,10 +2973,10 @@ impl Daemon {
     /// The crown that would hear `seat` die at its launch (T-1220): a seat
     /// whose launch never began a turn, by the evidence the daemon holds
     /// (`launch_unbegun`), not by the state it shows, with the crown that
-    /// claims it (`launch_claim`). Read before a death drops the words.
+    /// claims it (`death_claim`). Read before a death drops the words.
     pub(super) fn launch_heard(&self, seat: uuid::Uuid) -> Option<(ulid::Ulid, ulid::Ulid)> {
         let rec = self.board.session(seat)?;
-        self.launch_unbegun(rec).then(|| self.launch_claim(rec)).flatten()
+        self.launch_unbegun(rec).then(|| self.death_claim(rec)).flatten()
     }
 
     /// The launch's own words, the ticket's brief, never taken by the seat:
@@ -2985,18 +2997,28 @@ impl Daemon {
             || rec.unsent.as_ref().is_some_and(|u| u.brief)
     }
 
-    /// The crown a seat's launch is told to (T-1220): the crown worn now,
+    /// The crown a seat's death is told to (T-1220): the crown worn now,
     /// where a crown started this seat (`started_by`, T-927) or it watches
-    /// or holds the ticket (`crown_claims`). Read off the record, so a seat
+    /// or holds the ticket. Read off the record, so a seat
     /// already exited, which holds no agent seat, keeps its claim. Never the
     /// crown's own ticket, nor one off the board.
-    fn launch_claim(&self, rec: &SessionRecord) -> Option<(ulid::Ulid, ulid::Ulid)> {
+    fn death_claim(&self, rec: &SessionRecord) -> Option<(ulid::Ulid, ulid::Ulid)> {
         let crown = self.board.crown_holder()?.id;
         let on_board = self.board.ticket(rec.ticket).is_some_and(|t| !t.is_archived());
-        let claimed =
-            rec.started_by.is_some() || self.crown_claims(rec.ticket, crown, WakeCause::Unstarted);
+        let claimed = rec.started_by.is_some()
+            || self.watched_by_crown(rec.ticket, crown)
+            || self.held_by_crown(rec.ticket, crown);
         (rec.kind.is_agent() && rec.ticket != crown && on_board && claimed)
             .then_some((crown, rec.ticket))
+    }
+
+    /// Called after clean exits have had a chance to park. Only the final
+    /// exited record is news, with the same reason the crown reads on it.
+    pub(super) fn hear_turn_exit(&mut self, seat: uuid::Uuid) {
+        let Some(rec) = self.board.session(seat) else { return };
+        let SessionState::Exited { reason } = rec.state else { return };
+        let Some((crown, worker)) = self.death_claim(rec) else { return };
+        self.owe_said(crown, worker, WakeCause::Exited, |w| w.exited = Some(reason));
     }
 
     /// A worker's pane died before its first turn (T-1220): into `exited:
@@ -3039,7 +3061,7 @@ impl Daemon {
     /// `found_dead_at_launch` picked it: told as a launch death, once, as
     /// the death frame would have told it.
     pub(super) fn hear_found_dead(&mut self, seat: uuid::Uuid, status: Option<i32>) {
-        if let Some(heard) = self.board.session(seat).and_then(|r| self.launch_claim(r)) {
+        if let Some(heard) = self.board.session(seat).and_then(|r| self.death_claim(r)) {
             self.hear_launch_death(heard, seat, status, true);
         }
     }
@@ -3606,6 +3628,7 @@ fn restore_wakes(owed: &mut Vec<CrownWake>, wakes: Vec<CrownWake>) {
         if let Some(first) = owed.iter_mut().find(|o| o.worker == w.worker) {
             let rides = w.owed();
             first.absorb(w.cause, w.from, w.to, rides);
+            first.exited = w.exited.or(first.exited);
             first.unstarted = w.unstarted.or(first.unstarted.take());
             first.failed = w.failed.or(first.failed.take());
             first.promotion = w.promotion.or(first.promotion.take());
@@ -6478,6 +6501,107 @@ pub(in crate::server) mod tests {
 
     fn crashed() -> SessionState {
         SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
+    }
+
+    #[test]
+    fn a_mid_turn_exit_wakes_its_crown_once_even_after_observation_loss() {
+        use mesimon_core::board::{ExitReason, UnknownReason};
+        for (claim, kind) in [
+            ("started", SessionKind::Claude),
+            ("watched", SessionKind::Codex),
+            ("unclaimed", SessionKind::Claude),
+        ] {
+            let mut b = crate::server::crownask::ledger_tests::bed(&format!("exit-{claim}"));
+            let seat = b.d.board.sessions[0].id;
+            b.d.board.sessions[0].kind = kind;
+            at(&mut b, seat, SessionState::Running);
+            if claim == "started" {
+                b.d.board.sessions[0].started_by = Some(b.crown);
+            } else if claim == "watched" {
+                b.d.crown_watched.insert(b.worker);
+                let change =
+                    b.d.machines
+                        .get_mut(&seat)
+                        .unwrap()
+                        .apply(&Signal::ObservationLost, 2_000)
+                        .unwrap();
+                b.d.apply_change(seat, &change, None, Some("codex"));
+                assert_eq!(
+                    change.to,
+                    SessionState::Unknown { reason: UnknownReason::ObservationLost }
+                );
+            }
+            pane_died(&mut b, seat);
+            let wake = owed_for(&b.d, b.worker);
+            if claim == "unclaimed" {
+                assert!(wake.is_none());
+                continue;
+            }
+            let wake = wake.expect("the death frame itself owes the wake");
+            assert_eq!(wake.clause(), "exited mid-turn");
+            assert_eq!(wake.changed(), ["crashed"]);
+            let mut folded = wake.clone();
+            folded.fold(WakeCause::Merged, None, Some(branch("aaa", "merged", 0, "DONE")));
+            assert!(folded.reports_merge());
+            assert!(folded.changed().iter().any(|s| s.contains("merged")));
+            assert_eq!(folded.changed()[0], "crashed");
+            b.d.persist_crown();
+            let file = std::fs::read_to_string(b.d.paths.crown_file()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&file).unwrap()["schema_version"],
+                3
+            );
+            b.d.crown_wakes.clear();
+            pane_died(&mut b, seat);
+            b.d.kill_session(seat);
+            assert_eq!(
+                b.d.board.session(seat).unwrap().state,
+                SessionState::Exited { reason: ExitReason::Dismissed }
+            );
+            assert!(owed_for(&b.d, b.worker).is_none(), "repeated death and dismissal are silent");
+        }
+    }
+
+    #[test]
+    fn a_park_or_an_idle_seat_losing_observation_has_no_turn_exit_to_report() {
+        for state in
+            [SessionState::Sleeping, SessionState::Idle { stop_reason: StopReason::EndTurn }]
+        {
+            let mut b = watched_bed("quiet-exit", None);
+            let seat = b.d.board.sessions[0].id;
+            at(&mut b, seat, state.clone());
+            if state != SessionState::Sleeping {
+                let change =
+                    b.d.machines
+                        .get_mut(&seat)
+                        .unwrap()
+                        .apply(&Signal::ObservationLost, 2_000)
+                        .unwrap();
+                b.d.apply_change(seat, &change, None, Some("codex"));
+            }
+            pane_died(&mut b, seat);
+            assert!(owed_for(&b.d, b.worker).is_none(), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_clean_exit_that_parks_the_conversation_has_no_turn_exit_wake() {
+        let mut b = watched_bed("exit-to-park", None);
+        let seat = b.d.board.sessions[0].id;
+        at(&mut b, seat, SessionState::Running);
+        let transcript = b.d.paths.state_dir.join(format!("{seat}.jsonl"));
+        std::fs::write(&transcript, "{}\n").unwrap();
+        b.d.board.sessions[0].transcript_path = Some(transcript.display().to_string());
+        b.d.on_hook(HookFrame {
+            session: seat.to_string(),
+            event: "PaneDied".into(),
+            reason: Some("0".into()),
+            pane: None,
+            road: Road::Hooks,
+            payload: serde_json::json!({}),
+        });
+        assert_eq!(b.d.board.session(seat).unwrap().state, SessionState::Sleeping);
+        assert!(owed_for(&b.d, b.worker).is_none());
     }
 
     /// T-1220, T-1217's first loss: a Codex worker the crown started died

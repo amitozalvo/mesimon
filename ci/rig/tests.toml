@@ -476,6 +476,27 @@ checks = ["road:hooks", "no_plugin_dir", "started_by_crown", "words:working,idle
   rig = "restart_plain"
 
 [[test]]
+id = "EX1"
+title = "EX1 · a worker exits during its first turn"
+blind = true
+merge_guard = "train_off"
+workspace = "worktree"
+brief = "Read the ticket and report the number of lines in its checkout's README."
+expect = "The rig kills the worker's pane process as soon as its first prompt has started a turn. The board wakes its crown once and the crown reports how the worker exited."
+wake_counts = "delivered"
+checks = ["started_by_crown", "woke:exited", "wake_count:exited mid-turn (crashed)=1", "crown_line:EX1 result:crashed"]
+
+  [[test.steps]]
+  starts = ["key"]
+  crown = "EX1: start {key} in a worktree and end your turn. When the board next tells you about that worker, reply with EX1 result followed by what happened. Leave the worker as you find it."
+  until = { events = ["UserPromptSubmit"], state = "working" }
+  settle = false
+
+  [[test.steps]]
+  rig = "crash"
+  live = true
+
+[[test]]
 id = "LD1"
 title = "LD1 · a worker whose launch dies, then its second start: do the steps below"
 blind = true

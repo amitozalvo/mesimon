@@ -48603,3 +48603,55 @@ The regression starts an empty Codex seat after the hand move. Before the fix,
 the card read TODO at Running, at the turn ID and at completion. With the fix,
 it stays in TODO at acceptance, moves to IN PROGRESS on the first snapshot,
 stays there on the second, and moves to REVIEW at completion.
+## A worker that exits during a turn wakes its crown (T-1378, 2026-11-20)
+
+A crown-started, watched or held agent now reports a mid-turn exit once, using
+the exit word shown by `get_ticket`. The wake is owed on the transition and
+goes into the crown's next available prompt. T-1220's failed-launch wake still
+owns an untaken brief. A clean quit that parks the conversation, a dismissed
+corpse, an idle crash and a second death frame each leave the crown quiet.
+When Codex reports observation loss just before pane death, the record keeps
+whether the preceding state was a foreground turn. That evidence survives a
+handover. A restart that itself finds the dead pane also checks for a park
+before telling the crown. A queued or in-flight exit wake stamps the crown
+ledger at schema 3 so a schema-2 reader can leave the file intact.
+
+**T-1370.** The daemon journal shows the clean stop at 16:46:42.363 UTC and
+the replacement starting at 16:46:42.611. The worker continued producing
+rollout records through 16:47:49.942, ending inside a tool wait. Its
+generation-specific app-server log records the supervisor failure:
+`cannot identify process 46887: Operation not permitted (os error 1)`.
+Mesimon's live descendant sampler rechecks known PIDs omitted from its process
+table. macOS denied that identity read, the error propagated out of the relay,
+and the supervisor ran cleanup and published observation loss. The activity
+feed timestamps that transition at 16:48:27.602, then records pane status 1
+and `exited: crashed` at 16:48:27.647. Cleanup released the seat at
+16:49:29.282. The rollout and runtime therefore identify a supervisor failure
+after handover. Neither records which process then held PID 46887 or why
+macOS denied inspection. The contemporaneous load alone cannot establish
+memory pressure as the cause.
+
+Changing the supervisor's response would also change its process-ownership
+accounting (T-1341). A recovery there would need to retain the last verified
+identity, keep sampling other descendants, retry the denied read and preserve
+the observation gap on cleanup. An unreadable PID cannot establish that the
+owned process exited or authorize signaling the current holder.
+
+**Timing.** T-1370 produced no wake during the 18-minute interval before the
+person intervened. In live rig case EX1 the board recorded the exit at
+17:40:34.854 UTC and owed the wake at +6 ms. The Opus 5.5 high-effort crown
+was finishing its start turn. Its prompt carrying the wake was submitted at
++4.863 s and it reported the crash. Exactly one delivered sentence contained
+`exited mid-turn (crashed)`. The first EX1 attempt ended its worker's turn
+when Claude declined a standalone foreground sleep. That attempt was
+interrupted. The passing fixture gates the crash on `UserPromptSubmit` and
+a running worker.
+
+The rig preflight caught a case that mixed the owed and delivered counters.
+With the delivered counter selected, all 121 cases passed preflight, including
+after the worker fixture changed. The Python rig tests passed (96).
+`cargo ut` passed before and after the ledger compatibility and merge-folding
+changes (3,350 passed, 13 ignored on the final build). The guard superseded
+the first crown e2e run when the final build was ready. All 139 crown e2es
+passed on that build, with a clean fixture audit. The full workspace suite
+belongs to the crown's post-merge batch.
