@@ -3037,7 +3037,8 @@ pub struct AgentBackgroundView {
 }
 
 /// The stop a `needs-you` agent is at (T-566). `reason` is
-/// `board::agent_reason_word`'s vocabulary. On a question stop whose dialog
+/// `board::agent_reason_word`'s vocabulary, followed on an agy worktree trust stop by the checkout fact when applicable.
+/// On a question stop whose dialog
 /// the hook stream carried, the rest is the projection Remote Control
 /// draws: `request` names that dialog (an answer binds to it), `questions`
 /// lists every question it asks, in order (T-571; it was a count beside

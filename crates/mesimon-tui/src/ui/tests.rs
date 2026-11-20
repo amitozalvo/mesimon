@@ -5114,6 +5114,20 @@ fn trust_app() -> App {
 }
 
 #[test]
+fn golden_agy_worktree_trust_open_120() {
+    let mut app = trust_app();
+    let rec = app.board_mut().sessions.iter_mut().find(|s| s.on_trust_dialog()).unwrap();
+    rec.kind = SessionKind::Agy;
+    rec.detail = Some("agy asks to trust this folder ∙ Trusting /project/main once in agy covers this board's worktrees".into());
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|line| line.contains("w confirm")));
+    assert!(lines.iter().any(|line| line.contains("/project/main")));
+    golden("board_agy_worktree_trust_120x30", &lines);
+}
+
+#[test]
 fn golden_trust_open_120() {
     let mut app = trust_app();
     app.cursor_col = 0;

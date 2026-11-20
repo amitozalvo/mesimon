@@ -108,6 +108,27 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     real(a) == real(b)
 }
 
+fn trusts_checkout(trusted: &[String], checkout: &Path) -> bool {
+    trusted.iter().any(|t| same_folder(Path::new(t), checkout))
+}
+
+/// Read personal trust only on entry to the worktree's own dialog.
+pub(crate) fn trust_detail(
+    checkout: &Path,
+    worktree: Option<&Path>,
+    folder: &Path,
+    home: &Path,
+) -> String {
+    let question = mesimon_core::board::AGY_FOLDER_TRUST;
+    if worktree.is_some_and(|tree| same_folder(tree, folder))
+        && !trusts_checkout(&trusted_by_person(home), checkout)
+    {
+        let path = mesimon_core::text::scrub_cells(&checkout.to_string_lossy(), false);
+        return format!("{question} ∙ Trusting {path} once in agy covers this board's worktrees");
+    }
+    question.into()
+}
+
 /// `agy models`, as the daemon last read it (T-1234): one file beside
 /// `tiers.toml` that every board's daemon writes and the tier page reads,
 /// `<model>\t<label>` lines. A network call, so it is never run where a
@@ -230,7 +251,7 @@ fn render_settings(
     };
     add(dir);
     let checkout = &context.paths.repo_root;
-    if context.managed_git_worktree && trusted.iter().any(|t| same_folder(Path::new(t), checkout)) {
+    if context.managed_git_worktree && trusts_checkout(trusted, checkout) {
         add(context.cwd);
     }
     let mut settings = json!({
@@ -1170,6 +1191,28 @@ mod tests {
         assert!(!models_due(&file, now));
         assert!(models_due(&file, now + MODELS_TTL_MS + 60_000), "the write is after `now`");
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn a_worktree_trust_stop_names_only_the_missing_checkout_approval() {
+        let home = tempfile::tempdir().unwrap();
+        let checkout = Path::new("/project/main");
+        let tree = Path::new("/state/worktrees/T-1");
+        let stop = |folder| trust_detail(checkout, Some(tree), folder, home.path());
+        let generic = "agy asks to trust this folder";
+        let put_trust = |path: &Path| {
+            std::fs::write(
+                home.path().join("settings.json"),
+                json!({"trustedWorkspaces": [path]}).to_string(),
+            )
+            .unwrap();
+        };
+        put_trust(checkout);
+        assert_eq!(stop(tree), generic);
+        put_trust(checkout.parent().unwrap());
+        assert_eq!(stop(tree), "agy asks to trust this folder ∙ Trusting /project/main once in agy covers this board's worktrees");
+        assert_eq!(stop(Path::new("/other")), generic);
+        assert_eq!(trust_detail(checkout, None, tree, home.path()), generic);
     }
 
     /// Decision 3: a ticket's worktree is passed as trusted only where the

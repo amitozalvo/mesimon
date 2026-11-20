@@ -5793,23 +5793,35 @@ impl Daemon {
             .sessions
             .iter()
             .filter(|s| claude_startup_candidate(s))
-            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone(), s.kind))
+            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone(), s.kind, s.ticket))
             .collect();
         let mut dirty = false;
-        for (id, sid, state, cwd, kind) in candidates {
+        for (id, sid, state, cwd, kind, ticket) in candidates {
             let principal = Principal::Automation { rule: "claude_startup".into() };
             if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
                 continue;
             }
             let Some(screen) = screens.get(&sid) else { continue };
             let at_trust = state == (SessionState::RequiresAction { reason: Reason::Trust });
-            let signal = match crate::trust_dialog::read(screen) {
+            let (signal, detail) = match crate::trust_dialog::read(screen) {
                 Some(dialog) => {
-                    dirty |= self.control_offer_trust(id, Some(dialog.folder.unwrap_or(cwd)));
+                    let folder = dialog.folder.unwrap_or_else(|| cwd.clone());
+                    dirty |= self.control_offer_trust(id, Some(folder.clone()));
                     if at_trust {
                         continue;
                     }
-                    Signal::Attention { reason: Reason::Trust }
+                    let detail = if kind == SessionKind::Agy {
+                        let cwd = std::path::Path::new(&cwd);
+                        crate::agents::agy::trust_detail(
+                            &self.paths.repo_root,
+                            self.managed_git_worktree(ticket, cwd).then_some(cwd),
+                            std::path::Path::new(&folder),
+                            &crate::agents::agy::home(),
+                        )
+                    } else {
+                        "Claude Code asks to trust this folder".into()
+                    };
+                    (Signal::Attention { reason: Reason::Trust }, Some(detail))
                 }
                 // The dialog went and the composer paints: the seat is up. A
                 // projection nothing walks goes with it; one a delivery is
@@ -5818,7 +5830,7 @@ impl Daemon {
                     if !self.control_trust_walking(id) {
                         dirty |= self.control_drop_trust(id);
                     }
-                    Signal::Ready
+                    (Signal::Ready, None)
                 }
                 None => {
                     if !at_trust {
@@ -5829,9 +5841,6 @@ impl Daemon {
             };
             if let Some(machine) = self.machines.get_mut(&id) {
                 if let Some(change) = machine.apply(&signal, now) {
-                    let who = if kind == SessionKind::Agy { "agy" } else { "Claude Code" };
-                    let detail = matches!(signal, Signal::Attention { .. })
-                        .then(|| format!("{who} asks to trust this folder"));
                     dirty |= self.apply_change(id, &change, detail, Some("claude_startup"));
                 }
             }
@@ -12927,7 +12936,10 @@ impl Daemon {
             .filter(|text| shown.as_deref() != Some(*text))
             .map(|text| text.len() as u64);
         Some(AgentNeedsYouView {
-            reason: agent_reason_word(reason).to_string(),
+            reason: rec.agy_worktree_trust_hint().map_or_else(
+                || agent_reason_word(reason).to_string(),
+                |hint| format!("trust ∙ {}", scrub(hint)),
+            ),
             request: dialog
                 .map(|(request, _)| request.to_string())
                 .or_else(|| plan.map(|(request, _)| request.to_string())),
@@ -22350,6 +22362,15 @@ impl Daemon {
             .unwrap_or_default()
     }
 
+    fn managed_git_worktree(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> bool {
+        self.worktrees.get(&ticket).is_some_and(|b| {
+            b.status == BindingStatus::Attached
+                && b.path == cwd
+                && b.path.parent() == Some(self.paths.worktrees_root().as_path())
+                && b.has_root_leg()
+        })
+    }
+
     fn launch_context<'a>(
         &'a self,
         id: uuid::Uuid,
@@ -22362,12 +22383,7 @@ impl Daemon {
         LaunchContext {
             paths: &self.paths,
             cwd,
-            managed_git_worktree: self.worktrees.get(&ticket).is_some_and(|b| {
-                b.status == BindingStatus::Attached
-                    && b.path == cwd
-                    && b.path.parent() == Some(self.paths.worktrees_root().as_path())
-                    && b.has_root_leg()
-            }),
+            managed_git_worktree: self.managed_git_worktree(ticket, cwd),
             session: id,
             tools: self.agent_tools_for(ticket),
             brief: self.board.system_prompt,

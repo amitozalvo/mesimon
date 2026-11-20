@@ -285,7 +285,8 @@ Offline runner tests: `python3 -B ci/codex_rig_test.py`.
 ## agy rig (T-1232)
 
 ```sh
-python3 -B ci/rig.py --provider agy           # up to the seat at its prompt; no model call
+python3 -B ci/rig.py --provider agy           # startup cases, no model call
+python3 -B ci/rig.py --provider agy --only worktree-trust
 python3 -B ci/rig.py --provider agy --live    # the brief case on agy's own default model
 python3 -B ci/rig.py --provider agy --live --model gemini-4-neon-high
 python3 -B -m unittest ci/rig_agy_test.py     # the verdict, offline
@@ -293,13 +294,14 @@ python3 -B -m unittest ci/rig_agy_test.py     # the verdict, offline
 
 Behind `MESIMON_AGY=1`, which the rig sets for its daemon. One disposable board
 per case under `ci/test-run.py`; agy keeps the person's own home and sign-in, so
-a live case leaves one conversation in agy's list. The trust list mesimon reads
-as the person's is the fixture's (`MESIMON_AGY_HOME`), so agy asks no trust
-question and nothing is added to the person's list. An explicit `--model`
-selects a tier on the disposable board. With no selection agy uses its default.
+a live brief case leaves one conversation in agy's list. Each fixture provides
+its own trust list through `MESIMON_AGY_HOME`. The brief fixture trusts its
+checkout. The worktree-trust fixture leaves its checkout untrusted and reads
+the checkout path from the board and `get_ticket` while agy awaits a decision.
+An explicit `--model` selects a tier on the disposable board. With no selection agy uses its default.
 The verdict records the model from the transcript.
 
-Without `--live` the case checks that agy lists mesimon's tools: agy starts an
+Without `--live` the brief case checks that agy lists mesimon's tools: agy starts an
 MCP server only at the first prompt or when `/mcp` lists them, and `/mcp` calls
 no model. The live `brief` case submits the prefilled title directly on a
 fresh seat. The transcript must show that title alone, the injected brief,

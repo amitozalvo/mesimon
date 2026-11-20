@@ -1306,6 +1306,10 @@ pub(super) fn render(
     // mesimon owes it, else what its agent said last, else its worktree's
     // news — with its pull requests beside, where a closed card has them.
     // A raised hand's line already says the most, and stays.
+    let trust_hint = sessions
+        .iter()
+        .find_map(|s| s.agy_worktree_trust_hint())
+        .map(|hint| mesimon_core::text::scrub_cells(hint, false));
     if ctx.row {
         if row_open && !held && raised.is_none() {
             let ramp = if cursorish { &theme.sel } else { &theme.rest };
@@ -1314,6 +1318,9 @@ pub(super) fn render(
             let words = snooze
                 .filter(|_| selected)
                 .map(|w| (flat(w), faint))
+                .or_else(|| {
+                    trust_hint.as_deref().filter(|_| selected).map(|w| (w.to_owned(), faint))
+                })
                 .or_else(|| owed_row.filter(|_| selected).map(|w| (flat(w), faint)))
                 .or_else(|| peek.and_then(|pk| pk.card.as_deref()).map(|w| (flat(w), dim)))
                 .or_else(|| wt.and_then(|w| w.detail.as_deref()).map(|w| (flat(w), dim)));
@@ -1500,6 +1507,12 @@ pub(super) fn render(
                 let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
                 row.extend(under);
                 push(row);
+            }
+        }
+
+        if let Some(hint) = trust_hint.as_deref().filter(|_| selected) {
+            for row in crate::peek::wrap(hint, t_cells.saturating_sub(glyph_cells), usize::MAX) {
+                push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(row, faint)]);
             }
         }
 

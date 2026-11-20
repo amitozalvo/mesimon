@@ -10,6 +10,9 @@ Case `brief`: the ticket's description holds a nonce and the typed prompt is
 the title alone. It passes when the brief reached the conversation, the
 first call is the eager mesimon get_ticket, and the reply carries the nonce
 without asking the person.
+
+Case `worktree-trust` reads the board and get_ticket while the new seat is
+at its folder dialog. It leaves the decision pending and calls no model.
 """
 import datetime
 import json
@@ -22,7 +25,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ("brief",)
+CASES = ("brief", "worktree-trust")
 TITLE = "Answer the question on this ticket"
 BRIEF_MARK = "This session was started by mesimon on a ticket."
 
@@ -117,12 +120,13 @@ class Case:
                       runtime=str(self.runtime), sock=str(self.runtime / "tmux.sock"))
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("MESIMON_") and key not in ("TMUX", "TMUX_PANE")}
-        # The trust list mesimon reads as the person's names the fixture, so
-        # agy's dialog never asks and nothing is added to the person's own
-        # list. agy itself keeps its own home and sign-in.
+        # The brief fixture trusts its checkout. The trust case waits on the
+        # new worktree's dialog and never accepts it. Only the fixture's
+        # settings are written here; agy keeps its own home and sign-in.
         trust = guard.root / "agy-trust"
         trust.mkdir(mode=0o700)
-        (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": [str(self.repo.resolve())]}))
+        trusted = [str(self.repo.resolve())] if result["case"] == "brief" else []
+        (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": trusted}))
         env.update(TERM="xterm-256color", MESIMON_AGY="1", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
                    MESIMON_HOOK_BIN=str(args.binary), MESIMON_NO_DAEMON_AUTORESTART="1",
                    MESIMON_AGY_BIN=args.agy)
@@ -174,6 +178,9 @@ class Case:
         self.request("set_agent_provider", provider="agy")
         self.request("set_mcp_tools", on=True)
         self.request("set_system_prompt", on=True)
+        if self.result["case"] == "worktree-trust":
+            self.check_worktree_trust()
+            return
         title = TITLE if self.args.live else "/mcp"
         ticket = self.request("create_ticket", column="TODO", title=title,
                               workspace="shared_checkout")["id"]
@@ -228,6 +235,21 @@ class Case:
         self.result["model"] = ", ".join(models)
         for name, passed, detail in verdict(rows, self.nonce):
             self.mark(name, passed, detail)
+
+    def check_worktree_trust(self):
+        ticket = self.request("create_ticket", column="TODO", title="Inspect the worktree",
+                              workspace="worktree")["id"]
+        self.request("spawn_session", ticket=ticket, kind="agy", submit_prompt=False, plan=False)
+        self.pane = None
+        def stopped():
+            return next((s for s in self.client.board()["sessions"] if s["ticket"] == ticket
+                         and s["state"] == {"state": "requires_action", "reason": "trust"}), None)
+        seat = self.wait("the worktree trust stop", stopped, 60)
+        hint = f"Trusting {self.repo.resolve()} once in agy covers this board's worktrees"
+        self.mark("the stop names the checkout", hint in (seat.get("detail") or ""))
+        response = self.client.agent(seat["id"], "agent_get_ticket", full=False)
+        reason = response["ticket"]["needs_you"]["reason"]
+        self.mark("get_ticket names the checkout", reason == "trust ∙ " + hint, reason)
 
     def check_server_list(self):
         def listed():

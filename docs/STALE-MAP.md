@@ -48844,3 +48844,28 @@ replied that the seat was pending. The test now waits for the specific seat
 and crown ID on disk and passed alone. The initial narrow test used an
 80-column ticket page, where Sessions occupies the whole width. It passed
 with the preview at its 107-column minimum and the dialog at 80 columns.
+
+## agy's worktree trust stop names the checkout (T-1361, 2026-11-20)
+
+The board recorded four agy startup trust stops. The checkout was absent from
+agy's exact-path trust list at the time, although the home directory and individual ticket
+worktrees appeared there. A trusted parent does not cover its children in agy.
+The person has since trusted the checkout. The launch settings already extend
+that approval to each attached, Mesimon-managed root Git worktree.
+
+The startup probe checks that same binding and trust rule when agy asks about
+the worktree. In the deterministic fixture the old detail was
+`agy asks to trust this folder`. For a missing checkout approval it now adds
+`Trusting /project/main once in agy covers this board's worktrees`. The selected
+card shows that fact with the per-folder confirmation, and `get_ticket` adds it
+to the trust reason. A dialog for another folder, a shared seat or a checkout
+already trusted keeps the original question. The probe reads the person's
+settings on entry to the stop. Only agy records a person's choice there.
+
+Verification used both trust settings in a unit test, the card golden and ten
+stand-in integration tests. The golden generation was rerun after fixing its
+test fixture's mutable board access. The first `cargo ut` was stopped by six
+sandbox-denied tmux socket tests. Its supervised rerun passed all 3,360 tests
+run (13 ignored). Both supervised fixture audits were clean. The agy rig gained
+a worktree-trust case. Its selection and the seven offline rig tests passed.
+The person requested no real agy launch.

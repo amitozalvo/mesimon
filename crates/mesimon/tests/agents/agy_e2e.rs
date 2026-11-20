@@ -446,6 +446,38 @@ fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
     assert!(bed.printed().is_empty(), "{:?}", bed.printed());
 }
 
+/// The checkout fact comes from the board's managed binding and reaches the
+/// same get_ticket view the MCP shim serializes.
+#[test]
+fn an_agy_worktree_trust_stop_names_its_checkout_on_the_board_and_in_get_ticket() {
+    let Some(bed) = Bed::boot("agy-tree-trust", true, false) else { return };
+    let mut c = bed.h.client("agy-tree-trust");
+    agy_board(&mut c);
+    let Response::Created { id: ticket, .. } = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "Inspect the worktree".into(),
+        workspace: Some(WorkspaceStrategy::Worktree),
+        tier: None,
+    }) else {
+        panic!("create worktree ticket")
+    };
+    assert!(matches!(start(&mut c, ticket, false), Response::Provisioning));
+    wait_until(Duration::from_secs(20), "worktree trust dialog", || {
+        c.board().live_agent(ticket).is_some_and(SessionRecord::on_trust_dialog)
+    });
+    let rec = c.board().live_agent(ticket).unwrap().clone();
+    let checkout = bed.h.paths.repo_root.display();
+    let hint = format!("Trusting {checkout} once in agy covers this board's worktrees");
+    assert_eq!(rec.detail, Some(format!("agy asks to trust this folder ∙ {hint}")));
+    let Response::AgentTicket { ticket: view } = c.send(
+        mesimon_core::Principal::Agent { session: rec.id },
+        Command::AgentGetTicket { full: false },
+    ) else {
+        panic!("get_ticket")
+    };
+    assert_eq!(view.needs_you.unwrap().reason, format!("trust ∙ {hint}"));
+}
+
 /// Without its switch nothing of agy's starts, whatever names it.
 #[test]
 fn agy_starts_nowhere_without_its_switch() {

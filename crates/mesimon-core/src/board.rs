@@ -323,6 +323,8 @@ pub enum AgyStop {
     WaitingForIdle,
 }
 
+pub const AGY_FOLDER_TRUST: &str = "agy asks to trust this folder";
+
 /// A session record the daemon persists. Mesimon's UUID names its tmux
 /// session and authorization principal. Provider conversation IDs are
 /// separate: Claude initially accepts this UUID; Codex assigns its own.
@@ -936,6 +938,14 @@ impl SessionRecord {
     /// for a person who asked.
     pub fn on_trust_dialog(&self) -> bool {
         self.state == (SessionState::RequiresAction { reason: Reason::Trust })
+    }
+
+    /// The checkout fact appended to agy's folder question on a managed worktree.
+    pub fn agy_worktree_trust_hint(&self) -> Option<&str> {
+        if self.kind != SessionKind::Agy || !self.on_trust_dialog() {
+            return None;
+        }
+        self.detail.as_deref()?.strip_prefix(AGY_FOLDER_TRUST)?.strip_prefix(" ∙ ")
     }
 
     /// Launched with `--permission-mode plan` — the one fact the board holds
