@@ -48585,3 +48585,21 @@ The relay's real `deploy/ship.sh all --dry-run` pointed at the ticket worktree
 stopped at the core main-branch check in 0.07 s (load 11.74/16.07/19.10).
 It requires a merged, unreleased candidate. Its successful path ends before
 release packaging, so these measurements establish handoff cost only.
+
+## A person's start can precede the provider's prompt receipt (T-1333, 2026-11-20)
+
+On T-1331, Codex reported Running 254 ms before the new turn ID. That reverses
+the order T-186 relied on. The first snapshot tried to move the card and hit the
+person's recent IN PROGRESS → TODO move. The second snapshot acknowledged the
+prompt but produced no new state edge. agy can also report Running from its
+title feed before its first model invocation acknowledges the prompt.
+
+The daemon now calls `asked_by_hand` when it accepts a local `PromptSession` or
+an agent `SpawnSession` that submits a prompt. At that point the daemon knows
+who asked, on all four provider roads. The gate drops only the person's own
+last move. An agent's move to REVIEW keeps its protection.
+
+The regression starts an empty Codex seat after the hand move. Before the fix,
+the card read TODO at Running, at the turn ID and at completion. With the fix,
+it stays in TODO at acceptance, moves to IN PROGRESS on the first snapshot,
+stays there on the second, and moves to REVIEW at completion.

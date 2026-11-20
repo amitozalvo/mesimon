@@ -3942,6 +3942,15 @@ impl Daemon {
             return Response::Err { message };
         }
         let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
+        // The person's request precedes any provider's Running edge. Codex can
+        // report it before the turn id, and agy's title before its prompt hook.
+        let hand_ask = match &env.command {
+            Command::PromptSession { ticket, .. } => Some(*ticket),
+            Command::SpawnSession { ticket, kind, submit_prompt: true, .. } if kind.is_agent() => {
+                Some(*ticket)
+            }
+            _ => None,
+        };
         // Another board may have changed the machine's tiers (T-443): one
         // `stat`, so what this command reads or launches is current.
         self.refresh_machine_tiers();
@@ -4388,6 +4397,16 @@ impl Daemon {
             }
             Command::ModPing { session } => self.mod_ping(session),
         };
+        if let (
+            Some(ticket),
+            Response::Ok
+            | Response::Queued { .. }
+            | Response::Provisioning
+            | Response::Spawned { .. },
+        ) = (hand_ask, &resp)
+        {
+            self.moves.asked_by_hand(ticket);
+        }
         if let Some((cmd, ticket)) = feed_cmd {
             let cmd = cmd.as_str();
             match &resp {
@@ -24432,6 +24451,80 @@ mod queued_person_push_tests {
             ("second", 2)
         );
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_persons_start_moves_at_running_before_the_codex_turn_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = daemon(dir.path());
+        d.queued.clear();
+        let mut seat = d.board.sessions.remove(0);
+        let (sid, ticket) = (seat.id, seat.ticket);
+        let mut card = worker_ticket(ticket, "IN PROGRESS", "a");
+        card.workspace = Some(WorkspaceStrategy::Worktree);
+        d.board.tickets.push(card);
+        d.board.agent_provider = AgentProvider::Codex;
+        assert!(matches!(d.move_ticket(ticket, "TODO".into(), None), Response::Ok));
+
+        // Accept the empty-seat start behind provisioning, without launching a process.
+        d.worktrees.insert(
+            ticket,
+            Binding::new(
+                dir.path().into(),
+                "branch".into(),
+                String::new(),
+                String::new(),
+                BindingStatus::Provisioning,
+            ),
+        );
+        let command = Command::PromptSession {
+            ticket,
+            text: String::new(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: false,
+            tier: None,
+            resend: false,
+            uploads: vec![],
+        };
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let resp = d.handle(
+            Envelope { principal: Principal::Local, command },
+            &Arc::new(Mutex::new(stream)),
+        );
+        assert!(matches!(resp, Response::Provisioning), "{resp:?}");
+        let start = d.pending_spawns.pop().unwrap();
+        assert_eq!(start.kind, SessionKind::Codex);
+        assert!(start.submit_prompt);
+        assert_eq!(d.board.ticket(ticket).unwrap().column, "TODO");
+
+        // The provisioned seat is idle when Codex first reports work, then names the turn.
+        seat.kind = start.kind;
+        seat.pending_submit = true;
+        seat.codex_generation = Some(1);
+        d.machines.insert(sid, Machine::new(seat.state.clone(), now_ms()));
+        d.board.sessions.push(seat);
+        let snapshot = |sequence: u64, state: SessionState, turn_id: Option<&str>| {
+            serde_json::from_value(serde_json::json!({
+                "session": sid, "generation": 1, "sequence": sequence, "heartbeat_ms": now_ms(),
+                "state": state, "turn_id": turn_id, "observation_hold": false
+            }))
+            .unwrap()
+        };
+        let mut columns = vec![];
+        for (seq, turn) in [(1, None), (2, Some("turn-1"))] {
+            d.on_codex_snapshots(vec![(sid, Some(snapshot(seq, SessionState::Running, turn)))]);
+            assert_eq!(d.board.session(sid).unwrap().state, SessionState::Running);
+            columns.push(d.board.ticket(ticket).unwrap().column.clone());
+        }
+        let end = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        d.on_codex_snapshots(vec![(sid, Some(snapshot(3, end, Some("turn-1"))))]);
+        let change =
+            d.machines.get_mut(&sid).unwrap().tick(now_ms() + attention::SETTLE_MS).unwrap();
+        d.apply_change(sid, &change, None, Some("codex"));
+        columns.push(d.board.ticket(ticket).unwrap().column.clone());
+        assert_eq!(columns, ["IN PROGRESS", "IN PROGRESS", "REVIEW"]);
     }
 
     #[test]
