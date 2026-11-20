@@ -48247,3 +48247,13 @@ under `ci/test-run.py`, 3,790 passed in 597 s, first run, no rerun (the shared
 assets.test.js` (73) and the UX suite on Chromium at phone size; `ci/rig_test.py`. Not run: the
 UX suite on WebKit and the other sizes, `browser.test.js` (the relay's), `register.test.ts` (no
 change in `mod/`). 67 files, −1,848 +1,415 outside this file.
+
+## v0.1.0-beta.21.unstable.3 (T-1351, 2026-11-20, "release new unstable version")
+
+Seventeen commits since `unstable-0.1.0-beta.21.unstable.2`, none with a CHANGELOG entry; the
+section was written from the range's STALE-MAP blocks. agy's two changes (T-1326, T-1332) are
+left out of the notes: agy is behind `MESIMON_AGY=1` and has never been in them. Clippy after
+the bump found two lints from the range, both fixed on the release branch: a needless borrow of
+the `owed` closure in `server.rs` and a `type_complexity` on `PeekCache::displayed` (now the
+`Displayed` alias). No state file's format changed (the new `#[serde(default)]` fields are wire
+responses).

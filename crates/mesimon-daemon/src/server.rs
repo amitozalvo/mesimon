@@ -12018,7 +12018,7 @@ impl Daemon {
         }
         match read {
             Reading::Observed(facts) => {
-                if self.costs.opened_owed(id, &owed) {
+                if self.costs.opened_owed(id, owed) {
                     Some(true)
                 } else {
                     facts.urls.as_ref().map(|urls| urls.iter().any(|url| owed(url)))

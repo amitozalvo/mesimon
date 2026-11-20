@@ -56,8 +56,12 @@ pub(crate) struct PeekCache {
     /// overlay's `card_words` is a markdown parse and a card asks per frame.
     overlays: RefCell<HashMap<String, Overlaid>>,
     // File reads the current screen depends on, including absent files.
-    displayed: RefCell<HashMap<String, (SessionKind, Option<Rc<Peek>>)>>,
+    displayed: RefCell<HashMap<String, Displayed>>,
 }
+
+/// A file read the screen drew: the session's kind and the read, `None` when
+/// the file was absent.
+type Displayed = (SessionKind, Option<Rc<Peek>>);
 
 struct Overlaid {
     /// The file read the overlay was laid on, held so its identity is its
