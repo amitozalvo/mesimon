@@ -48723,3 +48723,68 @@ the crown named the changed child and the person's local merge, with the
 commit still outside its base. An earlier disposable checkout stopped at
 Claude's trust prompt before a model answer. The ticket-worktree run supplied
 the live measurement.
+
+## agy lead transcripts, interrupted turns and first-turn tools (T-1334, 2026-11-20)
+
+1. **Transcript ownership.** T-1328's lead was `0fa2076e…`. The first message in
+   `eaa8fd9d…` identifies that lead as its sender. Both conversations reported
+   through the same seat UUID. T-1332 (`fe1831bb`) stopped a child's hooks from
+   replacing an established lead's path or ending its turn. An older sleeping
+   record could still point every reader at the child. Board load now repairs
+   that specific mismatch between UUIDs in agy's known full-transcript layout.
+   Both original records had already recovered their lead paths by inspection.
+2. **Turn boundaries.** On November 19 Carbon's journal has Stops at
+   21:27:33, 21:28:21 and 21:28:32Z. The lead scheduled a two-minute wait,
+   resumed reading and gave its final answer at 21:32:30Z. Neon had 72 idle
+   transitions marked interrupted. The journal records event names and state
+   decisions, so an individual Stop's payload cannot be reconstructed from it.
+   A child Stop shares the hook socket, a partial lead Stop reports
+   `fullyIdle: false`, and the title reports the lead's state alongside its
+   subagent roster and task count. T-1332 handles those signals. This ticket
+   reproduced a remaining ordering on main. An idle title started the 1.5 s
+   Esc settle. A working title 300 ms later was discarded because the record
+   still said running. It now cancels the inferred interrupt. The ticket's
+   seen stamp includes its state and transition time, so false edges explain
+   stale watch reads. Board version alone does not identify the cause of each
+   increment. [agy title payload](https://antigravity.google/docs/cli/statusline/)
+3. **Tool discovery.** Both SessionStart messages had the disclosed brief.
+   Both November 19 leads' retained final model requests list `get_ticket`
+   under Mesimon's lazy tools. Carbon read `mcp/mesimon/get_ticket.json` and
+   got its own ticket back through `call_mcp_tool` at 21:22:58–21:23:00Z,
+   then tagged it READY. Neon never called it. The next day's T-1358 and
+   T-1359 both used ad hoc command-line clients. agy's bundled customization
+   guide omits the CLI's workspace MCP location. Its CLI documentation names
+   `<workspace>/.agents/mcp_config.json`, which the real CLI loaded from
+   Mesimon's added directory. The session config now marks just `get_ticket`
+   eager when it carries the brief. agy can advertise the existing schema
+   directly as `mcp_mesimon_get_ticket`. [CLI config and eager loading](https://antigravity.google/docs/mcp?tab=cli)
+
+   Server startup and tool loading are separate. On 1.5.13 a disposable seat
+   had no shim at the prompt through 16.6 s and a connected shim as soon as
+   `/mcp` opened. A plugin-layout timing probe also waited for `/mcp` and
+   registered as `mesimon_mesimon`, failing the expected server-name check.
+   The November 19 records retain no first-request handshake timestamp. In
+   the single cold live run on Neon High the first request had no MCP
+   inventory. The run also exposed a fixture error: board submit pasted the
+   description, letting Neon copy the nonce without calling a tool. The rig
+   now checks the prefilled title before Enter and the exact user request in
+   the transcript. A direct first call and a nonce reply are both required.
+   Cold first-invocation discovery remains unverified.
+4. **Git belongs to agy's command sandbox.** Neon's directory listing shows
+   the worktree's 98-byte `.git` file six seconds after the error. Carbon
+   reproduced exit 128 on the same board, read the gitfile pointing into the
+   main checkout's `.git/worktrees`, and printed its command environment.
+   Its only Git variables were `GIT_EDITOR` and `GIT_PAGER`. The identical
+   `git -C <worktree> status` succeeded on its existing branch when agy
+   granted that command outside its sandbox. No provisioning retry occurred.
+   Neon's first command short-circuited before its environment probe.
+
+**Verification.** Three new assertions failed against the prior behaviour:
+the persisted path remained the child's, the inferred interrupt committed
+after activity resumed, and the server config had no eager declaration.
+The path test's first run lacked its fixture's columns directory; its rerun
+failed on the path itself. The agy unit group then passed (20). `cargo ut`
+passed (3,356, 13 ignored), the five `agy_e2e` cases and the seven offline
+rig verdict tests passed. The corrected no-model rig listed `get_ticket`.
+All disposable boards were cleaned up. The live run above is a failed
+acceptance check, and there was no second model call.

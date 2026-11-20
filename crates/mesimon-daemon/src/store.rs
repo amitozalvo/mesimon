@@ -904,7 +904,10 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
         save_columns(paths, &board)?;
     }
 
-    let (sessions, sessions_write_barred) = load_sessions(&paths.sessions_file(), &mut notices);
+    let (mut sessions, sessions_write_barred) = load_sessions(&paths.sessions_file(), &mut notices);
+    for seat in sessions.iter_mut().filter(|s| s.kind == SessionKind::Agy) {
+        crate::agents::agy::repair_saved_transcript(seat);
+    }
     board.sessions = sessions.into();
 
     Ok(Loaded { board, notices, columns_write_barred, sessions_write_barred })

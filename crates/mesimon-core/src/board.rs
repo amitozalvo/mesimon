@@ -314,6 +314,8 @@ pub struct ShellCloseRequest {
 pub enum AgyStop {
     #[default]
     None,
+    /// A quiet title suggested Esc. An active title can retract it while the leave settles.
+    InferredInterrupt,
     /// A partial stop, cancellation or failure. A following idle is no Esc.
     Reported,
     Completed,

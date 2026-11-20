@@ -18,8 +18,8 @@
 //! the shim [`hook_settings::mcp_config_json`] renders for Claude, and an
 //! allow rule in the settings file, so a board tool does not ask the person
 //! each time: the daemon's tier check is the gate, as on the mod road. agy
-//! reaches them through its own `call_mcp_tool`, after reading a schema file
-//! it keeps under its home, never as native tools.
+//! exposes the brief's `get_ticket` directly. Other tools use its lazy
+//! `call_mcp_tool` after a schema read under its home.
 //!
 //! Words go into the pane by the paste road Claude's hook set takes
 //! (T-1233): bracketed paste into agy's box (`claude::composer::AGY`), then
@@ -274,7 +274,13 @@ fn prepare(context: &LaunchContext<'_>, trusted: &[String]) -> Result<(PathBuf, 
     // as it stands then.
     let mcp = agents.join("mcp_config.json");
     if tools {
-        write_private(&mcp, &hook_settings::mcp_config(paths, &bin, session, context.tools))?;
+        let mut config = hook_settings::mcp_config(paths, &bin, session, context.tools);
+        if context.brief {
+            // The first turn needs this tool before it has read any schema.
+            config["mcpServers"][mesimon_core::mcp::SERVER_NAME]["tools"] =
+                json!({"get_ticket": {"eager": true}});
+        }
+        write_private(&mcp, &config)?;
     } else if let Err(e) = std::fs::remove_file(&mcp) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(format!("{}: {e}", mcp.display()));
@@ -309,6 +315,26 @@ fn transcript_path(word: &str) -> bool {
         && word.starts_with('/')
         && word.ends_with(".jsonl")
         && !word.chars().any(char::is_control)
+}
+
+/// Older boards saved the lead id beside whichever child last reported.
+/// Correct that known CLI layout on load, even for a seat that stays asleep.
+pub(crate) fn repair_saved_transcript(record: &mut SessionRecord) {
+    let (Some(lead), Some(path)) = (&record.agy_conversation_id, &record.transcript_path) else {
+        return;
+    };
+    let brain = home().join("brain");
+    let Ok(relative) = Path::new(path).strip_prefix(&brain) else { return };
+    let mut parts = relative.iter();
+    let Some(owner) = parts.next().and_then(|name| name.to_str()) else { return };
+    let log = Path::new(".system_generated/logs/transcript_full.jsonl");
+    if owner != lead
+        && parts.as_path() == log
+        && uuid::Uuid::parse_str(owner).is_ok()
+        && uuid::Uuid::parse_str(lead).is_ok()
+    {
+        record.transcript_path = Some(brain.join(lead).join(log).display().to_string());
+    }
 }
 
 fn launch(context: &LaunchContext<'_>, conversation: Option<&str>) -> Result<Vec<String>, String> {
@@ -429,8 +455,18 @@ fn title_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
             record.agy_stop = AgyStop::Completed;
             Some(Signal::TurnEnded { outcome: TurnOutcome::Completed })
         }
-        "idle" if turning && record.agy_stop == AgyStop::None => {
+        "idle"
+            if turning && matches!(record.agy_stop, AgyStop::None | AgyStop::InferredInterrupt) =>
+        {
+            record.agy_stop = AgyStop::InferredInterrupt;
             Some(Signal::TurnEnded { outcome: TurnOutcome::Interrupted })
+        }
+        "working" | "thinking" | "tool_use"
+            if record.agy_stop == AgyStop::InferredInterrupt
+                && (turning || matches!(state, SessionState::Idle { .. })) =>
+        {
+            record.agy_stop = AgyStop::None;
+            Some(Signal::TurnStarted)
         }
         "working" | "thinking" | "tool_use"
             if coming_up
@@ -634,6 +670,41 @@ mod tests {
     }
 
     const ID: &str = "e491708f-fd93-4aec-9a23-1ad87af7c910";
+
+    #[test]
+    fn agy_recovers_a_sleeping_leads_transcript_on_board_load() {
+        let (_root, paths, _) = bed();
+        std::fs::create_dir_all(paths.board_dir.join("board")).unwrap();
+        let mut seat = record(SessionState::Sleeping);
+        let brain = home().join("brain");
+        let log = ".system_generated/logs/transcript_full.jsonl";
+        seat.agy_conversation_id = Some(ID.into());
+        seat.transcript_path =
+            Some(brain.join(uuid::Uuid::nil().to_string()).join(log).display().to_string());
+        let mut board = mesimon_core::board::Board::with_default_columns();
+        board.sessions.push(seat);
+        crate::store::save_sessions(&paths, &board).unwrap();
+        let loaded = crate::store::load(&paths).unwrap();
+        assert_eq!(
+            loaded.board.sessions[0].transcript_path.as_deref(),
+            brain.join(ID).join(log).to_str()
+        );
+    }
+
+    #[test]
+    fn agy_resuming_before_an_inferred_interrupt_settles_keeps_the_turn() {
+        use mesimon_core::attention::{Machine, SETTLE_MS};
+        let mut rec = record(SessionState::Running);
+        let mut machine = Machine::new(SessionState::Running, 0);
+        for (at, state) in [(1, "idle"), (301, "working")] {
+            let title = frame(TITLE, json!({"conversation_id": ID, "agent_state": state}));
+            if let Some(signal) = Agy.parse_hook(&title, &mut rec).signal {
+                machine.apply(&signal, at);
+            }
+        }
+        assert!(machine.tick(1 + SETTLE_MS).is_none());
+        assert_eq!(machine.state(), &SessionState::Running);
+    }
 
     /// What agy 1.5.8 sent through one turn with a confirmation in it, in
     /// order: the seat comes up idle, the prompt starts the turn, the dialog
@@ -1001,6 +1072,7 @@ mod tests {
         assert_eq!(pair(&args, "--sock"), [paths.orch_sock().display().to_string()]);
         assert_eq!(pair(&args, "--session"), [ctx.session.to_string()]);
         assert_eq!(pair(&args, "--tools"), [AgentTools::Full.word()]);
+        assert_eq!(server["tools"], json!({"get_ticket": {"eager": true}}));
         use std::os::unix::fs::PermissionsExt;
         let mode =
             std::fs::metadata(dir.join(".agents/mcp_config.json")).unwrap().permissions().mode();
@@ -1024,7 +1096,8 @@ mod tests {
         launch_with(&quiet, None, &[]).unwrap();
         let hooks = read_json(&dir.join(".agents/hooks.json"));
         assert_eq!(hooks["mesimon"]["SessionStart"].as_array().unwrap().len(), 1);
-        assert!(dir.join(".agents/mcp_config.json").exists());
+        let config = read_json(&dir.join(".agents/mcp_config.json"));
+        assert!(config["mcpServers"][mesimon_core::mcp::SERVER_NAME].get("tools").is_none());
 
         // A wake into a column without the tools: no server, no rule, no brief.
         let off =

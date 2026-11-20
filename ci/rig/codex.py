@@ -99,7 +99,7 @@ def add_arguments(parser):
     parser.add_argument("--live", action="store_true", help="authorize model calls (Codex, agy)")
     parser.add_argument("--binary", type=Path,
                         help="evaluate this prebuilt Mesimon binary without rebuilding (Codex only)")
-    parser.add_argument("--model", help="Codex model, checked against authenticated model/list")
+    parser.add_argument("--model", help="Codex model from authenticated model/list, or agy model variant")
     parser.add_argument("--effort", help="Codex effort, checked before submission (default: low)")
     parser.add_argument("--suite", choices=("smoke", "extended"), default="smoke")
     parser.add_argument("--max-turns", type=int, help="Codex suite turn allowance (default: 12)")
