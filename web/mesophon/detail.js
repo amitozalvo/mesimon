@@ -272,7 +272,7 @@ function Composer({ store, ticket, entry, live }) {
   const stops = !!agent && ["working", "starting"].includes(agent.state) && !entry?.draft.trim() && store.keysReach(ticket);
   // A picture with the words (T-853): offered wherever the words can go,
   // to a host that keeps it with the ticket.
-  const pictures = !!entry && !fieldOff && store.canAskPictures;
+  const pictures = !!entry && !fieldOff && store.offersAskPictures;
   const caret = useRef();
   const mark = (e) => {
     caret.current = e.currentTarget.selectionStart;
@@ -377,7 +377,7 @@ function Composer({ store, ticket, entry, live }) {
             onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Take a photo</span></${PicturePick}>
           <${PicturePick} id="prompt-picture" draft=${entry} caret=${caret} label="Choose from library"
             onAdd=${(files, at) => store.addPromptPictures(files, at)}><span>Choose from library</span></${PicturePick}>`}
-          ${store.canAskFiles && html`<${PicturePick} id="prompt-file" draft=${entry} caret=${caret} anyFile=${true} label="Choose file"
+          ${store.offersAskFiles && html`<${PicturePick} id="prompt-file" draft=${entry} caret=${caret} anyFile=${true} label="Choose file"
             onAdd=${(files, at) => store.addPromptFiles(files, at)}><span>Choose file</span></${PicturePick}>`}
           ${named.length > 0 && html`<button id="attach-note" type="button" class="btn btn-quiet attach-item" aria-expanded=${String(attach === "note")}
             onClick=${() => setAttach(attach === "note" ? "menu" : "note")}><${Icon} name="file" size=${17} /><span>A note on this ticket</span></button>`}

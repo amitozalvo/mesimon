@@ -1770,24 +1770,42 @@ export class Store {
   // Whether a picture can go with the words to an agent (T-853): over the
   // live channel, to a host that keeps it with the ticket.
   get canAskPictures() {
-    return this.live && !!this.connection?.features?.includes("ask_pictures");
+    return this.live && this.offersAskPictures;
+  }
+  // Whether a picture can be picked into the words (T-1382): to a host that
+  // takes them, live or not. Taking a photo leaves the page for the camera,
+  // and coming back marks the connection unchecked until the board answers,
+  // which is when the photo arrives; it waits in the draft, and Send waits
+  // for the connection.
+  get offersAskPictures() {
+    return !!this.connection?.features?.includes("ask_pictures");
+  }
+  get offersAskFiles() {
+    return !!this.connection?.features?.includes("ask_files");
+  }
+  // The same for a note's pictures: wherever its words can be saved.
+  get offersNotePictures() {
+    const features = this.connection?.features;
+    return this.notesHere && !!features?.includes("pictures") && (this.collects || !!features?.includes("notes"));
   }
   // Pictures picked or pasted into the composer (T-853), named in the
   // draft as a note's are.
   async addPromptPictures(files, at) {
     const entry = this.entry;
-    if (!entry || !this.canAskPictures) return;
+    if (!entry || !files.length) return;
+    if (!this.offersAskPictures) return this.refuse(entry, "Pictures need a compatible terminal.");
     const placed = await this.readPictures(entry, "draft", files, at, () => this.entry === entry);
     // A picture this browser cannot read is said where the words' news is.
     if (entry.error) this.refuseError(entry);
     return placed;
   }
   get canAskFiles() {
-    return this.live && !!this.connection?.features?.includes("ask_files");
+    return this.live && this.offersAskFiles;
   }
   async addPromptFiles(files, at) {
     const entry = this.entry;
-    if (!entry || !this.canAskFiles) return;
+    if (!entry || !files.length) return;
+    if (!this.offersAskFiles) return this.refuse(entry, "Files need a compatible terminal.");
     if (this.board.current?.file_tools_off) return this.refuse(entry, "Board tools are off for this ticket.");
     const placed = await this.readPictures(entry, "draft", files, at, () => this.entry === entry, true);
     if (entry.error) this.refuseError(entry);
@@ -1985,7 +2003,12 @@ export class Store {
   // desk's editor names one. Answers where the next one would go.
   async addPictures(files, at) {
     const draft = this.noteDraft;
-    if (!draft || !this.canAddPictures) return;
+    if (!draft || !files.length) return;
+    if (!this.offersNotePictures) {
+      draft.error = "Pictures need a compatible terminal.";
+      this.emit();
+      return;
+    }
     return this.readPictures(draft, "text", files, at, () => this.noteDraft === draft);
   }
   // The same for a new ticket's details (T-670).

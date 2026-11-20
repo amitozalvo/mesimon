@@ -48950,3 +48950,28 @@ Verification reruns on this ticket:
   case and the opt-in file case were retained. Rebase verification covers
   the unit suite, workspace build, agy e2e, and the agy rig's unit and
   case-selection checks.
+
+## A camera photo lands in the draft while the connection is checked (T-1382, 2026-11-20)
+
+Taking a photo from the phone's composer (or a note's picture button) did
+nothing. The camera takes the page off screen; coming back fires
+`visibilitychange`, which marks the connection not live until the board
+answers, and the picker's `change` arrives in that window. The add paths
+(`addPromptPictures`, `addPromptFiles`, `addPictures`) gated on
+`canAsk*`/`canAddPictures`, which include `live`, and returned with no word.
+The library picker rarely leaves the page, so it kept working.
+
+Picking now gates on what the host offers (`offersAskPictures`,
+`offersAskFiles`, `offersNotePictures`: its `ready` features, kept across a
+reconnect), and the buttons show by the same gates. The picture waits in the
+draft; sending still needs the live gates and says so when refused, as
+T-705 already did for a new ticket's pictures. An add the host does not
+offer now says so instead of returning silently.
+
+The old view gates also unmounted the pickers while not live, which could
+drop the `change` itself; the view now uses the same offer gates, so the
+input stays mounted. The `tier` flow's new case dispatches
+`visibilitychange` with the fixture holding every reply, then picks on
+`#prompt-camera`; with the old store gate the picture never appears.
+Checks: the `tier` flow (Chromium phone) fails without the fix and passes
+with it; all 102 browser cases and the state and asset tests passed once.

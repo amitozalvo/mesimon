@@ -314,7 +314,7 @@ export function NoteSheet({ store }) {
             mark(e);
             store.setNoteText(e.currentTarget.value);
           }}
-          onPaste=${(e) => pastePictures(e, store.canAddPictures, (files, at) => store.addPictures(files, at), caret)}
+          onPaste=${(e) => pastePictures(e, store.offersNotePictures, (files, at) => store.addPictures(files, at), caret)}
           onKeyDown=${(e) => {
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
               e.preventDefault();
@@ -323,7 +323,7 @@ export function NoteSheet({ store }) {
           }}></textarea></label>
       </div>
       <footer class="compose-foot note-sheet-foot">
-        <${PictureBar} id="note-picture" can=${store.canAddPictures} draft=${draft} caret=${caret}
+        <${PictureBar} id="note-picture" can=${store.offersNotePictures} draft=${draft} caret=${caret}
           onAdd=${(files, at) => store.addPictures(files, at)} onRemove=${(n) => store.removePicture(n)} />
         ${draft.sending && html`<p class="note-sending" role="status"><${Tick} state="clock" /><span>${draft.sending}</span></p>`}
         ${draft.error && html`<p class="compose-error" role="alert">${draft.error}</p>`}

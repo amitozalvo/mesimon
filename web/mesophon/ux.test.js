@@ -2112,6 +2112,30 @@ async function tierFlow(browser, engineName, size, viewport) {
     await until(page, () => !document.querySelector("#prompt").value);
     assert.equal(await page.locator(".composer-pics").count(), 0, "a taken prompt lets its pictures go");
 
+    // A photo taken with the camera (T-1382): the page leaves for the
+    // camera and, back, checks the connection while the photo arrives.
+    // The photo goes into the draft then, and Send waits for the check.
+    await page.locator("#prompt").fill("From the camera");
+    await page.evaluate(() => {
+      fixture.holdAll = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await until(page, () => document.querySelector("#connection").textContent !== "Connected");
+    const taken = Object.keys(await page.evaluate(() => fixture.uploads)).length;
+    const prompted = await page.evaluate(() => fixture.prompts.length);
+    await page.locator("#prompt-camera").setInputFiles({ name: "camera.jpg", mimeType: "image/png", buffer: png });
+    await page.locator(".composer-pics .note-pic").first().waitFor();
+    assert.match(await page.locator("#prompt").inputValue(), /^From the camera \[Image #1\]$/);
+    assert(await page.locator("#send").isDisabled(), "Send waits for the connection");
+    await page.evaluate(() => { fixture.holdAll = false; });
+    await until(page, () => document.querySelector("#connection").textContent === "Connected");
+    await until(page, () => !document.querySelector("#send").disabled);
+    await page.locator("#send").click();
+    await until(page, (n) => fixture.prompts.length > n, prompted);
+    assert.equal(await page.evaluate(() => fixture.prompts.at(-1).text),
+      `From the camera [Image #1](mesimon-attachment:pic-${taken})`);
+    await until(page, () => !document.querySelector("#prompt").value);
+
     // Words that begin with `!` (T-1284) run as a shell command in the
     // agent's box: the field says so before the send, and sends them as
     // they are. A `!` further in is plain words.
@@ -2126,8 +2150,8 @@ async function tierFlow(browser, engineName, size, viewport) {
     await shot("composer-shell");
     await until(page, () => !document.querySelector("#send").disabled);
     await page.locator("#send").click();
-    await until(page, () => fixture.prompts.length === 4);
-    assert.equal(await page.evaluate(() => fixture.prompts[3].text), "!git log -1");
+    await until(page, () => fixture.prompts.length === 5);
+    assert.equal(await page.evaluate(() => fixture.prompts[4].text), "!git log -1");
     await until(page, () => !document.querySelector("#prompt").value);
     assert(await page.locator("#shell-note").isHidden(), "an empty field marks nothing");
 
