@@ -1,6 +1,7 @@
 // Real browsers, controlled M1 wire replies. Crypto/relay acceptance remains in
 // browser.test.js; this fixture exercises timing/failure states deterministically.
 import { chromium, webkit } from "playwright";
+import { runMatrix } from "./ux-matrix.mjs";
 import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -42,9 +43,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404).end();
   }
 });
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const origin = `http://127.0.0.1:${server.address().port}`;
-await fs.mkdir(path.join(root, "test-results"), { recursive: true });
+let origin, output; // Set once in each cell process.
 const fakeCrypto = `export default async function init() {};
 export class Browser {
   seed() { return 'test-seed'; } free() {}
@@ -705,7 +704,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const theme = (name) =>
     page.evaluate((name) => {
       document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
@@ -1098,7 +1097,7 @@ async function ticketFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: sheet, mailbox live and away, unsend, edit, forged receipt, reload, offline clock, refusal, older host, revocation passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tickets-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-tickets-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -1169,7 +1168,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.match(await named(), new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const open = async (id) => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
     await page.locator(`.ticket[data-id="${id}"]`).click();
@@ -1577,7 +1576,7 @@ async function notesFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: notes as panes read, swiped, walked, edited, told, stale, added, deleted, pictured, away, kept and live passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-notes-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-notes-failure.png`) });
     throw error;
   } finally {
     await page.evaluate(() => localStorage.clear()).catch(() => {});
@@ -1620,7 +1619,7 @@ async function startFlow(browser, engineName, size, viewport) {
   const receiptIs = (status) =>
     until(page, (status) => document.querySelector("#detail .start-receipt")?.dataset.status === status, status);
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const pageStart = page.locator("#detail .start-agent");
   const sheet = page.locator("#start-sheet");
   const receipt = page.locator("#detail .start-receipt");
@@ -1944,7 +1943,7 @@ async function startFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: start from the ticket's sheet, clock, ticks, wake with words, refusal, lost answer, away, older host, board picker passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-start-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-start-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -1988,7 +1987,7 @@ async function tierFlow(browser, engineName, size, viewport) {
       await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const sheet = page.locator("#start-sheet");
   const tierInputs = page.locator('#start-sheet input[name="start-tier"]');
   try {
@@ -2127,7 +2126,7 @@ async function tierFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: tiers picked for a start and a prompt, a switch queued, an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tier-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-tier-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -2161,7 +2160,7 @@ async function editFlow(browser, engineName, size, viewport) {
     until(page, () => document.querySelector("#connection").textContent === "Connected");
   const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const edits = () => page.evaluate(() => fixture.edits);
   const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
   const column = (name) => page.locator(`.column[aria-label="${name}"]`);
@@ -2393,7 +2392,7 @@ async function editFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: rename, the column-and-tags sheet, refusal, drag and drop, away and an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-edit-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-edit-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -2424,7 +2423,7 @@ async function workspaceFlow(browser, engineName, size, viewport) {
       await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
   const sheet = page.locator("#card-sheet");
   const mark = (id) => page.locator(`.ticket.card[data-id="${id}"] .wt-mark`);
@@ -2532,7 +2531,7 @@ async function workspaceFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: the worktree mark, the branch row, the workspace choice, its refusal and lock, and an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-workspace-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-workspace-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -2560,7 +2559,7 @@ async function archiveFlow(browser, engineName, size, viewport) {
       await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
   const sheet = page.locator("#card-sheet");
   const card = (id) => page.locator(`.ticket.card[data-id="${id}"]`);
@@ -2666,7 +2665,7 @@ async function archiveFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: archive held by an awake agent, an idle one parked, archived, restored, refused, and an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-archive-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-archive-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -2693,7 +2692,7 @@ async function crownFlow(browser, engineName, size, viewport) {
       await page.locator(".detail-scrim").click({ position: { x: 10, y: 10 } });
   };
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
   const wearers = () => page.evaluate(() => fixture.tickets.filter((t) => t.crown).map((t) => t.id));
   const toast = (words) => until(page, (w) => document.querySelector("#toast")?.textContent.includes(w), words);
@@ -2785,7 +2784,7 @@ async function crownFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: crown put on, moved, undone, taken off, refused, and an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-crown-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-crown-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -3031,7 +3030,7 @@ async function chatFlow(browser, engineName, size, viewport) {
       await chat.locator(".chat-act .icon").first().evaluate((n) => getComputedStyle(n).color),
       "the crown's ink, its mark and its words",
     );
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-crown-acts.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-chat-crown-acts.png`) });
     await page.evaluate(() => {
       delete fixture.tickets[0].crowned;
       fixture.acts = undefined;
@@ -3064,7 +3063,7 @@ async function chatFlow(browser, engineName, size, viewport) {
       await page.evaluate((c) => { const n = document.createElement("i"); n.style.color = c; document.body.append(n); const v = getComputedStyle(n).color; n.remove(); return v; }, attn),
       "an up hand is in the needs-you colour");
     assert.notEqual(await ink(".chat-hand:not(.chat-hand-up) .chat-hand-head"), await ink(".chat-hand-up .chat-hand-head"));
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-hand.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-chat-hand.png`) });
     // Lowered: every hand stays, none in the needs-you colour.
     await page.evaluate(() => {
       delete fixture.tickets[0].agent.hand;
@@ -3102,7 +3101,7 @@ async function chatFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: conversation pages, prepend, tail, new conversation and the Terminal tab passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-chat-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-chat-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -3173,11 +3172,11 @@ async function shelfFlow(browser, engineName, size, viewport) {
     assert.match(await page.locator("#chat").textContent(), /Earlier parts need your terminal/);
     assert(await page.locator("#send").isDisabled(), "nothing on the shelf is answered");
     assert(await page.locator("#tab-terminal").isDisabled(), "no screen to switch to while away");
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-shelf.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-shelf.png`) });
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: the shelf's board, notes and conversation read while the terminal is away`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-shelf-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-shelf-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -3200,7 +3199,7 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
   page.on("pageerror", (error) => errors.push(String(error)));
   const toast = (text) => until(page, (text) => document.querySelector("#toast").textContent.includes(text), text);
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const open = async (id) => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
     await page.locator(`.ticket[data-id="${id}"]`).locator("visible=true").first().click();
@@ -3375,7 +3374,7 @@ async function mailPromptFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: words for an away terminal explained, sealed, taken back, kept, queued and given back`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-mail-prompt-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-mail-prompt-failure.png`) });
     throw error;
   } finally {
     await page.evaluate(() => localStorage.clear()).catch(() => {});
@@ -3436,7 +3435,7 @@ async function batchFlow(browser, engineName, size, viewport) {
     assert.equal(await pick("checkbox", "Olives").getAttribute("aria-checked"), "false");
     assert(await button("Submit answers").isDisabled(), "the size is still open");
     await attention.locator('[data-question="2"] input').fill("Large please");
-    await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-batch.png`) });
+    await page.locator("#attention").screenshot({ path: path.join(output, `${engineName}-${size}-batch.png`) });
     await button("Submit answers").click();
     assert.deepEqual(await sent(), {
       op: "dialog", request: "toolu_b", ticket: "batch", session: "batch-session",
@@ -3496,7 +3495,7 @@ async function batchFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: a batch and a several-choice question answered whole, receipts and an older host passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-batch-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-batch-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -3533,7 +3532,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   const shot = (name) =>
-    page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-${name}.png`) });
+    page.screenshot({ path: path.join(output, `${engineName}-${size}-${name}.png`) });
   const keys = () => page.evaluate(() => fixture.keys.map(({ op, ticket, session, key, text }) => ({ op, ticket, session, ...(key ? { key } : {}), ...(text ? { text } : {}) })));
   const overview = async () => {
     if (size === "phone" && (await page.locator("#back").isVisible())) await page.locator("#back").click();
@@ -3933,7 +3932,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
     assert.deepEqual(errors, []);
     console.log(`${engineName} ${size}: the agent's terminal keys, Stop, a crashed agent resumed and the terminal's theme`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-terminal-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-terminal-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -3968,7 +3967,7 @@ async function pairLinkFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: pairing from a QR link passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-pair-link-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-pair-link-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4036,7 +4035,7 @@ async function backFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the system's Back closes a remembered ticket passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-back-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-back-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4074,7 +4073,7 @@ async function bigBoardFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: a board too big for one answer is said, never waited on passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-big-board-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-big-board-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4146,7 +4145,7 @@ async function refusedFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: a refused credential pairs again passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-refused-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-refused-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4206,10 +4205,10 @@ async function forgetFlow(browser, engineName) {
     await picker();
     const rows = page.locator("#board-list .side-board-row");
     assert.equal(await rows.count(), 2);
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-list.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-forget-list.png`) });
     await page.getByRole("button", { name: "Forget Old test board on this browser" }).click();
     assert.match(await page.locator("#board-list .side-board-ask").textContent(), /Forget Old test board here\?/);
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-ask.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-forget-ask.png`) });
     await page.locator("#board-list .side-board-no").click();
     assert.equal(await rows.count(), 2, "Keep forgets nothing");
     await page.getByRole("button", { name: "Forget Old test board on this browser" }).click();
@@ -4241,7 +4240,7 @@ async function forgetFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: forget one board, then the last passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-forget-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-forget-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4316,7 +4315,7 @@ async function keyboardFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the page follows the keyboard's viewport passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-keyboard-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-keyboard-failure.png`) });
     throw error;
   } finally {
     await context.close();
@@ -4328,112 +4327,106 @@ async function keyboardFlow(browser, engineName) {
 // icon sits on a filled pill, the pressed colour the column tabs use; the
 // other two are the quieter ink on nothing. Choosing a view moves and
 // resizes nothing in the bar.
-async function tabsFlow(browser, engineName) {
-  for (const [size, viewport] of [
-    ["tablet", { width: 900, height: 900 }],
-    ["phone", { width: 390, height: 844 }],
-  ]) {
-    if (process.env.MESOPHON_UX_SIZES && !process.env.MESOPHON_UX_SIZES.split(",").includes(size)) continue;
-    const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
-    await context.addInitScript(fixture);
-    const page = await context.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(String(error)));
-    const theme = (name) =>
-      page.evaluate((name) => {
-        document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
-      }, name);
-    // Each tab's label, icon and pill as drawn, and every box in the bar.
-    const bar = () =>
-      page.evaluate(() => {
-        const rgb = (text) => {
-          const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(text);
-          return m ? { c: [+m[1], +m[2], +m[3]], a: m[4] === undefined ? 1 : +m[4] } : null;
-        };
-        const box = (n) => {
-          const r = n.getBoundingClientRect();
-          return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10);
-        };
-        const modes = document.querySelector("#modes");
-        return {
-          ground: rgb(getComputedStyle(modes).backgroundColor),
-          // A label's own width follows its weight, centred in its tab; its
-          // height and line do not.
-          boxes: [
-            ...[modes, ...modes.querySelectorAll(".mode, .mode > .icon, .mode > .badge")].map(box),
-            ...[...modes.querySelectorAll(".mode > span:not(.badge)")].map((n) => box(n).filter((_, i) => i % 2)),
-          ],
-          tabs: [...modes.querySelectorAll(".mode")].map((n) => {
-            const label = n.querySelector("span:not(.badge):not(.count)");
-            const icon = n.querySelector(".icon");
-            return {
-              mode: n.dataset.mode,
-              pressed: n.getAttribute("aria-pressed") === "true",
-              ink: rgb(getComputedStyle(label).color),
-              weight: Number(getComputedStyle(label).fontWeight),
-              stroke: rgb(getComputedStyle(icon).color),
-              pill: rgb(getComputedStyle(icon).backgroundColor),
-            };
-          }),
-        };
-      });
-    const luminance = ({ c }) => {
-      const [r, g, b] = c.map((v) => {
-        v /= 255;
-        return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-      });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const contrast = (a, b) => {
-      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-      return (hi + 0.05) / (lo + 0.05);
-    };
-    const measured = [];
-    try {
-      await page.goto(origin);
-      await until(page, () => !document.querySelector("#pair").disabled);
-      await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
-      await page.locator('.ticket[data-id="ticket-0"]').waitFor();
-      await page.locator("#modes").waitFor();
-      for (const name of ["graphite", "chalk"]) {
-        await theme(name);
-        let boxes;
-        for (const mode of ["board", "find", "agents"]) {
-          await page.locator(`#${mode}-mode`).click();
-          await until(page, (mode) => document.querySelector(`#${mode}-mode`).getAttribute("aria-pressed") === "true", mode);
-          const drawn = await bar();
-          const open = drawn.tabs.filter((t) => t.pressed);
-          assert.deepEqual(open.map((t) => t.mode), [mode]);
-          const [on] = open;
-          for (const off of drawn.tabs.filter((t) => !t.pressed)) {
-            measured.push(`${name} ${mode}: label ${contrast(on.ink, off.ink).toFixed(2)}:1 apart, weight ${on.weight} to ${off.weight}`);
-            assert(on.weight - off.weight >= 100, `${name}, ${mode} open: its label is heavier than ${off.mode}'s (${on.weight} to ${off.weight})`);
-            assert(contrast(on.ink, drawn.ground) > contrast(off.ink, drawn.ground), `${name}, ${mode} open: its label reads stronger than ${off.mode}'s`);
-            assert(!off.pill || off.pill.a === 0, `${name}, ${mode} open: ${off.mode}'s icon has no pill (${JSON.stringify(off.pill)})`);
-          }
-          // The pill stands off the bar as a control's edge must (3:1), and
-          // the icon off the pill.
-          assert(on.pill && on.pill.a === 1, `${name}, ${mode} open: its icon has a filled pill (${JSON.stringify(on.pill)})`);
-          const pill = contrast(on.pill, drawn.ground);
-          const stroke = contrast(on.stroke, on.pill);
-          measured.push(`${name} ${mode}: pill ${pill.toFixed(2)}:1 on the bar, icon ${stroke.toFixed(2)}:1 on the pill`);
-          assert(pill >= 3, `${name}, ${mode} open: the pill against the bar is ${pill.toFixed(2)}:1`);
-          assert(stroke >= 3, `${name}, ${mode} open: the icon against its pill is ${stroke.toFixed(2)}:1`);
-          if (boxes) assert.deepEqual(drawn.boxes, boxes, `${name}: choosing ${mode} moved or resized nothing in the bar`);
-          boxes = drawn.boxes;
+async function tabsFlow(browser, engineName, size, viewport) {
+  const context = await browser.newContext({ viewport, colorScheme: "dark", reducedMotion: "reduce", serviceWorkers: "block" });
+  await context.addInitScript(fixture);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const theme = (name) =>
+    page.evaluate((name) => {
+      document.querySelector(`.theme-tile[data-theme-id="${name}"]`).click();
+    }, name);
+  // Each tab's label, icon and pill as drawn, and every box in the bar.
+  const bar = () =>
+    page.evaluate(() => {
+      const rgb = (text) => {
+        const m = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/.exec(text);
+        return m ? { c: [+m[1], +m[2], +m[3]], a: m[4] === undefined ? 1 : +m[4] } : null;
+      };
+      const box = (n) => {
+        const r = n.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10);
+      };
+      const modes = document.querySelector("#modes");
+      return {
+        ground: rgb(getComputedStyle(modes).backgroundColor),
+        // A label's own width follows its weight, centred in its tab; its
+        // height and line do not.
+        boxes: [
+          ...[modes, ...modes.querySelectorAll(".mode, .mode > .icon, .mode > .badge")].map(box),
+          ...[...modes.querySelectorAll(".mode > span:not(.badge)")].map((n) => box(n).filter((_, i) => i % 2)),
+        ],
+        tabs: [...modes.querySelectorAll(".mode")].map((n) => {
+          const label = n.querySelector("span:not(.badge):not(.count)");
+          const icon = n.querySelector(".icon");
+          return {
+            mode: n.dataset.mode,
+            pressed: n.getAttribute("aria-pressed") === "true",
+            ink: rgb(getComputedStyle(label).color),
+            weight: Number(getComputedStyle(label).fontWeight),
+            stroke: rgb(getComputedStyle(icon).color),
+            pill: rgb(getComputedStyle(icon).backgroundColor),
+          };
+        }),
+      };
+    });
+  const luminance = ({ c }) => {
+    const [r, g, b] = c.map((v) => {
+      v /= 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const measured = [];
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    await page.getByLabel("Pairing code", { exact: true }).fill("fixture-pair-code");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    await page.locator("#modes").waitFor();
+    for (const name of ["graphite", "chalk"]) {
+      await theme(name);
+      let boxes;
+      for (const mode of ["board", "find", "agents"]) {
+        await page.locator(`#${mode}-mode`).click();
+        await until(page, (mode) => document.querySelector(`#${mode}-mode`).getAttribute("aria-pressed") === "true", mode);
+        const drawn = await bar();
+        const open = drawn.tabs.filter((t) => t.pressed);
+        assert.deepEqual(open.map((t) => t.mode), [mode]);
+        const [on] = open;
+        for (const off of drawn.tabs.filter((t) => !t.pressed)) {
+          measured.push(`${name} ${mode}: label ${contrast(on.ink, off.ink).toFixed(2)}:1 apart, weight ${on.weight} to ${off.weight}`);
+          assert(on.weight - off.weight >= 100, `${name}, ${mode} open: its label is heavier than ${off.mode}'s (${on.weight} to ${off.weight})`);
+          assert(contrast(on.ink, drawn.ground) > contrast(off.ink, drawn.ground), `${name}, ${mode} open: its label reads stronger than ${off.mode}'s`);
+          assert(!off.pill || off.pill.a === 0, `${name}, ${mode} open: ${off.mode}'s icon has no pill (${JSON.stringify(off.pill)})`);
         }
-        if (size === "phone") await page.locator("#modes").screenshot({ path: path.join(root, "test-results", `${engineName}-phone-tabs-${name}.png`) });
+        // The pill stands off the bar as a control's edge must (3:1), and
+        // the icon off the pill.
+        assert(on.pill && on.pill.a === 1, `${name}, ${mode} open: its icon has a filled pill (${JSON.stringify(on.pill)})`);
+        const pill = contrast(on.pill, drawn.ground);
+        const stroke = contrast(on.stroke, on.pill);
+        measured.push(`${name} ${mode}: pill ${pill.toFixed(2)}:1 on the bar, icon ${stroke.toFixed(2)}:1 on the pill`);
+        assert(pill >= 3, `${name}, ${mode} open: the pill against the bar is ${pill.toFixed(2)}:1`);
+        assert(stroke >= 3, `${name}, ${mode} open: the icon against its pill is ${stroke.toFixed(2)}:1`);
+        if (boxes) assert.deepEqual(drawn.boxes, boxes, `${name}: choosing ${mode} moved or resized nothing in the bar`);
+        boxes = drawn.boxes;
       }
-      assert.deepEqual(errors, []);
-      console.log(`${engineName} ${size}: the open tab is marked in both schemes and the bar holds still passed`);
-    } catch (error) {
-      console.log(measured.join("\n"));
-      await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-tabs-failure.png`) });
-      throw error;
-    } finally {
-      await context.close();
+      if (size === "phone") await page.locator("#modes").screenshot({ path: path.join(output, `${engineName}-phone-tabs-${name}.png`) });
     }
+    assert.deepEqual(errors, []);
+    console.log(`${engineName} ${size}: the open tab is marked in both schemes and the bar holds still passed`);
+  } catch (error) {
+    console.log(measured.join("\n"));
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-tabs-failure.png`) });
+    throw error;
+  } finally {
+    await context.close();
   }
 }
 
@@ -4490,7 +4483,7 @@ async function keptFlow(browser, engineName) {
     await sheet.waitFor({ state: "hidden" });
     await page.evaluate(() => document.querySelector('.side-nav button[data-mode="sent"]').click());
     await page.locator('.sent-item[data-status="local"]').waitFor();
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-page.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-kept-page.png`) });
     await page.evaluate(() => localStorage.removeItem("fixture-relay-down"));
     // The page asks past the worker every few seconds, and reloads itself.
     const reloaded = page.waitForEvent("load", { timeout: 20000 });
@@ -4504,7 +4497,7 @@ async function keptFlow(browser, engineName) {
     assert.deepEqual(errors, []);
     console.log(`${engineName}: the kept page opens with no network and hands its ticket over passed`);
   } catch (error) {
-    await page.screenshot({ path: path.join(root, "test-results", `${engineName}-kept-failure.png`) });
+    await page.screenshot({ path: path.join(output, `${engineName}-kept-failure.png`) });
     throw error;
   } finally {
     networkDown = false;
@@ -4512,1115 +4505,1120 @@ async function keptFlow(browser, engineName) {
   }
 }
 
-try {
-  for (const [engineName, engine] of [
-    ["chromium", chromium],
-    ["webkit", webkit],
-  ]) {
-    if (process.env.MESOPHON_UX_ENGINE && process.env.MESOPHON_UX_ENGINE !== engineName) continue;
-    const browser = await engine.launch();
-    try {
-      for (const [size, viewport] of [
-        ["desktop", { width: 1440, height: 950 }],
-        ["tablet", { width: 900, height: 900 }],
-        ["phone", { width: 390, height: 844 }],
-      ]) {
-        if (process.env.MESOPHON_UX_SIZES && !process.env.MESOPHON_UX_SIZES.split(",").includes(size)) continue;
-        const context = await browser.newContext({
-          viewport,
-          colorScheme: "dark",
-          reducedMotion: "reduce",
-          // `route` does not see a service worker's requests.
-          serviceWorkers: "block",
-        });
-        await context.addInitScript(fixture);
-        await context.route("**/pkg/mesimon_web.js", (route) =>
-          route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
-        );
-        const page = await context.newPage();
-        const errors = [];
-        page.on("pageerror", (error) => errors.push(String(error)));
-        const overview = async () => {
-          if (size === "phone" && (await page.locator("#back").isVisible())) {
-            await page.locator("#back").click();
-            await page.locator("#list-title").waitFor();
-          }
-        };
-        const select = async (id) => {
-          await overview();
-          await page.locator(`.ticket[data-id="ticket-${id}"]`).click();
-        };
-        const mode = (name) => pressMode(page, name);
-        // The delivery pill sits in the box's bar (T-1208).
-        const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
-        const attention = (name) =>
-          page.locator("#attention").getByRole("button", { name, exact: true });
-        try {
-          await page.goto(origin);
-          await until(page, () => !document.querySelector("#pair").disabled);
-          assert(await page.locator("#shell").isHidden());
-          await page
-            .getByLabel("Pairing code", { exact: true })
-            .fill("fixture-pair-code");
-          await page
-            .getByRole("button", { name: "Connect", exact: true })
-            .click();
-          await page.locator('.ticket[data-id="ticket-0"]').waitFor();
-          // The projection's newer facts (T-497): how long an agent has been
-          // at it, the step it is on or its last reply line, and tags.
-          await page.evaluate(() => {
-            fixture.tickets[0].tags = [{ group: 1, name: "BUG", tint: 0 }];
-            fixture.tickets[1].tags = [{ group: 1, name: "FEATURE", tint: 6 }];
-            Object.assign(fixture.tickets[0].agent, { since: Date.now() - 5 * 60000, doing: "Bash(cargo test -p mesimon-daemon)" });
-            Object.assign(fixture.tickets[4].agent, { since: Date.now() - 40 * 60000, said: "Fixed, and three tests pass." });
-            Object.assign(fixture.tickets[6].agent, { state: "idle", since: Date.now() - 2 * 3600000 });
-            fixture.update();
-          });
-          await until(page, () =>
-            document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
-          );
-          // The age stands in the card's corner, as the TUI's (T-855), and
-          // the agent's state is its mark, never words (T-886).
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .spin').count(), 1);
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-age').textContent(), "5m");
-          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
-          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .mark-idle').count(), 1);
-          assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-age').textContent(), "40m");
-          // Now lists a stopped agent for an hour (T-560); the Board, always.
-          assert.equal(
-            await page.locator('.group:has(.ticket[data-id="ticket-4"]) .group-label').textContent(),
-            "Idle1",
-          );
-          assert.equal(await page.locator('.ticket[data-id="ticket-6"]').count(), 0);
-          // A ticket created within the hour is listed under the agents
-          // (T-668), and counted as new.
-          await page.evaluate(() => {
-            fixture.tickets.push({ id: "ticket-new", key: "T-99", title: "Just filed", column: "TODO", agent: null, created: Date.now() - 60000 });
-            fixture.update();
-          });
-          await page.locator('.ticket[data-id="ticket-new"]').waitFor();
-          assert.equal(
-            await page.locator('.group:has(.ticket[data-id="ticket-new"]) .group-label').textContent(),
-            "Recently created1",
-          );
-          assert.match(await page.locator("#count").textContent(), / · 1 new$/);
-          // A ticket's shells are the terminal's alone (T-1208): a shell open
-          // on it, busy or at its prompt, draws nothing on its card.
-          const card = (id) => `.ticket[data-id="${id}"]`;
-          const glyphs = (id) =>
-            page.locator(`${card(id)} .title-glyph`).evaluateAll((ns) =>
-              ns.map((n) => [n.parentElement.classList.contains("ticket-title"), n.querySelector(".spin") ? "spin" : n.firstElementChild.classList[1]]),
-            );
-          await page.evaluate(() => {
-            fixture.tickets.at(-1).shell = { busy: true };
-            fixture.tickets[4].shell = { busy: true };
-            fixture.update();
-          });
-          await page.locator(`${card("ticket-4")} .mark-idle`).waitFor();
-          assert.deepEqual(await glyphs("ticket-new"), [], "a busy shell is no work of the agent's");
-          assert.deepEqual(await glyphs("ticket-4"), [[true, "mark-idle"]]);
-          assert.equal(await page.locator(".shell-mark").count(), 0);
-          await page.evaluate(() => {
-            delete fixture.tickets[4].shell;
-            fixture.tickets.pop();
-            fixture.update();
-          });
-          await until(page, () => !document.querySelector('.ticket[data-id="ticket-new"]'));
-          // A ticket is one card in Now and on the Board (T-533): its tags
-          // show in both, a needs-you card wears the same face, and Now adds
-          // only the column, which the Board says by where the card stands.
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .tag').textContent(), "BUG");
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "IN PROGRESS·T-0");
-          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .tag').textContent(), "FEATURE");
-          assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .mark-attn').count(), 1);
-          // No word on a card breaks across lines (T-855): the tags, the
-          // crown's word, the column, the key and the corner each keep to
-          // one, on a card that carries all of them at once, and the key's
-          // line stays inside the card (T-886).
-          const title0 = await page.evaluate(() => fixture.tickets[0].title);
-          await page.evaluate(() => {
-            Object.assign(fixture.tickets[0], {
-              title: "pictures inside ask agent prompt, and the ones a phone sends",
-              tags: [{ group: 1, name: "IMPROVEMENT", tint: 0 }, { group: 3, name: "REMOTE CONTROL", tint: 2 }],
-              workspace: { kind: "worktree", branch: "msmn/T-0-pictures", state: "behind" },
-              crowned: { action: "moved", by: "T-3", at: Date.now() - 120000 },
-            });
-            fixture.update();
-          });
-          await page.locator('#tickets .ticket[data-id="ticket-0"] .wt-mark').waitFor();
-          await page.locator('#tickets .ticket[data-id="ticket-0"] .ticket-meta .crown-word').waitFor();
-          assert.ok(
-            await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
-              card.querySelector(".ticket-meta").getBoundingClientRect().right <= card.getBoundingClientRect().right),
-            "the key's line ran out of the card",
-          );
-          const broken = await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
-            [...card.querySelectorAll(".tag, .ticket-meta, .card-corner")].flatMap((el) => {
-              const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-              const words = [];
-              for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-                if (n.parentElement.closest(".sr-only") || !n.textContent.trim()) continue;
-                const range = document.createRange();
-                range.selectNodeContents(n);
-                if (range.getClientRects().length > 1) words.push(n.textContent);
-              }
-              return words;
-            }),
-          );
-          assert.deepEqual(broken, [], "a word on a card wrapped onto a second line");
-          await page.evaluate((title) => {
-            Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined, crowned: undefined });
-            fixture.update();
-          }, title0);
-          await until(page, () => !document.querySelector('#tickets .ticket[data-id="ticket-0"] .wt-mark'));
-          const anatomy = () =>
-            page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((n) =>
-              [n, ...n.querySelectorAll("[class]")].map((c) => c.getAttribute("class")),
-            );
-          const inNow = await anatomy();
-          await mode("board");
-          if (size === "phone") await page.locator('.column-tab[data-column="IN PROGRESS"]').click();
-          assert.deepEqual(await anatomy(), inNow);
-          // A glyph never moves a card's lower lines (T-948): two neighbouring
-          // cards, one with the agent's mark and a shell's glyph and one with
-          // neither, hold their tags' line at the same place in the card, and
-          // side by side, in two columns, at the same y.
-          const rows = (ids) =>
-            page.evaluate(
-              (ids) =>
-                ids.map((id) => {
-                  const c = document.querySelector(`#tickets .ticket[data-id="${id}"]`).getBoundingClientRect();
-                  const l = document.querySelector(`#tickets .ticket[data-id="${id}"] .card-line`).getBoundingClientRect();
-                  return { card: c.top, x: l.left - c.left, dy: l.top - c.top, y: l.top, h: c.height, left: c.left };
-                }),
-              ids,
-            );
-          const pair = (other) =>
-            page.evaluate((other) => {
-              const card = (id, title, column, agent, shell) => ({ id, key: id === "glyph-on" ? "T-90" : "T-91", title, column, agent, shell,
-                tags: [{ group: 1, name: "BUG", tint: 0 }] });
-              fixture.tickets.unshift(
-                card("glyph-on", "Glyph", "IN PROGRESS", { session: "s-on", provider: "claude", state: "working", promptable: true }, { busy: false }),
-                card("glyph-off", "Glyph", other, null, undefined),
-              );
-              fixture.update();
-            }, other);
-          const unpair = () =>
-            page.evaluate(() => {
-              fixture.tickets.splice(0, 2);
-              fixture.update();
-            });
-          await pair("IN PROGRESS");
-          await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
-          assert.deepEqual(await glyphs("glyph-on"), [[true, "spin"]]);
-          assert.deepEqual(await glyphs("glyph-off"), []);
-          {
-            const [on, off] = await rows(["glyph-on", "glyph-off"]);
-            assert.deepEqual([on.x, on.dy, on.h], [off.x, off.dy, off.h], "the same lines in the same places, glyph or none");
-          }
-          await unpair();
-          if (size === "desktop") {
-            await pair("TODO");
-            await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
-            const [on, off] = await rows(["glyph-on", "glyph-off"]);
-            assert.notEqual(on.left, off.left, "two columns, side by side");
-            assert.deepEqual([on.card, on.y], [off.card, off.y], "the tags' lines at the same y");
-            await unpair();
-          }
-          await until(page, () => !document.querySelector('#tickets .ticket[data-id="glyph-on"]'));
-          if (size === "phone") {
-            // A swipe across the Board steps the columns (T-624): left for
-            // the next, right for the previous, nothing past either end, and
-            // a mostly vertical drag is a scroll.
-            const swipe = (dx, dy = 0) =>
-              page.locator("#tickets").evaluate(
-                (node, [dx, dy]) => {
-                  const box = node.getBoundingClientRect();
-                  const x = box.left + box.width / 2;
-                  const y = box.top + 120;
-                  const touch = (cx, cy) => ({ clientX: cx, clientY: cy, identifier: 1, target: node });
-                  const fire = (type, touches, changed) => {
-                    const e = new Event(type, { bubbles: true, cancelable: true });
-                    Object.defineProperty(e, "touches", { value: touches });
-                    Object.defineProperty(e, "changedTouches", { value: changed });
-                    node.dispatchEvent(e);
-                  };
-                  const start = touch(x, y);
-                  fire("touchstart", [start], [start]);
-                  fire("touchend", [], [touch(x + dx, y + dy)]);
-                },
-                [dx, dy],
-              );
-            const pressed = () => page.locator('.column-tab[aria-pressed="true"]').getAttribute("data-column");
-            assert.equal(await page.locator("#tickets").evaluate((n) => getComputedStyle(n).touchAction), "pan-y pinch-zoom");
-            await swipe(-120);
-            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "DONE");
-            await swipe(-120);
-            await swipe(30, -200);
-            await swipe(-20);
-            assert.equal(await pressed(), "DONE", "no column past the last, and a scroll or a nudge is not a swipe");
-            await swipe(120);
-            await swipe(120);
-            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "TODO");
-            await swipe(120);
-            assert.equal(await pressed(), "TODO", "no column before the first");
-            await swipe(-120);
-            await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "IN PROGRESS");
-            assert.deepEqual(await anatomy(), inNow);
-          }
-          assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
-          assert.equal(await page.locator('.ticket[data-id="ticket-6"] .mark-idle').count(), 1);
-          assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-age').textContent(), "2h");
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-board.png`) });
-          await mode("agents");
-          await page.locator(".need").first().waitFor();
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-now.png`) });
-          await select(0);
-          assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
-          // The heading is the title alone; the key sits at the right of the
-          // tags' line (T-510), and a tag wears its tint as the square before
-          // its name (T-1208). No provider chip: the shin and the output say so.
-          assert.equal(await page.locator("#detail .selection-key").textContent(), "T-0");
-          assert(!(await page.locator("#selection").textContent()).endsWith("T-0"), "the key left the heading");
-          assert.deepEqual(await page.locator("#detail .chips .chip").allTextContents(), ["IN PROGRESS"]);
-          assert.equal(await page.locator("#detail .agent-line").count(), 0, "a seated agent needs no line");
-          const [tagGround, tint] = await page.locator("#detail .chips .tag.tint-0").evaluate((n) => {
-            const hex = getComputedStyle(document.documentElement).getPropertyValue("--tag-0").trim().slice(1);
-            const [r, g, b] = hex.match(/../g).map((c) => parseInt(c, 16));
-            return [getComputedStyle(n, "::before").backgroundColor, `rgb(${r}, ${g}, ${b})`];
-          });
-          assert.equal(tagGround, tint);
-          await until(page, () =>
-            document.querySelector("#preview").textContent.includes("line 49"),
-          );
-          assert.equal(await page.locator("#preview script").count(), 0);
-          // The pane as a screen (T-506): the host's width sizes the type,
-          // the legend is the time alone, and there is no wrap switch.
-          assert.equal(await page.locator("#preview").evaluate((n) => n.style.getPropertyValue("--cols")), "132");
-          assert.equal(await page.locator("#preview .screen-rule").count(), 1);
-          assert.equal(await page.locator("#wrap").count(), 0);
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-ticket.png`) });
-          // No legend over the output (T-626): the connection strip says
-          // when it is stale, and an older host has no view switch.
-          assert.equal(await page.locator(".output .label").count(), 0);
-          assert.equal(await page.locator("#output-view").count(), 0);
-          await page.locator("#prompt").fill("draft for the first agent");
-          await select(1);
-          assert.equal(await page.locator("#prompt").inputValue(), "");
-          await page.locator("#prompt").fill("draft for the second agent");
-          await select(0);
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "draft for the first agent",
-          );
-          // A periodic 50-line window must not dislodge a reader who scrolled up.
-          await page.locator("#preview").evaluate((n) => {
-            n.scrollTop = 100;
-            n.dispatchEvent(new Event("scroll"));
-          });
-          const oldOutput = await page.locator("#preview").textContent();
-          await page.evaluate(() => {
-            fixture.lines = fixture.lines.map((line) => `new ${line}`);
-          });
-          await until(page, () =>
-            document
-              .querySelector("#latest")
-              .textContent.includes("New preview"),
-          );
-          assert.equal(await page.locator("#preview").textContent(), oldOutput);
-          await select(1);
-          await select(0);
-          assert(
-            Math.abs(
-              (await page.locator("#preview").evaluate((n) => n.scrollTop)) -
-                100,
-            ) < 3,
-          );
-          await page.locator("#latest").click();
-          assert.match(
-            await page.locator("#preview").textContent(),
-            /^new line/,
-          );
-          // A delayed reply belongs to its original target, even after switching.
-          await page.evaluate(() => {
-            fixture.disposition = "hold";
-          });
-          await page.locator("#send").click();
-          await select(1);
-          // Reconnect resolves the original receipt; second agent's draft stays intact.
-          await page.evaluate(() => {
-            fixture.receipt = "submitted";
-            fixture.channel().close();
-          });
-          await until(
-            page,
-            () =>
-              document.querySelector("#connection").textContent === "Connected",
-          );
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "draft for the second agent",
-          );
-          await select(0);
-          await until(page, () =>
-            document
-              .querySelector("#delivery")
-              .textContent.includes("Submitted"),
-          );
-          assert.equal(await page.locator("#prompt").inputValue(), "");
-          assert.equal(await page.evaluate(() => fixture.prompts.length), 1);
-          // Lost receipt: retain text, query once connected, never replay input.
-          // On a computer Shift+Enter breaks the line and Enter sends (T-1267).
-          await page.locator("#prompt").fill("uncertain delivery");
-          await page.locator("#prompt").press("Shift+Enter");
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "uncertain delivery\n",
-          );
-          await page.evaluate(() => {
-            fixture.disposition = "disconnect";
-            fixture.receipt = "unknown";
-          });
-          await page.locator("#prompt").press("Enter");
-          await until(page, () =>
-            document
-              .querySelector("#delivery")
-              .textContent.includes("Delivery unknown"),
-          );
-          assert(await page.locator("#send").isDisabled());
-          assert(await page.locator("#preview").isVisible());
-          await until(
-            page,
-            () =>
-              document.querySelector("#connection").textContent === "Connected",
-          );
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "uncertain delivery\n",
-          );
-          assert.equal(await page.evaluate(() => fixture.prompts.length), 2);
-          if (engineName === "chromium" && size === "desktop") {
-            // Silent host sleep: an open socket alone is not proof of freshness.
-            await page.evaluate(() => {
-              fixture.holdAll = true;
-            });
-            // The relay answered and the terminal fell silent: the retry's
-            // line says the terminal is away (T-1219).
-            await until(page, () =>
-              /Reconnecting|Trying again/.test(document.querySelector("#connection").textContent),
-            );
-            assert(await page.locator("#send").isDisabled());
-            await page.evaluate(() => {
-              fixture.holdAll = false;
-            });
-            await until(
-              page,
-              () =>
-                document.querySelector("#connection").textContent ===
-                "Connected",
-            );
-            assert.equal(await page.evaluate(() => fixture.prompts.length), 2);
-          }
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.session = "replacement";
-            fixture.update();
-          });
-          await page.locator("#review-draft").waitFor();
-          assert(await page.locator("#send").isDisabled());
-          await page.locator("#review-draft").click();
-          await page.evaluate(() => {
-            fixture.disposition = "rejected";
-          });
-          await page.locator("#send").click();
-          await until(page, () =>
-            document
-              .querySelector("#delivery")
-              .textContent.includes("Session is no longer promptable"),
-          );
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "uncertain delivery\n",
-          );
-          // Main's queued follow-ups keep their session binding in the split UI.
-          await select(1);
-          assert.equal(await page.locator("#prompt-mode").inputValue(), "queue");
-          await page.locator("#prompt").fill("queued follow-up");
-          await page.evaluate(() => {
-            fixture.disposition = "queued";
-            fixture.receipt = undefined;
-          });
-          await page.locator("#send").click();
-          await page.locator("#queued-row").waitFor({ state: "visible" });
-          assert.equal(
-            await page.locator("#queued-text").textContent(),
-            "queued follow-up",
-          );
-          // T-568: this agent needs attention, so the host would refuse a
-          // send: Send now is not offered, and an older host's words stand.
-          assert(await page.locator("#send-now").isHidden());
-          assert.equal(await page.locator("#queued-meta").textContent(), "Queued · waits for idle");
-          assert.equal(await page.locator("#prompt").inputValue(), "");
-          await page.evaluate(() => fixture.channel().close());
-          await until(
-            page,
-            () =>
-              document.querySelector("#connection").textContent === "Connected",
-          );
-          await until(page, () =>
-            document.querySelector("#delivery").textContent.includes("Queued"),
-          );
-          assert.equal(
-            await page.evaluate(
-              () =>
-                fixture.prompts.filter((p) => p.text === "queued follow-up")
-                  .length,
-            ),
-            1,
-          );
-          await page.locator("#prompt").fill("newer draft");
-          await page.evaluate(() => {
-            fixture.holdTakeBack = true;
-          });
-          await page.locator("#take-back").click();
-          await select(0);
-          await page.evaluate(() => fixture.releaseTakeBack());
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "uncertain delivery\n",
-          );
-          await select(1);
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "newer draft",
-          );
-          assert.equal(
-            await page.locator("#returned-text").textContent(),
-            "queued follow-up",
-          );
-          await page.locator("#swap-returned").click();
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "queued follow-up",
-          );
-          assert.equal(
-            await page.locator("#returned-text").textContent(),
-            "newer draft",
-          );
-          // T-568: at a stop a steer would be the dialog's answer: Steer is
-          // off and says why in its own words (T-1312), until the agent
-          // works again.
-          const steer = page.locator('#prompt-mode option[value="steer"]');
-          assert(await steer.evaluate((n) => n.disabled));
-          assert.equal(await steer.textContent(), "Steer · answer first");
-          await page.evaluate(() => {
-            fixture.tickets[1].agent.state = "working";
-            fixture.update();
-          });
-          await until(page, () => document.querySelector('#prompt-mode option[value="steer"]').textContent === "Steer");
-          await delivery("steer");
-          // This seat is Codex's, whose steer waits for the turn's next
-          // step (T-845); the line says so, and Queue's says its own.
-          assert.equal(await page.locator(".mode-help").textContent(), "Goes into this turn at its next step.");
-          await page.evaluate(() => {
-            fixture.disposition = "submitted";
-          });
-          await page.locator("#send").click();
-          await until(page, () =>
-            document
-              .querySelector("#delivery")
-              .textContent.includes("Submitted"),
-          );
-          assert.equal(
-            await page.evaluate(() => fixture.prompts.at(-1).queued),
-            false,
-          );
-          await delivery("queue");
-          await page.locator("#prompt").fill("explicit send now");
-          await page.evaluate(() => {
-            fixture.disposition = "queued";
-          });
-          await page.locator("#send").click();
-          await page.locator("#queued-row").waitFor({ state: "visible" });
-          await page.locator("#prompt").fill("keep this draft");
-          await page.locator("#send-now").click();
-          await until(page, () =>
-            document
-              .querySelector("#delivery")
-              .textContent.includes("Submitted"),
-          );
-          assert.equal(
-            await page.locator("#prompt").inputValue(),
-            "keep this draft",
-          );
-          assert.deepEqual(
-            await page.evaluate(() =>
-              fixture.requests.filter((r) => r.op === "send_now").at(-1),
-            ),
-            { op: "send_now", ticket: "ticket-1", session: "session-1" },
-          );
-          // Search does not change selection; Board exposes tickets without agents.
-          await overview();
-          // A phone searches in Find (T-1208), whose words leave with it; a
-          // wider page keeps the field over its lists.
-          if (size === "phone") {
-            assert.equal(await page.locator("#search").count(), 0, "no field over a phone's Inbox");
-            await mode("find");
-            assert.equal(await page.locator("#list-title").textContent(), "Find");
-            // Find lists tickets and nothing else (T-1208, the person's
-            // decision): no things to do, and no way into Sent from here.
-            assert.equal(await page.locator(".find-do, #find-sent, #find-new, #find-theme").count(), 0);
-            assert.equal(await page.locator('button[data-mode="sent"]').locator("visible=true").count(), 0, "Sent has no tab on a phone");
-            assert(await page.locator(".ticket").count() > 0, "the last few touched, before any words");
-          }
-          await page.locator("#search").fill("nothing-matches");
-          assert.equal(await page.locator(".ticket").count(), 0);
-          if (size === "phone") {
-            assert.match(await page.locator("#tickets").textContent(), /No tickets match your search/);
-            await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-find.png`) });
-          }
-          await page.locator("#search").fill("Agent task 3");
-          if (size !== "phone") await mode("board");
-          if (size !== "phone") {
-            // A column's purpose is its title's hover (T-506): no blurb under
-            // the title and no "empty" line, so every column's cards start level.
-            assert.equal(
-              await page.locator('.column[aria-label="TODO"] .column-label').getAttribute("title"),
-              "for work that can and should be done soon",
-            );
-            assert.equal(await page.locator(".column-about, .column-empty").count(), 0);
-          }
-          await select(3);
-          assert.equal(
-            await page.locator("#agent-state").textContent(),
-            "No agent on this ticket. Start one at your terminal.",
-          );
-          assert.equal(await page.locator("[data-start]").count(), 0, "a host without `start`");
-          assert(await page.locator("#send").isDisabled());
-          await overview();
-          if (size !== "phone") await page.locator("#search").fill("");
-          await mode("agents");
-          if (size === "phone") {
-            await mode("find");
-            assert.equal(await page.locator("#search").inputValue(), "", "Find's words left with it");
-            await mode("agents");
-          }
-          await overview();
-          const lowerRow = page.locator('.ticket[data-id="ticket-20"]');
-          await lowerRow.scrollIntoViewIfNeeded();
-          const listPosition = await page
-            .locator("#tickets")
-            .evaluate((n) => n.scrollTop);
-          await lowerRow.click();
-          await overview();
-          assert(
-            Math.abs(
-              (await page.locator("#tickets").evaluate((n) => n.scrollTop)) -
-                listPosition,
-            ) < 3,
-          );
-          if (size === "phone") {
-            const shortControls = await page.evaluate(() =>
-              [
-                ...document.querySelectorAll(
-                  "button, input:not([type=checkbox]), textarea, select",
-                ),
-              ]
-                .filter(
-                  (n) =>
-                    n.getClientRects().length &&
-                    n.getBoundingClientRect().height < 44,
-                )
-                .map((n) => n.id),
-            );
-            assert.deepEqual(shortControls, []);
-          }
-          await select(2); // long title and 50-line output at every width/theme
-          await page.locator("#prompt").fill("A comfortable composer");
-          // Every theme the terminal has (T-1208) reads at AA on the page.
-          for (const theme of ["graphite", "void", "nord", "mocha", "tokyo", "rose", "gruvbox", "blue", "amber", "green", "ice", "solarized", "latte", "gruvbox-light", "chalk"]) {
-            await page.evaluate((theme) => {
-              document.querySelector(`.theme-tile[data-theme-id="${theme}"]`).click();
-            }, theme);
-            const contrast = await page.evaluate(() => {
-              const style = getComputedStyle(document.documentElement);
-              const luminance = (name) => {
-                const hex = style.getPropertyValue(name).trim().slice(1);
-                const rgb = (
-                  hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex
-                )
-                  .match(/../g)
-                  .map((c) => parseInt(c, 16) / 255)
-                  .map((c) =>
-                    c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4,
-                  );
-                return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-              };
-              const tokens = [
-                ["--ink", "--bg"],
-                ["--ink3", "--s1"],
-                // Muted words on the ground (T-1219): group labels, counts,
-                // the tabs at rest, a card's key and its tag names.
-                ["--ink3", "--bg"],
-                ["--ink2", "--s2"],
-                ["--pri-ink", "--pri"],
-                ["--attn-ink", "--attn"],
-              ].map(([a, b]) => {
-                const x = luminance(a),
-                  y = luminance(b);
-                return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
-              });
-              // Two kinds of text as drawn (T-1219): an option's description
-              // on its option, and the conversation's edge words on the page.
-              const rgb = (text) => {
-                const [r, g, b] = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(text).slice(1).map(Number);
-                return [r, g, b]
-                  .map((c) => c / 255)
-                  .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
-                  .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
-              };
-              const probe = document.createElement("div");
-              probe.innerHTML = '<button class="option"><span class="option-desc">x</span></button><div class="chat"><p class="chat-edge">x</p></div>';
-              document.body.append(probe);
-              const drawn = [
-                [probe.querySelector(".option-desc"), probe.querySelector(".option")],
-                [probe.querySelector(".chat-edge"), document.body],
-              ].map(([text, ground]) => {
-                const x = rgb(getComputedStyle(text).color),
-                  y = rgb(getComputedStyle(ground).backgroundColor);
-                return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
-              });
-              probe.remove();
-              return [...tokens, ...drawn];
-            });
-            assert(
-              contrast.every((ratio) => ratio >= 4.5),
-              `${theme} text contrast: ${contrast}`,
-            );
-            assert(
-              await page.evaluate(
-                () => document.documentElement.scrollWidth <= innerWidth,
-              ),
-            );
-            await page.screenshot({
-              path: path.join(
-                root,
-                "test-results",
-                `${engineName}-${size}-${theme}.png`,
-              ),
-            });
-          }
-          if (size === "desktop") {
-            await page.evaluate(() => {
-              document.documentElement.style.fontSize = "200%";
-            });
-            assert(
-              await page.evaluate(
-                () => document.documentElement.scrollWidth <= innerWidth,
-              ),
-            );
-            await page.locator("#send").scrollIntoViewIfNeeded();
-            const zoomed = await page.locator("#send").boundingBox();
-            assert(
-              zoomed.y >= 0 && zoomed.y + zoomed.height <= viewport.height,
-            );
-            await page.screenshot({
-              path: path.join(root, "test-results", `${engineName}-zoomed.png`),
-            });
-            await page.evaluate(() => {
-              document.documentElement.style.fontSize = "";
-            });
-          }
-          if (size === "phone") {
-            await page.setViewportSize({ width: 390, height: 500 }); // keyboard-sized viewport, not a physical phone claim
-            await page.locator("#prompt").focus();
-            await page.waitForFunction(
-              () =>
-                document.querySelector("#send").getBoundingClientRect()
-                  .bottom <= innerHeight,
-            );
-            const box = await page.locator("#send").boundingBox();
-            assert(box.y >= 0 && box.y + box.height <= 500);
-            assert.equal(
-              await page
-                .locator("#prompt")
-                .evaluate((n) => getComputedStyle(n).fontSize),
-              "16px",
-            );
-            assert(box.height >= 44);
-            await page.screenshot({
-              path: path.join(
-                root,
-                "test-results",
-                `${engineName}-keyboard-viewport.png`,
-              ),
-            });
-            await page.setViewportSize(viewport);
-          }
-          // Settings is a dialog (T-548): the sidebar's foot opens it, and so
-          // does the pill below the desktop breakpoint; the hops are in it.
-          await overview();
-          const settings = page.locator("#settings-sheet");
-          assert(!(await page.locator("#about .hops").isVisible()));
-          if (size === "desktop") {
-            const foot = await page.locator("#settings").boundingBox();
-            const side = await page.locator("#sidebar").boundingBox();
-            assert(side.y + side.height - (foot.y + foot.height) < 40, "Settings sits at the sidebar's foot");
-            await page.locator("#settings").click();
-          } else {
-            await page.locator("#board-menu").click();
-            await page.locator("#settings").click();
-            await page.locator("#sidebar").waitFor({ state: "hidden" });
-          }
-          await settings.waitFor({ state: "visible" });
-          assert.equal(await settings.locator("#about .hop").count(), 3);
-          // Settings is rows (T-1208); the Theme row opens the picker's own
-          // page, and its Back is the rows again.
-          for (const id of ["settings-theme", "density-compact", "alerts", "forget"])
-            assert(await settings.locator(`#${id}`).isVisible(), id);
-          assert(!(await settings.locator("#theme-follow").isVisible()), "the picker is its own page");
-          await settings.locator("#settings-theme").click();
-          assert.equal(await page.locator("#settings-heading").textContent(), "Theme");
-          assert(await settings.locator("#theme-follow").isVisible());
-          assert(await settings.locator('.theme-tile[data-theme-id="nord"]').isVisible());
-          assert(!(await settings.locator("#forget").isVisible()));
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings-theme.png`) });
-          await settings.locator("#settings-back").click();
-          assert.equal(await page.locator("#settings-heading").textContent(), "Settings");
-          assert(await settings.locator("#forget").isVisible());
-          if (size === "phone")
-            assert.deepEqual(await settings.locator("button, input:not([type=checkbox])").evaluateAll((all) =>
-              all.filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44).map((n) => n.id || n.textContent)), []);
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-settings.png`) });
-          await page.keyboard.press("Escape");
-          await settings.waitFor({ state: "hidden" });
-          if (size !== "desktop") {
-            await page.locator(".pill-button").click();
-            await settings.waitFor({ state: "visible" });
-            await page.locator("#settings-done").click();
-            await settings.waitFor({ state: "hidden" });
-          }
-          if (size === "desktop") {
-            // The sidebar folds to a rail that stays folded across a reload,
-            // and Settings stays at its foot as an icon.
-            await page.locator("#side-toggle").click();
-            await until(page, () => document.querySelector("#shell").dataset.side === "rail");
-            assert((await page.locator("#sidebar").boundingBox()).width < 80);
-            assert(await page.locator('#sidebar .mode[data-mode="board"]').isVisible());
-            assert(await page.locator("#settings").isVisible());
-            await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-rail.png`) });
-          }
-          await page.reload();
-          // A reload lands on the list (T-742); a wide screen's pane keeps
-          // the selection.
-          if (size === "phone") {
-            await page.locator('.ticket[data-id="ticket-2"]').waitFor();
-            assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "a reload opens no ticket");
-          } else {
-            await until(page, () =>
-              document.querySelector("#detail .selection-key")?.textContent === "T-2",
-            );
-          }
-          assert(await page.locator("#onboarding").isHidden());
-          assert.equal(
-            await page.locator("html").getAttribute("data-theme"),
-            "chalk",
-          );
-          if (size === "desktop") {
-            assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.side), "rail");
-            await page.locator("#side-toggle").click();
-            await until(page, () => document.querySelector("#shell").dataset.side === "full");
-          }
-          assert.equal(await page.locator("#prompt").inputValue(), "");
-          // M2 cards keep untrusted tool/plan text inert and bind each action
-          // to the exact projected session and request.
-          await page.evaluate(() => {
-            fixture.tickets = [{ id: "m2", key: "T-M2", title: "Needs your answer", column: "IN PROGRESS",
-              agent: { session: "m2-session", provider: "claude", state: "needs attention", promptable: true,
-                permission: { request: "permission-1", tool: "Bash", input: { command: "<script>window.bad=true</script>" }, expires_at: Date.now() + 40000 } } }];
-            fixture.update();
-          });
-          if (size === "phone" && !(await page.locator("#back").isVisible())) await page.locator("#tickets button").first().click();
-          await until(page, () => document.querySelector("#attention").textContent.includes("Approve once"));
-          assert.equal(await page.locator("#attention script").count(), 0);
-          await attention("Approve once").click();
-          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
-            { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
-          // The card counts the request's time down, and Deny and say why
-          // (T-1208) is a deny as any other, after which the message box
-          // takes the cursor for the words.
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.permission = { request: "permission-why", tool: "Bash", input: { command: "rm -r build" }, expires_at: Date.now() + 601000 };
-            fixture.update();
-          });
-          await until(page, () => /^(10:0\d|9:5\d) left$/.test(document.querySelector("#attention .time-left")?.textContent || ""));
-          await until(page, () => !document.querySelector("#deny-why").disabled);
-          await page.locator("#deny-why").click();
-          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
-            { op: "permission", request: "permission-why", decision: "deny", ticket: "m2", session: "m2-session" });
-          await until(page, () => document.activeElement?.id === "prompt");
-          assert.equal(await page.locator("#prompt").getAttribute("placeholder"), "Say what to do differently…");
-          // T-1219 round 2: a permission with fields past its description is
-          // answered on its ticket page, where each is drawn; its Inbox card
-          // names how many and offers no Approve once.
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.permission = { request: "permission-2", tool: "Bash", input: { command: "ls", cwd: "/repo", force: true }, expires_at: Date.now() + 40000 };
-            fixture.update();
-          });
-          if (size === "phone") await page.locator("#back").click();
-          await page.locator('.mode[data-mode="agents"]:visible').first().click();
-          const fieldsCard = page.locator('.need:has(.ticket[data-id="m2"])');
-          await until(page, () => /2 more fields/.test(document.querySelector(".need .need-more")?.textContent || ""));
-          assert.equal(await fieldsCard.getByRole("button", { name: "Approve once" }).count(), 0);
-          await fieldsCard.locator(".need-more").click();
-          await until(page, () => document.querySelectorAll("#attention .request-field").length === 2 && document.querySelector("#attention").textContent.includes("Approve once"));
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.permission = null;
-            fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",
-              multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };
-            fixture.update();
-          });
-          await attention("Green").click();
-          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "choice", index: 1 });
-          // T-567: keys nothing confirmed are one tick, and the question
-          // stays answerable; a reason keeps it answerable too; only the
-          // agent's own hook makes two ticks.
-          const receiptLine = () => page.evaluate(() => ({
-            text: document.querySelector("#delivery").textContent,
-            ticks: document.querySelectorAll("#delivery .tick path").length,
-          }));
-          await until(page, () => document.querySelector("#delivery").textContent.includes("not confirmed"));
-          assert.equal((await receiptLine()).ticks, 1);
-          assert(await attention("Green").isEnabled());
-          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "label_wrapped" }; });
-          await attention("Blue").click();
-          await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
-          assert.match((await receiptLine()).text, /the option does not read as one row on the screen · try again, or answer at your terminal/);
-          assert.equal((await receiptLine()).ticks, 0);
-          assert(await attention("Blue").isEnabled());
-          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
-          await attention("Blue").click();
-          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Blue”."));
-          assert.equal((await receiptLine()).ticks, 2);
-          await page.evaluate(() => { fixture.dialogReply = undefined; });
-          await page.locator("#attention input").fill("Purple");
-          await page.evaluate(() => fixture.update());
-          assert.equal(await page.locator("#attention input").inputValue(), "Purple");
-          await attention("Send answer").click();
-          assert.equal(await page.locator("#attention input").inputValue(), "Purple");
-          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "text", text: "Purple" });
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.dialog = { request: "plan-1", kind: "plan", markdown: "# Plan\\nReview <img src=x onerror=alert(1)> then implement." };
-            fixture.update();
-          });
-          await until(page, () => document.querySelector("#attention").textContent.includes("Review plan"));
-          assert.equal(await page.locator("#attention img").count(), 0);
-          await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-plan.png`) });
-          await attention("Reject plan").click();
-          assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
-          // T-844: the folder trust dialog rides its own field, with one
-          // button, and its answer is the dialog road's `accept`.
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.dialog = undefined;
-            fixture.tickets[0].agent.trust = { request: "trust-1", folder: "/Users/me/code/app" };
-            fixture.update();
-          });
-          await until(page, () => document.querySelector("#attention").textContent.includes("Trust this folder"));
-          assert((await page.locator("#attention").textContent()).includes("/Users/me/code/app"));
-          assert.equal(await page.locator("#attention button").count(), 1);
-          await attention("Yes, I trust this folder").click();
-          assert.deepEqual(
-            await page.evaluate(() => { const r = fixture.requests.filter((r) => r.op === "dialog").at(-1); return [r.request, r.response]; }),
-            ["trust-1", { answer: "accept" }]);
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.trust = undefined;
-            fixture.update();
-          });
-          // T-568: words queued for the turn never lock the answer. At the
-          // question Steer is off, so the words queue; the receipt says whose
-          // words they replaced, and the answer still goes.
-          await page.evaluate(() => {
-            fixture.tickets[0].agent.dialog = { request: "question-2", kind: "questions", questions: [{ question: "Which shade?", header: "Shade",
-              multiSelect: false, options: [{ label: "Light", description: "" }, { label: "Dark", description: "" }] }] };
-            fixture.disposition = "queued";
-            fixture.replaced = { by: "T-411" };
-            fixture.update();
-          });
-          await until(page, () => document.querySelector("#attention").textContent.includes("Which shade?"));
-          await page.locator("#prompt").fill("after the answer");
-          assert.equal(await page.locator('#prompt-mode option[value="steer"]').textContent(), "Steer · answer first");
-          await page.locator("#send").click();
-          await page.locator("#queued-row").waitFor({ state: "visible" });
-          assert.equal(await page.evaluate(() => fixture.prompts.at(-1).queued), true);
-          await until(page, () => document.querySelector("#delivery").textContent.includes("It replaced T-411’s agent’s queued words."));
-          assert(await page.locator("#send-now").isHidden());
-          assert(await attention("Dark").isEnabled(), "a queued prompt does not lock the answer");
-          await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
-          await attention("Dark").click();
-          await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Dark”."));
-          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1)),
-            { op: "dialog", request: "question-2", response: { answer: "choice", index: 1 }, ticket: "m2", session: "m2-session" });
-          // The row says whose words wait and on what, as the host says it.
-          const queuedMeta = (queue, agent) => page.evaluate(([queue, agent]) => {
-            Object.assign(fixture.tickets[0], { queue });
-            Object.assign(fixture.tickets[0].agent, agent);
-            fixture.update();
-          }, [queue, agent]);
-          const meta = (words) => until(page, (w) => document.querySelector("#queued-meta").textContent === w, words);
-          await queuedMeta({ held: "agent asked", asking: ["T-M2"] }, {});
-          await meta("held · agent asked · you answer first");
-          await page.screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-queued-at-question.png`) });
-          await queuedMeta({ held: "agent asked" }, { state: "idle", dialog: null });
-          await meta("held · agent asked · you send");
-          assert(await page.locator("#send-now").isVisible());
-          await queuedMeta({ by: "T-411" }, {});
-          await meta("T-411's agent · you send");
-          await queuedMeta({ waits: ["T-3"], asking: ["T-3"] }, {});
-          await meta("queued · after T-3's answer");
-          await page.evaluate(() => {
-            fixture.dialogReply = undefined;
-            fixture.replaced = undefined;
-            fixture.tickets[0].queued = null;
-            fixture.tickets[0].queue = undefined;
-            fixture.update();
-          });
-          // Connected phone browsers still receive an in-page alert when the
-          // platform cannot construct a system Notification.
-          await page.evaluate(async () => {
-            const { showAlert } = await import("./awareness.js");
-            showAlert({ result: "awareness", ticket: "other", alert: true,
-              awareness: { phase: "completed", headline: "T-OTHER · <script>inert</script>", deepLink: "#ticket=other" } },
-              "m2", (ticket) => { fixture.alertTarget = ticket; });
-          });
-          assert.equal(await page.locator("#awareness script").count(), 0);
-          await page.locator("#awareness button").first().click();
-          assert.equal(await page.evaluate(() => fixture.alertTarget), "other");
-          assert(await page.locator("#awareness").isHidden());
-          // Swiped away like a phone's own notification (T-628): sideways or
-          // up, and the button pressed under the finger opens nothing.
-          const alertOther = () => page.evaluate(async () => {
-            const { showAlert } = await import("./awareness.js");
-            fixture.alertTarget = undefined;
-            showAlert({ result: "awareness", ticket: "other", alert: true,
-              awareness: { phase: "completed", headline: "T-OTHER · done", deepLink: "#ticket=other" } },
-              "m2", (ticket) => { fixture.alertTarget = ticket; });
-          });
-          const banner = page.locator("#awareness");
-          await alertOther();
-          await swipe(page, banner, 24, 4);
-          assert(await banner.isVisible(), "a short drag snaps back");
-          assert.equal(await banner.evaluate((el) => el.style.translate), "");
-          await swipe(page, banner, 260, 6);
-          await until(page, () => document.querySelector("#awareness").hidden);
-          assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
-          await alertOther();
-          assert.equal(await banner.evaluate((el) => el.style.translate), "", "the last flight is undone");
-          await swipe(page, banner, 0, -60);
-          await until(page, () => document.querySelector("#awareness").hidden);
-          assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
-          // A finished turn goes by itself after a few seconds (T-1268); a
-          // call for the person's input stays until it is answered or put away.
-          // The phone alone: the wait is the same at every size.
-          if (size === "phone") {
-          await alertOther();
-          await page.waitForTimeout(5400);
-          assert(await banner.isHidden(), "a finished turn's banner passes");
-          await page.evaluate(async () => {
-            const { showAlert } = await import("./awareness.js");
-            showAlert({ result: "awareness", ticket: "other", alert: true,
-              awareness: { phase: "waiting_for_input", headline: "T-OTHER · asks", deepLink: "#ticket=other" } },
-              "m2", () => {});
-          });
-          await page.waitForTimeout(5400);
-          assert(await banner.isVisible(), "a call for input stays");
-          await page.locator("#awareness button").nth(1).click();
-          assert(await banner.isHidden());
-          }
-          // Zero and one ticket snapshots; selected identity falls back cleanly.
-          await page.evaluate(() => {
-            fixture.tickets = [];
-            fixture.update();
-          });
-          await until(page, () =>
-            document
-              .querySelector("#tickets")
-              .textContent.includes("no tickets yet"),
-          );
-          await page.evaluate(() => {
-            fixture.tickets = [
-              {
-                id: "only",
-                key: "T-99",
-                title: "Only ticket",
-                column: "TODO",
-                agent: null,
-              },
-            ];
-            fixture.update();
-          });
-          await until(page, () =>
-            document
-              .querySelector("#selection")
-              .textContent.includes("Only ticket"),
-          );
-          await page.evaluate(() => fixture.reply({ result: "revoked" }));
-          await until(page, () =>
-            document
-              .querySelector("#connection")
-              .textContent.includes("Access revoked"),
-          );
-          assert.equal(await page.locator("#preview").textContent(), "");
-          assert.equal(await page.locator("#queued-text").textContent(), "");
-          assert.equal(await page.locator("#returned-text").textContent(), "");
-          assert.equal(await page.locator("#tickets").textContent(), "");
-          await page.reload();
-          await until(page, () =>
-            document
-              .querySelector("#connection")
-              .textContent.includes("Access revoked"),
-          );
-          assert(await page.locator("#onboarding").isVisible());
-          assert.deepEqual(errors, []);
-          console.log(
-            `${engineName} ${size}: navigation, drafts, scrolling, receipts, reconnect, replacement, themes, empty and revoked passed`,
-          );
-        } catch (error) {
-          await page.screenshot({
-            path: path.join(
-              root,
-              "test-results",
-              `${engineName}-${size}-failure.png`,
-            ),
-          });
-          throw error;
-        } finally {
-          await context.close();
+async function navigationFlow(browser, engineName, size, viewport, fullThemes) {
+  const context = await browser.newContext({
+    viewport,
+    colorScheme: "dark",
+    reducedMotion: "reduce",
+    // `route` does not see a service worker's requests.
+    serviceWorkers: "block",
+  });
+  await context.addInitScript(fixture);
+  await context.route("**/pkg/mesimon_web.js", (route) =>
+    route.fulfill({ contentType: "text/javascript", body: fakeCrypto }),
+  );
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const overview = async () => {
+    if (size === "phone" && (await page.locator("#back").isVisible())) {
+      await page.locator("#back").click();
+      await page.locator("#list-title").waitFor();
+    }
+  };
+  const select = async (id) => {
+    await overview();
+    await page.locator(`.ticket[data-id="ticket-${id}"]`).click();
+  };
+  const mode = (name) => pressMode(page, name);
+  // The delivery pill sits in the box's bar (T-1208).
+  const delivery = (value) => page.locator("#prompt-mode").selectOption(value);
+  const attention = (name) =>
+    page.locator("#attention").getByRole("button", { name, exact: true });
+  try {
+    await page.goto(origin);
+    await until(page, () => !document.querySelector("#pair").disabled);
+    assert(await page.locator("#shell").isHidden());
+    await page
+      .getByLabel("Pairing code", { exact: true })
+      .fill("fixture-pair-code");
+    await page
+      .getByRole("button", { name: "Connect", exact: true })
+      .click();
+    await page.locator('.ticket[data-id="ticket-0"]').waitFor();
+    // The projection's newer facts (T-497): how long an agent has been
+    // at it, the step it is on or its last reply line, and tags.
+    await page.evaluate(() => {
+      fixture.tickets[0].tags = [{ group: 1, name: "BUG", tint: 0 }];
+      fixture.tickets[1].tags = [{ group: 1, name: "FEATURE", tint: 6 }];
+      Object.assign(fixture.tickets[0].agent, { since: Date.now() - 5 * 60000, doing: "Bash(cargo test -p mesimon-daemon)" });
+      Object.assign(fixture.tickets[4].agent, { since: Date.now() - 40 * 60000, said: "Fixed, and three tests pass." });
+      Object.assign(fixture.tickets[6].agent, { state: "idle", since: Date.now() - 2 * 3600000 });
+      fixture.update();
+    });
+    await until(page, () =>
+      document.querySelector('.ticket[data-id="ticket-0"] .headline-step')?.textContent.includes("cargo test"),
+    );
+    // The age stands in the card's corner, as the TUI's (T-855), and
+    // the agent's state is its mark, never words (T-886).
+    assert.equal(await page.locator('.ticket[data-id="ticket-0"] .spin').count(), 1);
+    assert.equal(await page.locator('.ticket[data-id="ticket-0"] .card-age').textContent(), "5m");
+    assert.equal(await page.locator('.ticket[data-id="ticket-4"] .headline').textContent(), "Fixed, and three tests pass.");
+    assert.equal(await page.locator('.ticket[data-id="ticket-4"] .mark-idle').count(), 1);
+    assert.equal(await page.locator('.ticket[data-id="ticket-4"] .card-age').textContent(), "40m");
+    // Now lists a stopped agent for an hour (T-560); the Board, always.
+    assert.equal(
+      await page.locator('.group:has(.ticket[data-id="ticket-4"]) .group-label').textContent(),
+      "Idle1",
+    );
+    assert.equal(await page.locator('.ticket[data-id="ticket-6"]').count(), 0);
+    // A ticket created within the hour is listed under the agents
+    // (T-668), and counted as new.
+    await page.evaluate(() => {
+      fixture.tickets.push({ id: "ticket-new", key: "T-99", title: "Just filed", column: "TODO", agent: null, created: Date.now() - 60000 });
+      fixture.update();
+    });
+    await page.locator('.ticket[data-id="ticket-new"]').waitFor();
+    assert.equal(
+      await page.locator('.group:has(.ticket[data-id="ticket-new"]) .group-label').textContent(),
+      "Recently created1",
+    );
+    assert.match(await page.locator("#count").textContent(), / · 1 new$/);
+    // A ticket's shells are the terminal's alone (T-1208): a shell open
+    // on it, busy or at its prompt, draws nothing on its card.
+    const card = (id) => `.ticket[data-id="${id}"]`;
+    const glyphs = (id) =>
+      page.locator(`${card(id)} .title-glyph`).evaluateAll((ns) =>
+        ns.map((n) => [n.parentElement.classList.contains("ticket-title"), n.querySelector(".spin") ? "spin" : n.firstElementChild.classList[1]]),
+      );
+    await page.evaluate(() => {
+      fixture.tickets.at(-1).shell = { busy: true };
+      fixture.tickets[4].shell = { busy: true };
+      fixture.update();
+    });
+    await page.locator(`${card("ticket-4")} .mark-idle`).waitFor();
+    assert.deepEqual(await glyphs("ticket-new"), [], "a busy shell is no work of the agent's");
+    assert.deepEqual(await glyphs("ticket-4"), [[true, "mark-idle"]]);
+    assert.equal(await page.locator(".shell-mark").count(), 0);
+    await page.evaluate(() => {
+      delete fixture.tickets[4].shell;
+      fixture.tickets.pop();
+      fixture.update();
+    });
+    await until(page, () => !document.querySelector('.ticket[data-id="ticket-new"]'));
+    // A ticket is one card in Now and on the Board (T-533): its tags
+    // show in both, a needs-you card wears the same face, and Now adds
+    // only the column, which the Board says by where the card stands.
+    assert.equal(await page.locator('.ticket[data-id="ticket-0"] .tag').textContent(), "BUG");
+    assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "IN PROGRESS·T-0");
+    assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .tag').textContent(), "FEATURE");
+    assert.equal(await page.locator('.need .ticket[data-id="ticket-1"] .mark-attn').count(), 1);
+    // No word on a card breaks across lines (T-855): the tags, the
+    // crown's word, the column, the key and the corner each keep to
+    // one, on a card that carries all of them at once, and the key's
+    // line stays inside the card (T-886).
+    const title0 = await page.evaluate(() => fixture.tickets[0].title);
+    await page.evaluate(() => {
+      Object.assign(fixture.tickets[0], {
+        title: "pictures inside ask agent prompt, and the ones a phone sends",
+        tags: [{ group: 1, name: "IMPROVEMENT", tint: 0 }, { group: 3, name: "REMOTE CONTROL", tint: 2 }],
+        workspace: { kind: "worktree", branch: "msmn/T-0-pictures", state: "behind" },
+        crowned: { action: "moved", by: "T-3", at: Date.now() - 120000 },
+      });
+      fixture.update();
+    });
+    await page.locator('#tickets .ticket[data-id="ticket-0"] .wt-mark').waitFor();
+    await page.locator('#tickets .ticket[data-id="ticket-0"] .ticket-meta .crown-word').waitFor();
+    assert.ok(
+      await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
+        card.querySelector(".ticket-meta").getBoundingClientRect().right <= card.getBoundingClientRect().right),
+      "the key's line ran out of the card",
+    );
+    const broken = await page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((card) =>
+      [...card.querySelectorAll(".tag, .ticket-meta, .card-corner")].flatMap((el) => {
+        const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const words = [];
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+          if (n.parentElement.closest(".sr-only") || !n.textContent.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(n);
+          if (range.getClientRects().length > 1) words.push(n.textContent);
         }
-        await ticketFlow(browser, engineName, size, viewport);
-        await startFlow(browser, engineName, size, viewport);
-        await tierFlow(browser, engineName, size, viewport);
-        await editFlow(browser, engineName, size, viewport);
-        await workspaceFlow(browser, engineName, size, viewport);
-        await archiveFlow(browser, engineName, size, viewport);
-        await crownFlow(browser, engineName, size, viewport);
-        await batchFlow(browser, engineName, size, viewport);
-        await notesFlow(browser, engineName, size, viewport);
-        await chatFlow(browser, engineName, size, viewport);
-        await terminalFlow(browser, engineName, size, viewport);
-        await shelfFlow(browser, engineName, size, viewport);
-        await mailPromptFlow(browser, engineName, size, viewport);
+        return words;
+      }),
+    );
+    assert.deepEqual(broken, [], "a word on a card wrapped onto a second line");
+    await page.evaluate((title) => {
+      Object.assign(fixture.tickets[0], { title, tags: [{ group: 1, name: "BUG", tint: 0 }], workspace: undefined, crowned: undefined });
+      fixture.update();
+    }, title0);
+    await until(page, () => !document.querySelector('#tickets .ticket[data-id="ticket-0"] .wt-mark'));
+    const anatomy = () =>
+      page.locator('#tickets .ticket[data-id="ticket-0"]').evaluate((n) =>
+        [n, ...n.querySelectorAll("[class]")].map((c) => c.getAttribute("class")),
+      );
+    const inNow = await anatomy();
+    await mode("board");
+    if (size === "phone") await page.locator('.column-tab[data-column="IN PROGRESS"]').click();
+    assert.deepEqual(await anatomy(), inNow);
+    // A glyph never moves a card's lower lines (T-948): two neighbouring
+    // cards, one with the agent's mark and a shell's glyph and one with
+    // neither, hold their tags' line at the same place in the card, and
+    // side by side, in two columns, at the same y.
+    const rows = (ids) =>
+      page.evaluate(
+        (ids) =>
+          ids.map((id) => {
+            const c = document.querySelector(`#tickets .ticket[data-id="${id}"]`).getBoundingClientRect();
+            const l = document.querySelector(`#tickets .ticket[data-id="${id}"] .card-line`).getBoundingClientRect();
+            return { card: c.top, x: l.left - c.left, dy: l.top - c.top, y: l.top, h: c.height, left: c.left };
+          }),
+        ids,
+      );
+    const pair = (other) =>
+      page.evaluate((other) => {
+        const card = (id, title, column, agent, shell) => ({ id, key: id === "glyph-on" ? "T-90" : "T-91", title, column, agent, shell,
+          tags: [{ group: 1, name: "BUG", tint: 0 }] });
+        fixture.tickets.unshift(
+          card("glyph-on", "Glyph", "IN PROGRESS", { session: "s-on", provider: "claude", state: "working", promptable: true }, { busy: false }),
+          card("glyph-off", "Glyph", other, null, undefined),
+        );
+        fixture.update();
+      }, other);
+    const unpair = () =>
+      page.evaluate(() => {
+        fixture.tickets.splice(0, 2);
+        fixture.update();
+      });
+    await pair("IN PROGRESS");
+    await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
+    assert.deepEqual(await glyphs("glyph-on"), [[true, "spin"]]);
+    assert.deepEqual(await glyphs("glyph-off"), []);
+    {
+      const [on, off] = await rows(["glyph-on", "glyph-off"]);
+      assert.deepEqual([on.x, on.dy, on.h], [off.x, off.dy, off.h], "the same lines in the same places, glyph or none");
+    }
+    await unpair();
+    if (size === "desktop") {
+      await pair("TODO");
+      await page.locator('#tickets .ticket[data-id="glyph-off"]').waitFor();
+      const [on, off] = await rows(["glyph-on", "glyph-off"]);
+      assert.notEqual(on.left, off.left, "two columns, side by side");
+      assert.deepEqual([on.card, on.y], [off.card, off.y], "the tags' lines at the same y");
+      await unpair();
+    }
+    await until(page, () => !document.querySelector('#tickets .ticket[data-id="glyph-on"]'));
+    if (size === "phone") {
+      // A swipe across the Board steps the columns (T-624): left for
+      // the next, right for the previous, nothing past either end, and
+      // a mostly vertical drag is a scroll.
+      const swipe = (dx, dy = 0) =>
+        page.locator("#tickets").evaluate(
+          (node, [dx, dy]) => {
+            const box = node.getBoundingClientRect();
+            const x = box.left + box.width / 2;
+            const y = box.top + 120;
+            const touch = (cx, cy) => ({ clientX: cx, clientY: cy, identifier: 1, target: node });
+            const fire = (type, touches, changed) => {
+              const e = new Event(type, { bubbles: true, cancelable: true });
+              Object.defineProperty(e, "touches", { value: touches });
+              Object.defineProperty(e, "changedTouches", { value: changed });
+              node.dispatchEvent(e);
+            };
+            const start = touch(x, y);
+            fire("touchstart", [start], [start]);
+            fire("touchend", [], [touch(x + dx, y + dy)]);
+          },
+          [dx, dy],
+        );
+      const pressed = () => page.locator('.column-tab[aria-pressed="true"]').getAttribute("data-column");
+      assert.equal(await page.locator("#tickets").evaluate((n) => getComputedStyle(n).touchAction), "pan-y pinch-zoom");
+      await swipe(-120);
+      await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "DONE");
+      await swipe(-120);
+      await swipe(30, -200);
+      await swipe(-20);
+      assert.equal(await pressed(), "DONE", "no column past the last, and a scroll or a nudge is not a swipe");
+      await swipe(120);
+      await swipe(120);
+      await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "TODO");
+      await swipe(120);
+      assert.equal(await pressed(), "TODO", "no column before the first");
+      await swipe(-120);
+      await until(page, () => document.querySelector('.column-tab[aria-pressed="true"]')?.dataset.column === "IN PROGRESS");
+      assert.deepEqual(await anatomy(), inNow);
+    }
+    assert.equal(await page.locator('.ticket[data-id="ticket-0"] .ticket-meta').textContent(), "T-0");
+    assert.equal(await page.locator('.ticket[data-id="ticket-6"] .mark-idle').count(), 1);
+    assert.equal(await page.locator('.ticket[data-id="ticket-6"] .card-age').textContent(), "2h");
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-board.png`) });
+    await mode("agents");
+    await page.locator(".need").first().waitFor();
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-now.png`) });
+    await select(0);
+    assert.match(await page.locator("#detail .chips").textContent(), /BUG/);
+    // The heading is the title alone; the key sits at the right of the
+    // tags' line (T-510), and a tag wears its tint as the square before
+    // its name (T-1208). No provider chip: the shin and the output say so.
+    assert.equal(await page.locator("#detail .selection-key").textContent(), "T-0");
+    assert(!(await page.locator("#selection").textContent()).endsWith("T-0"), "the key left the heading");
+    assert.deepEqual(await page.locator("#detail .chips .chip").allTextContents(), ["IN PROGRESS"]);
+    assert.equal(await page.locator("#detail .agent-line").count(), 0, "a seated agent needs no line");
+    const [tagGround, tint] = await page.locator("#detail .chips .tag.tint-0").evaluate((n) => {
+      const hex = getComputedStyle(document.documentElement).getPropertyValue("--tag-0").trim().slice(1);
+      const [r, g, b] = hex.match(/../g).map((c) => parseInt(c, 16));
+      return [getComputedStyle(n, "::before").backgroundColor, `rgb(${r}, ${g}, ${b})`];
+    });
+    assert.equal(tagGround, tint);
+    await until(page, () =>
+      document.querySelector("#preview").textContent.includes("line 49"),
+    );
+    assert.equal(await page.locator("#preview script").count(), 0);
+    // The pane as a screen (T-506): the host's width sizes the type,
+    // the legend is the time alone, and there is no wrap switch.
+    assert.equal(await page.locator("#preview").evaluate((n) => n.style.getPropertyValue("--cols")), "132");
+    assert.equal(await page.locator("#preview .screen-rule").count(), 1);
+    assert.equal(await page.locator("#wrap").count(), 0);
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-ticket.png`) });
+    // No legend over the output (T-626): the connection strip says
+    // when it is stale, and an older host has no view switch.
+    assert.equal(await page.locator(".output .label").count(), 0);
+    assert.equal(await page.locator("#output-view").count(), 0);
+    await page.locator("#prompt").fill("draft for the first agent");
+    await select(1);
+    assert.equal(await page.locator("#prompt").inputValue(), "");
+    await page.locator("#prompt").fill("draft for the second agent");
+    await select(0);
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "draft for the first agent",
+    );
+    // A periodic 50-line window must not dislodge a reader who scrolled up.
+    await page.locator("#preview").evaluate((n) => {
+      n.scrollTop = 100;
+      n.dispatchEvent(new Event("scroll"));
+    });
+    const oldOutput = await page.locator("#preview").textContent();
+    await page.evaluate(() => {
+      fixture.lines = fixture.lines.map((line) => `new ${line}`);
+    });
+    await until(page, () =>
+      document
+        .querySelector("#latest")
+        .textContent.includes("New preview"),
+    );
+    assert.equal(await page.locator("#preview").textContent(), oldOutput);
+    await select(1);
+    await select(0);
+    assert(
+      Math.abs(
+        (await page.locator("#preview").evaluate((n) => n.scrollTop)) -
+          100,
+      ) < 3,
+    );
+    await page.locator("#latest").click();
+    assert.match(
+      await page.locator("#preview").textContent(),
+      /^new line/,
+    );
+    // A delayed reply belongs to its original target, even after switching.
+    await page.evaluate(() => {
+      fixture.disposition = "hold";
+    });
+    await page.locator("#send").click();
+    await select(1);
+    // Reconnect resolves the original receipt; second agent's draft stays intact.
+    await page.evaluate(() => {
+      fixture.receipt = "submitted";
+      fixture.channel().close();
+    });
+    await until(
+      page,
+      () =>
+        document.querySelector("#connection").textContent === "Connected",
+    );
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "draft for the second agent",
+    );
+    await select(0);
+    await until(page, () =>
+      document
+        .querySelector("#delivery")
+        .textContent.includes("Submitted"),
+    );
+    assert.equal(await page.locator("#prompt").inputValue(), "");
+    assert.equal(await page.evaluate(() => fixture.prompts.length), 1);
+    // Lost receipt: retain text, query once connected, never replay input.
+    // On a computer Shift+Enter breaks the line and Enter sends (T-1267).
+    await page.locator("#prompt").fill("uncertain delivery");
+    await page.locator("#prompt").press("Shift+Enter");
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "uncertain delivery\n",
+    );
+    await page.evaluate(() => {
+      fixture.disposition = "disconnect";
+      fixture.receipt = "unknown";
+    });
+    await page.locator("#prompt").press("Enter");
+    await until(page, () =>
+      document
+        .querySelector("#delivery")
+        .textContent.includes("Delivery unknown"),
+    );
+    assert(await page.locator("#send").isDisabled());
+    assert(await page.locator("#preview").isVisible());
+    await until(
+      page,
+      () =>
+        document.querySelector("#connection").textContent === "Connected",
+    );
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "uncertain delivery\n",
+    );
+    assert.equal(await page.evaluate(() => fixture.prompts.length), 2);
+    if (engineName === "chromium" && size === "desktop") {
+      // Silent host sleep: an open socket alone is not proof of freshness.
+      await page.evaluate(() => {
+        fixture.holdAll = true;
+      });
+      // The relay answered and the terminal fell silent: the retry's
+      // line says the terminal is away (T-1219).
+      await until(page, () =>
+        /Reconnecting|Trying again/.test(document.querySelector("#connection").textContent),
+      );
+      assert(await page.locator("#send").isDisabled());
+      await page.evaluate(() => {
+        fixture.holdAll = false;
+      });
+      await until(
+        page,
+        () =>
+          document.querySelector("#connection").textContent ===
+          "Connected",
+      );
+      assert.equal(await page.evaluate(() => fixture.prompts.length), 2);
+    }
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.session = "replacement";
+      fixture.update();
+    });
+    await page.locator("#review-draft").waitFor();
+    assert(await page.locator("#send").isDisabled());
+    await page.locator("#review-draft").click();
+    await page.evaluate(() => {
+      fixture.disposition = "rejected";
+    });
+    await page.locator("#send").click();
+    await until(page, () =>
+      document
+        .querySelector("#delivery")
+        .textContent.includes("Session is no longer promptable"),
+    );
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "uncertain delivery\n",
+    );
+    // Main's queued follow-ups keep their session binding in the split UI.
+    await select(1);
+    assert.equal(await page.locator("#prompt-mode").inputValue(), "queue");
+    await page.locator("#prompt").fill("queued follow-up");
+    await page.evaluate(() => {
+      fixture.disposition = "queued";
+      fixture.receipt = undefined;
+    });
+    await page.locator("#send").click();
+    await page.locator("#queued-row").waitFor({ state: "visible" });
+    assert.equal(
+      await page.locator("#queued-text").textContent(),
+      "queued follow-up",
+    );
+    // T-568: this agent needs attention, so the host would refuse a
+    // send: Send now is not offered, and an older host's words stand.
+    assert(await page.locator("#send-now").isHidden());
+    assert.equal(await page.locator("#queued-meta").textContent(), "Queued · waits for idle");
+    assert.equal(await page.locator("#prompt").inputValue(), "");
+    await page.evaluate(() => fixture.channel().close());
+    await until(
+      page,
+      () =>
+        document.querySelector("#connection").textContent === "Connected",
+    );
+    await until(page, () =>
+      document.querySelector("#delivery").textContent.includes("Queued"),
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          fixture.prompts.filter((p) => p.text === "queued follow-up")
+            .length,
+      ),
+      1,
+    );
+    await page.locator("#prompt").fill("newer draft");
+    await page.evaluate(() => {
+      fixture.holdTakeBack = true;
+    });
+    await page.locator("#take-back").click();
+    await select(0);
+    await page.evaluate(() => fixture.releaseTakeBack());
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "uncertain delivery\n",
+    );
+    await select(1);
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "newer draft",
+    );
+    assert.equal(
+      await page.locator("#returned-text").textContent(),
+      "queued follow-up",
+    );
+    await page.locator("#swap-returned").click();
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "queued follow-up",
+    );
+    assert.equal(
+      await page.locator("#returned-text").textContent(),
+      "newer draft",
+    );
+    // T-568: at a stop a steer would be the dialog's answer: Steer is
+    // off and says why in its own words (T-1312), until the agent
+    // works again.
+    const steer = page.locator('#prompt-mode option[value="steer"]');
+    assert(await steer.evaluate((n) => n.disabled));
+    assert.equal(await steer.textContent(), "Steer · answer first");
+    await page.evaluate(() => {
+      fixture.tickets[1].agent.state = "working";
+      fixture.update();
+    });
+    await until(page, () => document.querySelector('#prompt-mode option[value="steer"]').textContent === "Steer");
+    await delivery("steer");
+    // This seat is Codex's, whose steer waits for the turn's next
+    // step (T-845); the line says so, and Queue's says its own.
+    assert.equal(await page.locator(".mode-help").textContent(), "Goes into this turn at its next step.");
+    await page.evaluate(() => {
+      fixture.disposition = "submitted";
+    });
+    await page.locator("#send").click();
+    await until(page, () =>
+      document
+        .querySelector("#delivery")
+        .textContent.includes("Submitted"),
+    );
+    assert.equal(
+      await page.evaluate(() => fixture.prompts.at(-1).queued),
+      false,
+    );
+    await delivery("queue");
+    await page.locator("#prompt").fill("explicit send now");
+    await page.evaluate(() => {
+      fixture.disposition = "queued";
+    });
+    await page.locator("#send").click();
+    await page.locator("#queued-row").waitFor({ state: "visible" });
+    await page.locator("#prompt").fill("keep this draft");
+    await page.locator("#send-now").click();
+    await until(page, () =>
+      document
+        .querySelector("#delivery")
+        .textContent.includes("Submitted"),
+    );
+    assert.equal(
+      await page.locator("#prompt").inputValue(),
+      "keep this draft",
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        fixture.requests.filter((r) => r.op === "send_now").at(-1),
+      ),
+      { op: "send_now", ticket: "ticket-1", session: "session-1" },
+    );
+    // Search does not change selection; Board exposes tickets without agents.
+    await overview();
+    // A phone searches in Find (T-1208), whose words leave with it; a
+    // wider page keeps the field over its lists.
+    if (size === "phone") {
+      assert.equal(await page.locator("#search").count(), 0, "no field over a phone's Inbox");
+      await mode("find");
+      assert.equal(await page.locator("#list-title").textContent(), "Find");
+      // Find lists tickets and nothing else (T-1208, the person's
+      // decision): no things to do, and no way into Sent from here.
+      assert.equal(await page.locator(".find-do, #find-sent, #find-new, #find-theme").count(), 0);
+      assert.equal(await page.locator('button[data-mode="sent"]').locator("visible=true").count(), 0, "Sent has no tab on a phone");
+      assert(await page.locator(".ticket").count() > 0, "the last few touched, before any words");
+    }
+    await page.locator("#search").fill("nothing-matches");
+    assert.equal(await page.locator(".ticket").count(), 0);
+    if (size === "phone") {
+      assert.match(await page.locator("#tickets").textContent(), /No tickets match your search/);
+      await page.screenshot({ path: path.join(output, `${engineName}-${size}-find.png`) });
+    }
+    await page.locator("#search").fill("Agent task 3");
+    if (size !== "phone") await mode("board");
+    if (size !== "phone") {
+      // A column's purpose is its title's hover (T-506): no blurb under
+      // the title and no "empty" line, so every column's cards start level.
+      assert.equal(
+        await page.locator('.column[aria-label="TODO"] .column-label').getAttribute("title"),
+        "for work that can and should be done soon",
+      );
+      assert.equal(await page.locator(".column-about, .column-empty").count(), 0);
+    }
+    await select(3);
+    assert.equal(
+      await page.locator("#agent-state").textContent(),
+      "No agent on this ticket. Start one at your terminal.",
+    );
+    assert.equal(await page.locator("[data-start]").count(), 0, "a host without `start`");
+    assert(await page.locator("#send").isDisabled());
+    await overview();
+    if (size !== "phone") await page.locator("#search").fill("");
+    await mode("agents");
+    if (size === "phone") {
+      await mode("find");
+      assert.equal(await page.locator("#search").inputValue(), "", "Find's words left with it");
+      await mode("agents");
+    }
+    await overview();
+    const lowerRow = page.locator('.ticket[data-id="ticket-20"]');
+    await lowerRow.scrollIntoViewIfNeeded();
+    const listPosition = await page
+      .locator("#tickets")
+      .evaluate((n) => n.scrollTop);
+    await lowerRow.click();
+    await overview();
+    assert(
+      Math.abs(
+        (await page.locator("#tickets").evaluate((n) => n.scrollTop)) -
+          listPosition,
+      ) < 3,
+    );
+    if (size === "phone") {
+      const shortControls = await page.evaluate(() =>
+        [
+          ...document.querySelectorAll(
+            "button, input:not([type=checkbox]), textarea, select",
+          ),
+        ]
+          .filter(
+            (n) =>
+              n.getClientRects().length &&
+              n.getBoundingClientRect().height < 44,
+          )
+          .map((n) => n.id),
+      );
+      assert.deepEqual(shortControls, []);
+    }
+    await select(2); // long title and 50-line output at every width/theme
+    await page.locator("#prompt").fill("A comfortable composer");
+    // Every theme the terminal has (T-1208) reads at AA on the page.
+    const themes = fullThemes ? ["graphite", "void", "nord", "mocha", "tokyo", "rose", "gruvbox", "blue", "amber", "green", "ice", "solarized", "latte", "gruvbox-light", "chalk"] : ["chalk"];
+    for (const theme of themes) {
+      await page.evaluate((theme) => {
+        document.querySelector(`.theme-tile[data-theme-id="${theme}"]`).click();
+      }, theme);
+      const contrast = await page.evaluate(() => {
+        const style = getComputedStyle(document.documentElement);
+        const luminance = (name) => {
+          const hex = style.getPropertyValue(name).trim().slice(1);
+          const rgb = (
+            hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex
+          )
+            .match(/../g)
+            .map((c) => parseInt(c, 16) / 255)
+            .map((c) =>
+              c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4,
+            );
+          return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        };
+        const tokens = [
+          ["--ink", "--bg"],
+          ["--ink3", "--s1"],
+          // Muted words on the ground (T-1219): group labels, counts,
+          // the tabs at rest, a card's key and its tag names.
+          ["--ink3", "--bg"],
+          ["--ink2", "--s2"],
+          ["--pri-ink", "--pri"],
+          ["--attn-ink", "--attn"],
+        ].map(([a, b]) => {
+          const x = luminance(a),
+            y = luminance(b);
+          return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+        });
+        // Two kinds of text as drawn (T-1219): an option's description
+        // on its option, and the conversation's edge words on the page.
+        const rgb = (text) => {
+          const [r, g, b] = /rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(text).slice(1).map(Number);
+          return [r, g, b]
+            .map((c) => c / 255)
+            .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+            .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+        };
+        const probe = document.createElement("div");
+        probe.innerHTML = '<button class="option"><span class="option-desc">x</span></button><div class="chat"><p class="chat-edge">x</p></div>';
+        document.body.append(probe);
+        const drawn = [
+          [probe.querySelector(".option-desc"), probe.querySelector(".option")],
+          [probe.querySelector(".chat-edge"), document.body],
+        ].map(([text, ground]) => {
+          const x = rgb(getComputedStyle(text).color),
+            y = rgb(getComputedStyle(ground).backgroundColor);
+          return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+        });
+        probe.remove();
+        return [...tokens, ...drawn];
+      });
+      assert(
+        contrast.every((ratio) => ratio >= 4.5),
+        `${theme} text contrast: ${contrast}`,
+      );
+      assert(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      );
+      await page.screenshot({
+        path: path.join(
+          output,
+          `${engineName}-${size}-${theme}.png`,
+        ),
+      });
+    }
+    if (size === "desktop") {
+      await page.evaluate(() => {
+        document.documentElement.style.fontSize = "200%";
+      });
+      assert(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      );
+      await page.locator("#send").scrollIntoViewIfNeeded();
+      const zoomed = await page.locator("#send").boundingBox();
+      assert(
+        zoomed.y >= 0 && zoomed.y + zoomed.height <= viewport.height,
+      );
+      await page.screenshot({
+        path: path.join(output, `${engineName}-zoomed.png`),
+      });
+      await page.evaluate(() => {
+        document.documentElement.style.fontSize = "";
+      });
+    }
+    if (size === "phone") {
+      await page.setViewportSize({ width: 390, height: 500 }); // keyboard-sized viewport, not a physical phone claim
+      await page.locator("#prompt").focus();
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#send").getBoundingClientRect()
+            .bottom <= innerHeight,
+      );
+      const box = await page.locator("#send").boundingBox();
+      assert(box.y >= 0 && box.y + box.height <= 500);
+      assert.equal(
+        await page
+          .locator("#prompt")
+          .evaluate((n) => getComputedStyle(n).fontSize),
+        "16px",
+      );
+      assert(box.height >= 44);
+      await page.screenshot({
+        path: path.join(
+          output,
+          `${engineName}-keyboard-viewport.png`,
+        ),
+      });
+      await page.setViewportSize(viewport);
+    }
+    // Settings is a dialog (T-548): the sidebar's foot opens it, and so
+    // does the pill below the desktop breakpoint; the hops are in it.
+    await overview();
+    const settings = page.locator("#settings-sheet");
+    assert(!(await page.locator("#about .hops").isVisible()));
+    if (size === "desktop") {
+      const foot = await page.locator("#settings").boundingBox();
+      const side = await page.locator("#sidebar").boundingBox();
+      assert(side.y + side.height - (foot.y + foot.height) < 40, "Settings sits at the sidebar's foot");
+      await page.locator("#settings").click();
+    } else {
+      await page.locator("#board-menu").click();
+      await page.locator("#settings").click();
+      await page.locator("#sidebar").waitFor({ state: "hidden" });
+    }
+    await settings.waitFor({ state: "visible" });
+    assert.equal(await settings.locator("#about .hop").count(), 3);
+    // Settings is rows (T-1208); the Theme row opens the picker's own
+    // page, and its Back is the rows again.
+    for (const id of ["settings-theme", "density-compact", "alerts", "forget"])
+      assert(await settings.locator(`#${id}`).isVisible(), id);
+    assert(!(await settings.locator("#theme-follow").isVisible()), "the picker is its own page");
+    await settings.locator("#settings-theme").click();
+    assert.equal(await page.locator("#settings-heading").textContent(), "Theme");
+    assert(await settings.locator("#theme-follow").isVisible());
+    assert(await settings.locator('.theme-tile[data-theme-id="nord"]').isVisible());
+    assert(!(await settings.locator("#forget").isVisible()));
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-settings-theme.png`) });
+    await settings.locator("#settings-back").click();
+    assert.equal(await page.locator("#settings-heading").textContent(), "Settings");
+    assert(await settings.locator("#forget").isVisible());
+    if (size === "phone")
+      assert.deepEqual(await settings.locator("button, input:not([type=checkbox])").evaluateAll((all) =>
+        all.filter((n) => n.getClientRects().length && n.getBoundingClientRect().height < 44).map((n) => n.id || n.textContent)), []);
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-settings.png`) });
+    await page.keyboard.press("Escape");
+    await settings.waitFor({ state: "hidden" });
+    if (size !== "desktop") {
+      await page.locator(".pill-button").click();
+      await settings.waitFor({ state: "visible" });
+      await page.locator("#settings-done").click();
+      await settings.waitFor({ state: "hidden" });
+    }
+    if (size === "desktop") {
+      // The sidebar folds to a rail that stays folded across a reload,
+      // and Settings stays at its foot as an icon.
+      await page.locator("#side-toggle").click();
+      await until(page, () => document.querySelector("#shell").dataset.side === "rail");
+      assert((await page.locator("#sidebar").boundingBox()).width < 80);
+      assert(await page.locator('#sidebar .mode[data-mode="board"]').isVisible());
+      assert(await page.locator("#settings").isVisible());
+      await page.screenshot({ path: path.join(output, `${engineName}-${size}-rail.png`) });
+    }
+    await page.reload();
+    // A reload lands on the list (T-742); a wide screen's pane keeps
+    // the selection.
+    if (size === "phone") {
+      await page.locator('.ticket[data-id="ticket-2"]').waitFor();
+      assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.detail), "false", "a reload opens no ticket");
+    } else {
+      await until(page, () =>
+        document.querySelector("#detail .selection-key")?.textContent === "T-2",
+      );
+    }
+    assert(await page.locator("#onboarding").isHidden());
+    assert.equal(
+      await page.locator("html").getAttribute("data-theme"),
+      "chalk",
+    );
+    if (size === "desktop") {
+      assert.equal(await page.evaluate(() => document.querySelector("#shell").dataset.side), "rail");
+      await page.locator("#side-toggle").click();
+      await until(page, () => document.querySelector("#shell").dataset.side === "full");
+    }
+    assert.equal(await page.locator("#prompt").inputValue(), "");
+    // M2 cards keep untrusted tool/plan text inert and bind each action
+    // to the exact projected session and request.
+    await page.evaluate(() => {
+      fixture.tickets = [{ id: "m2", key: "T-M2", title: "Needs your answer", column: "IN PROGRESS",
+        agent: { session: "m2-session", provider: "claude", state: "needs attention", promptable: true,
+          permission: { request: "permission-1", tool: "Bash", input: { command: "<script>window.bad=true</script>" }, expires_at: Date.now() + 40000 } } }];
+      fixture.update();
+    });
+    if (size === "phone" && !(await page.locator("#back").isVisible())) await page.locator("#tickets button").first().click();
+    await until(page, () => document.querySelector("#attention").textContent.includes("Approve once"));
+    assert.equal(await page.locator("#attention script").count(), 0);
+    await attention("Approve once").click();
+    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
+      { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
+    // The card counts the request's time down, and Deny and say why
+    // (T-1208) is a deny as any other, after which the message box
+    // takes the cursor for the words.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.permission = { request: "permission-why", tool: "Bash", input: { command: "rm -r build" }, expires_at: Date.now() + 601000 };
+      fixture.update();
+    });
+    await until(page, () => /^(10:0\d|9:5\d) left$/.test(document.querySelector("#attention .time-left")?.textContent || ""));
+    await until(page, () => !document.querySelector("#deny-why").disabled);
+    await page.locator("#deny-why").click();
+    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
+      { op: "permission", request: "permission-why", decision: "deny", ticket: "m2", session: "m2-session" });
+    await until(page, () => document.activeElement?.id === "prompt");
+    assert.equal(await page.locator("#prompt").getAttribute("placeholder"), "Say what to do differently…");
+    // T-1219 round 2: a permission with fields past its description is
+    // answered on its ticket page, where each is drawn; its Inbox card
+    // names how many and offers no Approve once.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.permission = { request: "permission-2", tool: "Bash", input: { command: "ls", cwd: "/repo", force: true }, expires_at: Date.now() + 40000 };
+      fixture.update();
+    });
+    if (size === "phone") await page.locator("#back").click();
+    await page.locator('.mode[data-mode="agents"]:visible').first().click();
+    const fieldsCard = page.locator('.need:has(.ticket[data-id="m2"])');
+    await until(page, () => /2 more fields/.test(document.querySelector(".need .need-more")?.textContent || ""));
+    assert.equal(await fieldsCard.getByRole("button", { name: "Approve once" }).count(), 0);
+    await fieldsCard.locator(".need-more").click();
+    await until(page, () => document.querySelectorAll("#attention .request-field").length === 2 && document.querySelector("#attention").textContent.includes("Approve once"));
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.permission = null;
+      fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",
+        multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };
+      fixture.update();
+    });
+    await attention("Green").click();
+    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "choice", index: 1 });
+    // T-567: keys nothing confirmed are one tick, and the question
+    // stays answerable; a reason keeps it answerable too; only the
+    // agent's own hook makes two ticks.
+    const receiptLine = () => page.evaluate(() => ({
+      text: document.querySelector("#delivery").textContent,
+      ticks: document.querySelectorAll("#delivery .tick path").length,
+    }));
+    await until(page, () => document.querySelector("#delivery").textContent.includes("not confirmed"));
+    assert.equal((await receiptLine()).ticks, 1);
+    assert(await attention("Green").isEnabled());
+    await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "unknown", reason: "label_wrapped" }; });
+    await attention("Blue").click();
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Could not answer"));
+    assert.match((await receiptLine()).text, /the option does not read as one row on the screen · try again, or answer at your terminal/);
+    assert.equal((await receiptLine()).ticks, 0);
+    assert(await attention("Blue").isEnabled());
+    await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
+    await attention("Blue").click();
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Blue”."));
+    assert.equal((await receiptLine()).ticks, 2);
+    await page.evaluate(() => { fixture.dialogReply = undefined; });
+    await page.locator("#attention input").fill("Purple");
+    await page.evaluate(() => fixture.update());
+    assert.equal(await page.locator("#attention input").inputValue(), "Purple");
+    await attention("Send answer").click();
+    assert.equal(await page.locator("#attention input").inputValue(), "Purple");
+    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "text", text: "Purple" });
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.dialog = { request: "plan-1", kind: "plan", markdown: "# Plan\\nReview <img src=x onerror=alert(1)> then implement." };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#attention").textContent.includes("Review plan"));
+    assert.equal(await page.locator("#attention img").count(), 0);
+    await page.locator("#attention").screenshot({ path: path.join(output, `${engineName}-${size}-plan.png`) });
+    await attention("Reject plan").click();
+    assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
+    // T-844: the folder trust dialog rides its own field, with one
+    // button, and its answer is the dialog road's `accept`.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.dialog = undefined;
+      fixture.tickets[0].agent.trust = { request: "trust-1", folder: "/Users/me/code/app" };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#attention").textContent.includes("Trust this folder"));
+    assert((await page.locator("#attention").textContent()).includes("/Users/me/code/app"));
+    assert.equal(await page.locator("#attention button").count(), 1);
+    await attention("Yes, I trust this folder").click();
+    assert.deepEqual(
+      await page.evaluate(() => { const r = fixture.requests.filter((r) => r.op === "dialog").at(-1); return [r.request, r.response]; }),
+      ["trust-1", { answer: "accept" }]);
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.trust = undefined;
+      fixture.update();
+    });
+    // T-568: words queued for the turn never lock the answer. At the
+    // question Steer is off, so the words queue; the receipt says whose
+    // words they replaced, and the answer still goes.
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.dialog = { request: "question-2", kind: "questions", questions: [{ question: "Which shade?", header: "Shade",
+        multiSelect: false, options: [{ label: "Light", description: "" }, { label: "Dark", description: "" }] }] };
+      fixture.disposition = "queued";
+      fixture.replaced = { by: "T-411" };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#attention").textContent.includes("Which shade?"));
+    await page.locator("#prompt").fill("after the answer");
+    assert.equal(await page.locator('#prompt-mode option[value="steer"]').textContent(), "Steer · answer first");
+    await page.locator("#send").click();
+    await page.locator("#queued-row").waitFor({ state: "visible" });
+    assert.equal(await page.evaluate(() => fixture.prompts.at(-1).queued), true);
+    await until(page, () => document.querySelector("#delivery").textContent.includes("It replaced T-411’s agent’s queued words."));
+    assert(await page.locator("#send-now").isHidden());
+    assert(await attention("Dark").isEnabled(), "a queued prompt does not lock the answer");
+    await page.evaluate(() => { fixture.dialogReply = { result: "delivery", status: "answered" }; });
+    await attention("Dark").click();
+    await until(page, () => document.querySelector("#delivery").textContent.includes("Answered “Dark”."));
+    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1)),
+      { op: "dialog", request: "question-2", response: { answer: "choice", index: 1 }, ticket: "m2", session: "m2-session" });
+    // The row says whose words wait and on what, as the host says it.
+    const queuedMeta = (queue, agent) => page.evaluate(([queue, agent]) => {
+      Object.assign(fixture.tickets[0], { queue });
+      Object.assign(fixture.tickets[0].agent, agent);
+      fixture.update();
+    }, [queue, agent]);
+    const meta = (words) => until(page, (w) => document.querySelector("#queued-meta").textContent === w, words);
+    await queuedMeta({ held: "agent asked", asking: ["T-M2"] }, {});
+    await meta("held · agent asked · you answer first");
+    await page.screenshot({ path: path.join(output, `${engineName}-${size}-queued-at-question.png`) });
+    await queuedMeta({ held: "agent asked" }, { state: "idle", dialog: null });
+    await meta("held · agent asked · you send");
+    assert(await page.locator("#send-now").isVisible());
+    await queuedMeta({ by: "T-411" }, {});
+    await meta("T-411's agent · you send");
+    await queuedMeta({ waits: ["T-3"], asking: ["T-3"] }, {});
+    await meta("queued · after T-3's answer");
+    await page.evaluate(() => {
+      fixture.dialogReply = undefined;
+      fixture.replaced = undefined;
+      fixture.tickets[0].queued = null;
+      fixture.tickets[0].queue = undefined;
+      fixture.update();
+    });
+    // Connected phone browsers still receive an in-page alert when the
+    // platform cannot construct a system Notification.
+    await page.evaluate(async () => {
+      const { showAlert } = await import("./awareness.js");
+      showAlert({ result: "awareness", ticket: "other", alert: true,
+        awareness: { phase: "completed", headline: "T-OTHER · <script>inert</script>", deepLink: "#ticket=other" } },
+        "m2", (ticket) => { fixture.alertTarget = ticket; });
+    });
+    assert.equal(await page.locator("#awareness script").count(), 0);
+    await page.locator("#awareness button").first().click();
+    assert.equal(await page.evaluate(() => fixture.alertTarget), "other");
+    assert(await page.locator("#awareness").isHidden());
+    // Swiped away like a phone's own notification (T-628): sideways or
+    // up, and the button pressed under the finger opens nothing.
+    const alertOther = () => page.evaluate(async () => {
+      const { showAlert } = await import("./awareness.js");
+      fixture.alertTarget = undefined;
+      showAlert({ result: "awareness", ticket: "other", alert: true,
+        awareness: { phase: "completed", headline: "T-OTHER · done", deepLink: "#ticket=other" } },
+        "m2", (ticket) => { fixture.alertTarget = ticket; });
+    });
+    const banner = page.locator("#awareness");
+    await alertOther();
+    await swipe(page, banner, 24, 4);
+    assert(await banner.isVisible(), "a short drag snaps back");
+    assert.equal(await banner.evaluate((el) => el.style.translate), "");
+    await swipe(page, banner, 260, 6);
+    await until(page, () => document.querySelector("#awareness").hidden);
+    assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
+    await alertOther();
+    assert.equal(await banner.evaluate((el) => el.style.translate), "", "the last flight is undone");
+    await swipe(page, banner, 0, -60);
+    await until(page, () => document.querySelector("#awareness").hidden);
+    assert.equal(await page.evaluate(() => fixture.alertTarget), undefined);
+    // A finished turn goes by itself after a few seconds (T-1268); a
+    // call for the person's input stays until it is answered or put away.
+    // The phone alone: the wait is the same at every size.
+    if (size === "phone") {
+    await alertOther();
+    await page.waitForTimeout(5400);
+    assert(await banner.isHidden(), "a finished turn's banner passes");
+    await page.evaluate(async () => {
+      const { showAlert } = await import("./awareness.js");
+      showAlert({ result: "awareness", ticket: "other", alert: true,
+        awareness: { phase: "waiting_for_input", headline: "T-OTHER · asks", deepLink: "#ticket=other" } },
+        "m2", () => {});
+    });
+    await page.waitForTimeout(5400);
+    assert(await banner.isVisible(), "a call for input stays");
+    await page.locator("#awareness button").nth(1).click();
+    assert(await banner.isHidden());
+    }
+    // Zero and one ticket snapshots; selected identity falls back cleanly.
+    await page.evaluate(() => {
+      fixture.tickets = [];
+      fixture.update();
+    });
+    await until(page, () =>
+      document
+        .querySelector("#tickets")
+        .textContent.includes("no tickets yet"),
+    );
+    await page.evaluate(() => {
+      fixture.tickets = [
+        {
+          id: "only",
+          key: "T-99",
+          title: "Only ticket",
+          column: "TODO",
+          agent: null,
+        },
+      ];
+      fixture.update();
+    });
+    await until(page, () =>
+      document
+        .querySelector("#selection")
+        .textContent.includes("Only ticket"),
+    );
+    await page.evaluate(() => fixture.reply({ result: "revoked" }));
+    await until(page, () =>
+      document
+        .querySelector("#connection")
+        .textContent.includes("Access revoked"),
+    );
+    assert.equal(await page.locator("#preview").textContent(), "");
+    assert.equal(await page.locator("#queued-text").textContent(), "");
+    assert.equal(await page.locator("#returned-text").textContent(), "");
+    assert.equal(await page.locator("#tickets").textContent(), "");
+    await page.reload();
+    await until(page, () =>
+      document
+        .querySelector("#connection")
+        .textContent.includes("Access revoked"),
+    );
+    assert(await page.locator("#onboarding").isVisible());
+    assert.deepEqual(errors, []);
+    console.log(
+      `${engineName} ${size}: navigation, drafts, scrolling, receipts, reconnect, replacement, themes, empty and revoked passed`,
+    );
+  } catch (error) {
+    await page.screenshot({
+      path: path.join(
+        output,
+        `${engineName}-${size}-failure.png`,
+      ),
+    });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
+const engines = { chromium, webkit };
+const viewports = {
+  desktop: { width: 1440, height: 950 },
+  tablet: { width: 900, height: 900 },
+  phone: { width: 390, height: 844 },
+};
+const flows = {
+  navigation: navigationFlow, ticket: ticketFlow, start: startFlow, tier: tierFlow,
+  edit: editFlow, workspace: workspaceFlow, archive: archiveFlow, crown: crownFlow,
+  batch: batchFlow, notes: notesFlow, chat: chatFlow, terminal: terminalFlow,
+  shelf: shelfFlow, "mail-prompt": mailPromptFlow,
+};
+const phoneFlows = {
+  "pair-link": pairLinkFlow, back: backFlow, keyboard: keyboardFlow, kept: keptFlow,
+  refused: refusedFlow, "big-board": bigBoardFlow, forget: forgetFlow,
+};
+const bySize = {
+  desktop: flows,
+  tablet: { ...flows, tabs: tabsFlow },
+  phone: { ...flows, tabs: tabsFlow, ...phoneFlows },
+};
+
+if (process.argv[2] === "--cell") {
+  const [, , , engine, size, themes, ...names] = process.argv;
+  output = path.join(root, "test-results", engine, size);
+  await fs.mkdir(output, { recursive: true });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const browser = await engines[engine].launch();
+    try {
+      for (const name of names) {
+        try {
+          await bySize[size][name](browser, engine, size, viewports[size], themes === "all");
+        } catch (cause) {
+          throw new Error(`${engine} ${size} ${name} failed`, { cause });
+        }
       }
-      await pairLinkFlow(browser, engineName);
-      await backFlow(browser, engineName);
-      await keyboardFlow(browser, engineName);
-      await tabsFlow(browser, engineName);
-      await keptFlow(browser, engineName);
-      await refusedFlow(browser, engineName);
-      await bigBoardFlow(browser, engineName);
-      await forgetFlow(browser, engineName);
     } finally {
       await browser.close();
     }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
-} finally {
-  await new Promise((resolve) => server.close(resolve));
+} else {
+  await runMatrix(root, Object.keys(engines), bySize);
 }

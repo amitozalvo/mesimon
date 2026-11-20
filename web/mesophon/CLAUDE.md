@@ -21,3 +21,31 @@ reaches `PromptColumn`, merges and deletes, and a filed ticket starts nothing by
 side of the control socket drops a peer on a frame it cannot parse, so mail frames go only where
 they were asked for: a host sends `Collect` after `ControlMail` answered, and the relay sends
 `Mail` only then.
+
+## Browser checks
+
+From this directory run `node --test state.test.js assets.test.js` for state and
+packaging. Iterate on the affected browser flow in one engine and viewport:
+
+```sh
+MESOPHON_UX_FLOW=notes MESOPHON_UX_ENGINE=chromium MESOPHON_UX_SIZES=phone node ux.test.js
+```
+
+| Source area | Flow names for the inner loop |
+| --- | --- |
+| Board, lists, shell, awareness, drafts, settings and theme contrast | `navigation` |
+| Filing, delivery and Sent | `ticket`, `mail-prompt` |
+| Starting, model/tier choice, terminal keys and resume | `start`, `tier`, `terminal` |
+| Ticket edits and drag, workspace, archive and crown | `edit`, `workspace`, `archive`, `crown` |
+| Questions, notes and pictures, conversation, offline shelf | `batch`, `notes`, `chat`, `shelf` |
+| Ticket tabs (tablet and phone) | `tabs` |
+| Pairing, history, keyboard, service worker, rejected credentials, oversized board, forgetting a board (phone) | `pair-link`, `back`, `keyboard`, `kept`, `refused`, `big-board`, `forget` |
+
+Filters accept comma-separated names. After a web change, run the full
+`node ux.test.js` matrix once. A docs-only rebase needs no browser rerun.
+Both direct and npm invocations use `ci/test-run.py` for the disk reserve,
+deadline and child cleanup. Every selected engine/viewport gets its own server
+and `test-results/<engine>/<size>/`. Set `MESOPHON_UX_JOBS=1` for serial timing.
+The first selected navigation case sweeps all fifteen themes. Every navigation
+case does so when `style.css` or `themes.js` differs from the branch point with
+main, or when explicitly requested with `MESOPHON_UX_THEMES=all`.
