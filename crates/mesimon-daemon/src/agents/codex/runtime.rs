@@ -32,6 +32,7 @@ const MAX_BUFFERED: usize = 256;
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 // The daemon holds a seat whose last heartbeat is over five seconds old.
 const HEARTBEAT: Duration = Duration::from_secs(1);
+const DESCENDANT_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
 struct Signals {
@@ -174,6 +175,7 @@ struct ProcessTree {
     known: BTreeMap<libc::pid_t, ProcessIdentity>,
     server: Option<ProcessIdentity>,
     uncertain: bool,
+    next_sample: Option<Instant>,
 }
 impl ProcessTree {
     fn root(&mut self, pid: u32, server: bool) -> Result<()> {
@@ -247,6 +249,20 @@ impl ProcessTree {
         }
         self.extend(&table)?;
         Ok(())
+    }
+
+    /// Remember tools while their ancestry is visible, even if their launching
+    /// shell exits before cleanup. Socket traffic must never postpone this scan.
+    fn sample(&mut self) -> Result<Instant> {
+        if let Some(next) = self.next_sample {
+            if Instant::now() < next {
+                return Ok(next);
+            }
+        }
+        self.refresh(false).inspect_err(|_| self.uncertain = true)?;
+        let next = Instant::now() + DESCENDANT_SAMPLE_INTERVAL;
+        self.next_sample = Some(next);
+        Ok(next)
     }
 
     fn relay_ended(&mut self, result: &Result<()>) {
@@ -589,6 +605,7 @@ fn relay(
     owned.sockets.push(config.upstream_socket.clone());
     let deadline = Instant::now() + START_TIMEOUT;
     while !config.upstream_socket.exists() {
+        owned.tree.sample()?;
         check_children(owned)?;
         if signals.terminated() {
             return Ok(());
@@ -617,6 +634,7 @@ fn relay(
     owned.native = Some(native.spawn().context("start native Codex terminal")?);
     owned.tree.root(owned.native.as_ref().expect("spawned terminal").id(), false)?;
     let stream = loop {
+        owned.tree.sample()?;
         check_children(owned)?;
         if signals.terminated() {
             return Ok(());
@@ -720,6 +738,7 @@ fn relay(
                 publish_by = Some(Instant::now());
             }
         }
+        let next_sample = owned.tree.sample()?;
         let heartbeat = observation.last_write + HEARTBEAT;
         let mut deadline = publish_by.unwrap_or(heartbeat).min(heartbeat);
         if Instant::now() >= deadline {
@@ -730,7 +749,7 @@ fn relay(
         if native_drained && upstream_drained {
             // A full batch can leave complete frames inside tungstenite even
             // when the kernel buffers are empty. Only park after WouldBlock.
-            wait_for_relay(fds, deadline)?;
+            wait_for_relay(fds, deadline.min(next_sample))?;
         }
     }
 }
@@ -2252,7 +2271,7 @@ mod tests {
     }
 
     #[test]
-    fn supervised_cleanup_reaps_a_tool_in_its_own_process_group() {
+    fn supervised_cleanup_reaps_a_sampled_tool_after_its_parent_exits() {
         use std::io::{BufRead, BufReader, Write};
         struct Guard {
             child: Child,
@@ -2289,9 +2308,23 @@ mod tests {
         };
         let root = PathBuf::from(reply(&mut output).as_str().unwrap());
         let ready = root.join("tool.pid");
-        let code = "import pathlib, subprocess, sys, time\nchild=subprocess.Popen([sys.executable, '-c', 'import os,time;os.setsid();time.sleep(60)'])\npathlib.Path(sys.argv[1]).write_text(str(child.pid))\ntime.sleep(60)\n";
-        // CPython on Linux cannot resolve sys.executable with an empty
-        // PATH; the grandchild would fail before exercising process cleanup.
+        // The server stays live. Its launcher exits only after the runtime
+        // has sampled the tool, which has also left the server's process group.
+        let code = r#"
+import os, pathlib, sys, time
+ready = pathlib.Path(sys.argv[1])
+if os.fork():
+    os.wait()
+    time.sleep(60)
+elif os.fork():
+    while not ready.with_suffix('.release').exists():
+        time.sleep(.01)
+else:
+    os.setsid()
+    ready.write_text(str(os.getpid()))
+    while ready.exists():
+        time.sleep(.05)
+"#;
         let request = json!({"op":"spawn", "argv":["python3", "-c", code, ready],
             "env":{"PATH":std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())}});
         writeln!(guard.child.stdin.as_mut().unwrap(), "{request}").unwrap();
@@ -2315,7 +2348,24 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        assert!(!tree.known.contains_key(&tool), "cleanup starts with only the root");
+        tree.sample().unwrap();
+        let sampled = tree.known.get(&tool).expect("sample missed the tool").clone();
+        assert_eq!(tree.known[&sampled.parent].parent, server as i32);
+        std::fs::write(ready.with_extension("release"), "").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let current = process_identity(tool).unwrap().expect("tool exited with its parent");
+            assert!(sampled.same(&current) && !current.zombie);
+            if current.parent != sampled.parent {
+                assert!(
+                    !tree.known.contains_key(&current.parent),
+                    "tool still has an owned parent"
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "tool was never reparented");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         tree.stop().unwrap();
         assert!(
             process_identity(tool).unwrap().is_none_or(|entry| entry.zombie),

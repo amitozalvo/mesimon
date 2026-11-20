@@ -47985,10 +47985,16 @@ frame yields to the other direction. A full 32-message batch can leave complete
 frames inside tungstenite, so both directions must reach `WouldBlock` before
 the relay parks or applies an audit. Writes retain their two-second deadline.
 
-The runtime records each direct child's start identity at launch. Descendant
-enumeration now runs during cleanup, when the supervisor freezes the tree and
-verifies what stopped. An abrupt relay loss still leaves cleanup unconfirmed
-because a descendant may already have been reparented.
+The runtime records each direct child's start identity at launch and samples
+descendants once a second during startup and relay. The next sample has its own
+poll deadline so changing snapshots and busy sockets cannot postpone it. Sampling
+only at cleanup lost ownership of a background tool when its launcher exited
+first. Cleanup checks each sampled PID's start identity and can stop the tool
+after reparenting. A failed sample or abrupt relay loss leaves cleanup unconfirmed.
+The regression holds the launcher open until a sample records the tool's identity,
+then verifies that the same tool has a new parent before cleanup stops it. A
+separate run through `agent-runtime` let the idle relay's timer take the sample.
+The tool's socket closed and the runtime acknowledged the stop.
 
 The daemon and `mesimon state` use a five-second freshness window. The runtime
 therefore writes a heartbeat after one second without a snapshot write. It
@@ -48007,7 +48013,8 @@ are outside the measurement.
 | One idle runtime | Wall seconds | CPU seconds | Percent of one core |
 | --- | ---: | ---: | ---: |
 | Before | 300.012 | 2.590 | 0.863% |
-| After | 300.002 | 0.147 | 0.049% |
+| Reviewed build with cleanup-only sampling (rejected) | 300.002 | 0.147 | 0.049% |
+| After restoring one-second descendant sampling | 300.005 | 0.451 | 0.150% |
 
 A separate wire check sent 80 server notifications while the native peer held
 a partial steer frame open. The turn reached Running, the completed steer was
@@ -48018,3 +48025,9 @@ first fixture omitted that audit endpoint and correctly left the seat held.
 173 of 174 on the first run. The Claude fixture
 `prompt_e2e::a_person_s_prompt_waits_for_a_box_not_yet_drawn` failed at
 `SleepSession` and passed on its isolated rerun, as previously recorded for T-1319.
+
+After restoring the sampler and rebasing, all 117 Codex daemon unit tests
+passed. The same eight end-to-end files passed 173 of 174 on the first run.
+`crown_e2e::the_crown_lets_one_agent_edit_the_others` saw the Claude worker's
+`started_by` in memory before its assertion found it in `sessions.json`. It
+passed on its isolated rerun.
