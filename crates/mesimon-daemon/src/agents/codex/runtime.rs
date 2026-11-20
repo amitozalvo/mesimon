@@ -5,13 +5,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use mesimon_core::board::{SessionState, UnknownReason};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use signal_hook::iterator::{backend::SignalDelivery, exfiltrator::SignalOnly};
 use tungstenite::protocol::{Message, WebSocketConfig};
 use tungstenite::WebSocket;
 
@@ -29,39 +30,30 @@ use crate::agents::{AgentActivity, AgentPreview};
 const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 const MAX_BUFFERED: usize = 256;
 const START_TIMEOUT: Duration = Duration::from_secs(20);
-const HEARTBEAT: Duration = Duration::from_millis(250);
-static TERMINATED: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn terminate(_: libc::c_int) {
-    TERMINATED.store(true, Ordering::Relaxed);
-}
+// The daemon holds a seat whose last heartbeat is over five seconds old.
+const HEARTBEAT: Duration = Duration::from_secs(1);
+const PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 
 struct Signals {
-    term: libc::sighandler_t,
-    hup: libc::sighandler_t,
-    interrupt: libc::sighandler_t,
+    pending: SignalDelivery<UnixStream, SignalOnly>,
+    // An audit result also wakes the relay, even if neither peer sends another frame.
+    wake: UnixStream,
 }
 impl Signals {
-    fn install() -> Self {
-        TERMINATED.store(false, Ordering::Relaxed);
-        // This subcommand has its own process; it never installs handlers in
-        // the board daemon. The handler performs only an atomic store.
-        unsafe {
-            Self {
-                term: libc::signal(libc::SIGTERM, terminate as *const () as libc::sighandler_t),
-                hup: libc::signal(libc::SIGHUP, terminate as *const () as libc::sighandler_t),
-                interrupt: libc::signal(libc::SIGINT, terminate as *const () as libc::sighandler_t),
-            }
-        }
+    fn install() -> io::Result<Self> {
+        let (read, wake) = UnixStream::pair()?;
+        wake.set_nonblocking(true)?;
+        let pending = SignalDelivery::with_pipe(
+            read,
+            wake.try_clone()?,
+            SignalOnly,
+            [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGCHLD],
+        )?;
+        Ok(Self { pending, wake })
     }
-}
-impl Drop for Signals {
-    fn drop(&mut self) {
-        unsafe {
-            libc::signal(libc::SIGTERM, self.term);
-            libc::signal(libc::SIGHUP, self.hup);
-            libc::signal(libc::SIGINT, self.interrupt);
-        }
+
+    fn terminated(&mut self) -> bool {
+        self.pending.pending().any(|signal| signal != libc::SIGCHLD)
     }
 }
 
@@ -182,7 +174,6 @@ struct ProcessTree {
     known: BTreeMap<libc::pid_t, ProcessIdentity>,
     server: Option<ProcessIdentity>,
     uncertain: bool,
-    last_sample: Option<Instant>,
 }
 impl ProcessTree {
     fn root(&mut self, pid: u32, server: bool) -> Result<()> {
@@ -255,7 +246,6 @@ impl ProcessTree {
             }
         }
         self.extend(&table)?;
-        self.last_sample = Some(Instant::now());
         Ok(())
     }
 
@@ -267,16 +257,6 @@ impl ProcessTree {
             // Cleaning every remembered PID cannot close that observation gap.
             self.uncertain = true;
         }
-    }
-
-    fn sample(&mut self) -> Result<()> {
-        if self.last_sample.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
-            if let Err(error) = self.refresh(false) {
-                self.uncertain = true;
-                return Err(error);
-            }
-        }
-        Ok(())
     }
 
     fn signal(&self, signal: libc::c_int) -> Result<()> {
@@ -458,10 +438,10 @@ pub fn run(config_path: &Path) -> Result<()> {
         bail!("Codex runtime configuration exceeds 64 KiB");
     }
     let config: RuntimeConfig = serde_json::from_slice(&bytes)?;
-    let _signals = Signals::install();
+    let mut signals = Signals::install()?;
     let mut observation = Observation::new(&config);
     observation.publish(&config)?;
-    let result = supervise(&config, &mut observation);
+    let result = supervise(&config, &mut observation, &mut signals);
     observation.snapshot.observation_hold = true;
     observation.snapshot.state = SessionState::Unknown { reason: UnknownReason::ObservationLost };
     observation.preview.activity = None;
@@ -486,23 +466,76 @@ fn socket_config() -> WebSocketConfig {
     WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE)).max_frame_size(Some(MAX_MESSAGE))
 }
 
-fn stream_deadlines(stream: &UnixStream, handshake: bool) -> Result<()> {
-    // On macOS accept inherits the listener's O_NONBLOCK flag. Deadlines
-    // alone do not clear it: a native startup burst would make send/flush
-    // fail with EAGAIN instead of waiting for the terminal reader.
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(if handshake {
-        Duration::from_secs(2)
-    } else {
-        Duration::from_millis(2)
-    }))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+/// Handshakes and writes retain their blocking deadlines, including automatic
+/// WebSocket replies. After upgrade, reads drain just the bytes available now.
+#[derive(Debug)]
+struct RelayStream {
+    socket: UnixStream,
+    upgraded: bool,
+}
+impl RelayStream {
+    fn new(socket: UnixStream) -> io::Result<Self> {
+        // macOS can inherit the proxy listener's O_NONBLOCK across accept.
+        socket.set_nonblocking(false)?;
+        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+        Ok(Self { socket, upgraded: false })
+    }
+}
+impl Read for RelayStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.upgraded {
+            return self.socket.read(buf);
+        }
+        loop {
+            let n = unsafe {
+                libc::recv(
+                    self.socket.as_raw_fd(),
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            if n >= 0 {
+                return Ok(n as usize);
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+}
+impl Write for RelayStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.socket.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.socket.flush()
+    }
+}
+
+fn wait_for_relay(fds: [RawFd; 3], deadline: Instant) -> io::Result<()> {
+    let mut fds = fds.map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 });
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let millis = remaining.as_nanos().div_ceil(1_000_000) as i32;
+    let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, millis) };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
     Ok(())
 }
 
-fn supervise(config: &RuntimeConfig, observation: &mut Observation) -> Result<()> {
+fn supervise(
+    config: &RuntimeConfig,
+    observation: &mut Observation,
+    signals: &mut Signals,
+) -> Result<()> {
     let mut owned = Owned::default();
-    let result = relay(config, observation, &mut owned);
+    let result = relay(config, observation, &mut owned, signals);
     owned.tree.relay_ended(&result);
     let cleanup = owned.cleanup();
     observation.snapshot.stopped = cleanup.is_ok() && !owned.tree.uncertain;
@@ -526,7 +559,12 @@ fn verify_upstream_listener(path: &Path) -> Result<()> {
     }
 }
 
-fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owned) -> Result<()> {
+fn relay(
+    config: &RuntimeConfig,
+    observation: &mut Observation,
+    owned: &mut Owned,
+    signals: &mut Signals,
+) -> Result<()> {
     let listener = UnixListener::bind(&config.proxy_socket).context("bind native Codex relay")?;
     owned.sockets.push(config.proxy_socket.clone());
     listener.set_nonblocking(true)?;
@@ -551,9 +589,8 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
     owned.sockets.push(config.upstream_socket.clone());
     let deadline = Instant::now() + START_TIMEOUT;
     while !config.upstream_socket.exists() {
-        owned.tree.sample()?;
         check_children(owned)?;
-        if TERMINATED.load(Ordering::Relaxed) {
+        if signals.terminated() {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -580,9 +617,8 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
     owned.native = Some(native.spawn().context("start native Codex terminal")?);
     owned.tree.root(owned.native.as_ref().expect("spawned terminal").id(), false)?;
     let stream = loop {
-        owned.tree.sample()?;
         check_children(owned)?;
-        if TERMINATED.load(Ordering::Relaxed) {
+        if signals.terminated() {
             return Ok(());
         }
         match listener.accept() {
@@ -596,19 +632,23 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
         observation.publish(config)?;
         std::thread::sleep(Duration::from_millis(20));
     };
-    stream_deadlines(&stream, true)?;
+    let stream = RelayStream::new(stream)?;
     let mut native = tungstenite::accept_with_config(stream, Some(socket_config()))
         .map_err(|e| anyhow!("native Codex handshake: {e}"))?;
-    let upstream = UnixStream::connect(&config.upstream_socket)?;
-    stream_deadlines(&upstream, true)?;
+    let upstream = RelayStream::new(UnixStream::connect(&config.upstream_socket)?)?;
     let (mut upstream, _) =
         tungstenite::client::client_with_config("ws://localhost/", upstream, Some(socket_config()))
             .map_err(|e| anyhow!("Codex app-server handshake: {e}"))?;
-    stream_deadlines(native.get_ref(), false)?;
-    stream_deadlines(upstream.get_ref(), false)?;
-    let mut heartbeat = Instant::now();
+    native.get_mut().upgraded = true;
+    upstream.get_mut().upgraded = true;
+    let fds = [
+        native.get_ref().socket.as_raw_fd(),
+        upstream.get_ref().socket.as_raw_fd(),
+        signals.pending.get_read().as_raw_fd(),
+    ];
+    let mut publish_by = None;
     loop {
-        if TERMINATED.load(Ordering::Relaxed) {
+        if signals.terminated() {
             return Ok(());
         }
         // Server loss can also make the native client exit successfully.
@@ -635,7 +675,11 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
                 native_drained = true;
                 break;
             };
+            if matches!(message, Message::Ping(_) | Message::Pong(_)) {
+                continue;
+            }
             if let Message::Text(text) = &message {
+                publish_by.get_or_insert_with(|| Instant::now() + PUBLISH_INTERVAL);
                 observation.before_native_forward(config, &serde_json::from_str::<Value>(text)?)?;
             }
             let closed = matches!(message, Message::Close(_));
@@ -656,7 +700,11 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
                 upstream_drained = true;
                 break;
             };
+            if matches!(message, Message::Ping(_) | Message::Pong(_)) {
+                continue;
+            }
             if let Message::Text(text) = &message {
+                publish_by.get_or_insert_with(|| Instant::now() + PUBLISH_INTERVAL);
                 observation.before_server_forward(config, serde_json::from_str::<Value>(text)?)?;
             }
             let closed = matches!(message, Message::Close(_));
@@ -668,12 +716,21 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
         if native_drained && upstream_drained {
             // A fair-batch boundary is not proof that the observation queue
             // is empty. Do not apply an audit ahead of already queued work.
-            observation.poll_audit(config);
+            if observation.poll_audit(config, &signals.wake)? {
+                publish_by = Some(Instant::now());
+            }
         }
-        if heartbeat.elapsed() >= HEARTBEAT {
-            owned.tree.sample()?;
+        let heartbeat = observation.last_write + HEARTBEAT;
+        let mut deadline = publish_by.unwrap_or(heartbeat).min(heartbeat);
+        if Instant::now() >= deadline {
             observation.publish(config)?;
-            heartbeat = Instant::now();
+            publish_by = None;
+            deadline = observation.last_write + HEARTBEAT;
+        }
+        if native_drained && upstream_drained {
+            // A full batch can leave complete frames inside tungstenite even
+            // when the kernel buffers are empty. Only park after WouldBlock.
+            wait_for_relay(fds, deadline)?;
         }
     }
 }
@@ -692,22 +749,15 @@ fn check_children(owned: &mut Owned) -> Result<()> {
     Ok(())
 }
 
-fn receive(socket: &mut WebSocket<UnixStream>) -> Result<Option<Message>> {
+fn receive(socket: &mut WebSocket<RelayStream>) -> Result<Option<Message>> {
     match socket.read() {
-        Ok(Message::Ping(_) | Message::Pong(_)) => {
+        Ok(message @ (Message::Ping(_) | Message::Pong(_))) => {
             socket.flush()?;
-            Ok(None)
+            Ok(Some(message))
         }
         Ok(message @ (Message::Text(_) | Message::Close(_))) => Ok(Some(message)),
         Ok(_) => bail!("unsupported native Codex WebSocket message"),
-        Err(tungstenite::Error::Io(error))
-            if matches!(
-                error.kind(),
-                ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(None)
-        }
+        Err(tungstenite::Error::Io(error)) if error.kind() == ErrorKind::WouldBlock => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -734,6 +784,8 @@ type StateEvidence = (
 );
 
 struct Observation {
+    published_snapshot: Option<Snapshot>,
+    last_write: Instant,
     published_state: Option<StateEvidence>,
     published_completions: BTreeSet<(String, String)>,
     revoked_completions: BTreeSet<(String, String)>,
@@ -765,6 +817,8 @@ struct Observation {
 impl Observation {
     fn new(config: &RuntimeConfig) -> Self {
         Self {
+            published_snapshot: None,
+            last_write: Instant::now(),
             published_state: None,
             published_completions: BTreeSet::new(),
             revoked_completions: BTreeSet::new(),
@@ -1155,14 +1209,15 @@ impl Observation {
         }
     }
 
-    fn poll_audit(&mut self, config: &RuntimeConfig) {
+    fn poll_audit(&mut self, config: &RuntimeConfig, wake: &UnixStream) -> Result<bool> {
+        let mut changed = false;
         if let Some(receiver) = &self.audit {
             match receiver.try_recv() {
                 Ok(result) => {
                     self.audit = None;
                     self.next_audit = Instant::now() + Duration::from_secs(2);
                     if let Ok(audit) = result {
-                        self.apply_audit(config, audit);
+                        changed = self.apply_audit(config, audit);
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -1172,7 +1227,7 @@ impl Observation {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        let Some(ledger) = &self.ledger else { return };
+        let Some(ledger) = &self.ledger else { return Ok(changed) };
         let required = self.needs_audit
             || self.mutation_unobserved
             || !self.retired.is_empty()
@@ -1184,9 +1239,9 @@ impl Observation {
             || !ledger.audit_may_release()
             || !self.retired.values().all(Ledger::can_reconcile_work)
         {
-            return;
+            return Ok(changed);
         }
-        let Some(thread) = self.snapshot.thread_id.clone() else { return };
+        let Some(thread) = self.snapshot.thread_id.clone() else { return Ok(changed) };
         let mut known: BTreeSet<String> = ledger.known_children().into_iter().collect();
         for (id, retired) in &self.retired {
             known.insert(id.clone());
@@ -1195,10 +1250,13 @@ impl Observation {
         let socket = config.upstream_socket.clone();
         let revision = self.revision;
         let (sender, receiver) = mpsc::sync_channel(1);
+        let mut wake = wake.try_clone()?;
         self.audit = Some(receiver);
         std::thread::spawn(move || {
             let _ = sender.send(audit_idle(&socket, &thread, &known, revision));
+            let _ = wake.write(&[1]);
         });
+        Ok(changed)
     }
 
     fn apply_audit(&mut self, config: &RuntimeConfig, audit: Audit) -> bool {
@@ -1292,8 +1350,14 @@ impl Observation {
         self.apply_transport_hold();
         self.advance_evidence();
         self.snapshot.hold = self.current_hold();
-        self.snapshot.heartbeat_ms = mesimon_core::clock::now_ms();
-        write_json(&config.snapshot_path, &self.snapshot)?;
+        if self.published_snapshot.as_ref() != Some(&self.snapshot)
+            || self.last_write.elapsed() >= HEARTBEAT
+        {
+            self.snapshot.heartbeat_ms = mesimon_core::clock::now_ms();
+            write_json(&config.snapshot_path, &self.snapshot)?;
+            self.published_snapshot = Some(self.snapshot.clone());
+            self.last_write = Instant::now();
+        }
         if self.published_preview.as_ref() != Some(&self.preview) {
             // JSON escaping may expand text; bound the serialized artifact too.
             while serde_json::to_vec(&self.preview)?.len() > 65_536 {
@@ -2251,8 +2315,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        tree.refresh(false).unwrap();
-        assert!(tree.known.contains_key(&tool));
+        assert!(!tree.known.contains_key(&tool), "cleanup starts with only the root");
         tree.stop().unwrap();
         assert!(
             process_identity(tool).unwrap().is_none_or(|entry| entry.zombie),
@@ -2275,11 +2338,10 @@ mod tests {
 
     #[test]
     fn relay_deadlines_clear_inherited_nonblocking_mode() {
-        use std::os::fd::AsRawFd;
         let (stream, _peer) = UnixStream::pair().unwrap();
         stream.set_nonblocking(true).unwrap();
-        stream_deadlines(&stream, true).unwrap();
-        let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+        let stream = RelayStream::new(stream).unwrap();
+        let flags = unsafe { libc::fcntl(stream.socket.as_raw_fd(), libc::F_GETFL) };
         assert!(flags >= 0);
         assert_eq!(flags & libc::O_NONBLOCK, 0);
     }
@@ -2289,23 +2351,60 @@ mod tests {
         use tungstenite::protocol::Role;
         let (native_end, relay_in) = UnixStream::pair().unwrap();
         let (relay_out, server_end) = UnixStream::pair().unwrap();
-        for stream in [&native_end, &relay_in, &relay_out, &server_end] {
-            stream_deadlines(stream, false).unwrap();
-        }
-        let mut native =
-            WebSocket::from_raw_socket(native_end, Role::Client, Some(socket_config()));
-        let mut incoming =
-            WebSocket::from_raw_socket(relay_in, Role::Server, Some(socket_config()));
-        let mut outgoing =
-            WebSocket::from_raw_socket(relay_out, Role::Client, Some(socket_config()));
-        let mut server =
-            WebSocket::from_raw_socket(server_end, Role::Server, Some(socket_config()));
+        let socket = |stream, role| {
+            let mut stream = RelayStream::new(stream).unwrap();
+            stream.upgraded = true;
+            WebSocket::from_raw_socket(stream, role, Some(socket_config()))
+        };
+        let mut native = socket(native_end, Role::Client);
+        let mut incoming = socket(relay_in, Role::Server);
+        let mut outgoing = socket(relay_out, Role::Client);
+        let mut server = socket(server_end, Role::Server);
         let original =
             r#"{ "id" : "approval-7", "result": { "decision": "cancel" }, "unicode": "✓" }"#;
         native.send(Message::Text(original.into())).unwrap();
         outgoing.send(receive(&mut incoming).unwrap().unwrap()).unwrap();
         assert_eq!(receive(&mut server).unwrap(), Some(Message::Text(original.into())));
         assert!(receive(&mut server).unwrap().is_none());
+    }
+
+    #[test]
+    fn snapshot_writes_follow_content_and_the_liveness_deadline() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config();
+        config.snapshot_path = dir.path().join("snapshot.json");
+        config.preview_path = dir.path().join("preview.json");
+        let mut observer = Observation::new(&config);
+        observer.publish(&config).unwrap();
+        let inode = || std::fs::metadata(&config.snapshot_path).unwrap().ino();
+        let first = inode();
+
+        observer.preview.text = Some("reply".into());
+        observer.publish(&config).unwrap();
+        assert_eq!(inode(), first, "a preview alone must leave the snapshot cached");
+        assert_eq!(
+            serde_json::from_slice::<AgentPreview>(&std::fs::read(&config.preview_path).unwrap())
+                .unwrap(),
+            observer.preview
+        );
+
+        observer.snapshot.steers += 1;
+        observer.publish(&config).unwrap();
+        let steer = inode();
+        assert_ne!(steer, first, "steers change without advancing the evidence sequence");
+        let saved = || {
+            serde_json::from_slice::<Snapshot>(&std::fs::read(&config.snapshot_path).unwrap())
+                .unwrap()
+        };
+        assert_eq!(saved().steers, 1);
+        let sequence = saved().sequence;
+
+        observer.last_write -= HEARTBEAT;
+        observer.publish(&config).unwrap();
+        assert_ne!(inode(), steer, "a quiet seat still proves liveness");
+        assert_eq!(saved().sequence, sequence);
     }
 
     #[test]

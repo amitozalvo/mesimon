@@ -47976,3 +47976,45 @@ crown ask as dropped by hand and the prompt as unsent. A late successful tmux
 paste can leave words in the box after their receipt is gone. The caller and
 deferred effects receive a failed delivery in that case, and the replacement
 receipt retains its own Enter schedule.
+
+## An idle Codex runtime waits on its sockets (T-1341, 2026-11-20)
+
+After the WebSocket handshakes, the relay uses `poll` on both Unix sockets and a
+wake socket shared by process signals and read-only audit completions. A partial
+frame yields to the other direction. A full 32-message batch can leave complete
+frames inside tungstenite, so both directions must reach `WouldBlock` before
+the relay parks or applies an audit. Writes retain their two-second deadline.
+
+The runtime records each direct child's start identity at launch. Descendant
+enumeration now runs during cleanup, when the supervisor freezes the tree and
+verifies what stopped. An abrupt relay loss still leaves cleanup unconfirmed
+because a descendant may already have been reparented.
+
+The daemon and `mesimon state` use a five-second freshness window. The runtime
+therefore writes a heartbeat after one second without a snapshot write. It
+compares the whole snapshot before replacing the file. A steer acknowledgement
+can change the snapshot without advancing the evidence sequence, and a preview
+can change independently. Selection is still written before forwarding. Streamed
+updates still coalesce over 250 ms. Six consecutive idle heartbeat intervals
+measured 1,001–1,015 ms with the evidence sequence steady.
+
+Measured on macOS with the same debug build profile and two disposable
+WebSocket peers. Each run selected a foreground thread and then sent no frames
+for five minutes. CPU is the supervisor PID's user plus system time from
+`proc_pid_rusage`, converted with the host's Mach timebase. The peers and daemon
+are outside the measurement.
+
+| One idle runtime | Wall seconds | CPU seconds | Percent of one core |
+| --- | ---: | ---: | ---: |
+| Before | 300.012 | 2.590 | 0.863% |
+| After | 300.002 | 0.147 | 0.049% |
+
+A separate wire check sent 80 server notifications while the native peer held
+a partial steer frame open. The turn reached Running, the completed steer was
+acknowledged once, and the interrupt settled after the read-only audit. The
+first fixture omitted that audit endpoint and correctly left the seat held.
+
+`cargo ut` passed (3,327 tests, 13 ignored). The targeted tmux run passed
+173 of 174 on the first run. The Claude fixture
+`prompt_e2e::a_person_s_prompt_waits_for_a_box_not_yet_drawn` failed at
+`SleepSession` and passed on its isolated rerun, as previously recorded for T-1319.
