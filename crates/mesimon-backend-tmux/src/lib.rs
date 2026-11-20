@@ -589,11 +589,16 @@ impl TmuxBackend {
     /// Bracketed input without submission. The provider owns readiness and
     /// the delay before Enter; native Codex paste detection needs that gap.
     pub fn paste_input(&self, sid16: &str, text: &str) -> Result<()> {
+        // Each load/paste pair owns its buffer. Steers can now paste on a
+        // worker while another seat receives words from the board.
+        static NEXT_BUFFER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT_BUFFER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let buffer = format!("msmn-paste-{}-{seq}", std::process::id());
         use std::io::Write as _;
         use std::process::Stdio;
         let mut child = self
             .tmux()
-            .args(["load-buffer", "-b", "msmn-paste", "-"])
+            .args(["load-buffer", "-b", &buffer, "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -609,7 +614,10 @@ impl TmuxBackend {
         if !st.success() {
             bail!("tmux load-buffer failed");
         }
-        self.run(&["paste-buffer", "-p", "-b", "msmn-paste", "-d", "-t", sid16])?;
+        if let Err(error) = self.run(&["paste-buffer", "-p", "-b", &buffer, "-d", "-t", sid16]) {
+            let _ = self.run(&["delete-buffer", "-b", &buffer]);
+            return Err(error);
+        }
         Ok(())
     }
 

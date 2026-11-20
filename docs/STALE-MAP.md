@@ -47929,3 +47929,36 @@ The persisted forge cache was inactive on this board (zero PR rows both ways).
 A daemon regression binds a PR, cost and worktree to an archived ticket,
 parks its last pane, and checks both the trimmed snapshot and the archive reads.
 Cost aggregation still walks the historical hour/model buckets for the board total.
+
+## Writer time in subscriber pushes, Codex steers and lifecycle checks (T-1339, 2026-11-20)
+
+The comparison in T-1328/T-1329 named both writer stalls and hook-delivery latency.
+On this board the November journal and read-only timers gave the following ordering.
+Journal entries time entire writer stages. The timers measure individual synchronous
+operations on the board's repository, files or private tmux server. The full-socket
+and incomplete-hook cases used disposable socket pairs.
+
+| Road | Time before the change | Decision |
+| --- | ---: | --- |
+| Subscriber | 5,002 ms for one write to a full socket; journalled broadcast 1,495 ms on Nov 10 | One buffered invalidation per connection. The board never takes the socket mutex to broadcast. A notification writer encountering a full socket or partial write disconnects the client. |
+| Teardown | 1,592 ms in the Nov 13 tick | Reserve the binding, read fresh branch/ancestor evidence on a worker, recheck the binding and archive on receipt, then kill the terminal and remove the tree on the removal worker. |
+| Inactivity park | 633 ms on Nov 15 and 342 ms on Nov 18; 4.79 ms median for the client-activity fork alone | The worker reads pane ownership, history and client activity. The writer checks the idle spell, conversation, authorization, pending words and column again before parking. The copy and signal hold the seat against a racing wake. |
+| Codex steer | 5.25 ms median for one live capture; 233.2 ms for three with the two gaps, before paste | The worker checks the receipt and the pane, reads the composer and pastes. A caller gets the paste's actual result. The due Enter reads the screen at the key on a worker. Concurrent pastes have separate tmux buffers. |
+| Ticket's allowed columns | 211.6 ms median for a 32,841,044-byte board transcript from a cold cursor; 36.7 ms for a touched single-leg git gate, 12.6 ms for an untouched tip | Read fresh tips, ancestry and required tails off the writer. On this board the pipeline switch is off; the cold transcript number exercises the gate reader directly. This ticket's caught-up ledger read took 0.12 ms. Three reads of its 2,228-byte note took 0.036 ms median and stayed local. |
+| Forge remote discovery | 27.7 ms median for a cold HTTPS lookup (9 reads); zero SSH calls for this board's remote | Discover missing remotes together on a worker. An SSH alias's configuration expansion and its three-second deadline are on that worker too. |
+| Codex orphan sweep | 10.2 ms median for the two live tmux queries (7 samples) | The process wait has no deadline. The existing orphan-check worker reads the panes before its endpoint and owner checks. |
+| Hook ordering | 0 ms of writer wait; 751.8 ms median for an incomplete frame's reader deadline | Keep accept order. Its queue and socket readers are already on separate threads from the board writer. A slow connection can delay other hooks. |
+
+No live pane received measurement input, no live ticket was archived for timing, and
+the held-socket measurements did not suspend a production client.
+
+Faster compact reads exposed a race in the crown's merge watch. A newly cut
+branch could gain a commit and land before its first flags sample. The
+provision worker's matching branch and cut OIDs establish the initial unmerged
+observation, so that first sample can report the landing. Restored bindings
+still use their existing baseline. A unit case delivers the merged sample
+immediately after provisioning.
+
+A crown merge issued just after switching to pull requests now waits for the
+new target's flags before its refusal is judged. An empty cache during that
+refresh had made an ahead branch read as having no commits.

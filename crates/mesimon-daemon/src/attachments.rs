@@ -51,6 +51,7 @@ const GRANT_MAX_BYTES: usize = DRAFT_MAX_BYTES / 2;
 const GRANT_MAX_UPLOADS: usize = 8;
 
 struct Upload {
+    held: bool,
     owner: Owner,
     bytes: Vec<u8>,
     meta: Option<Attachment>,
@@ -104,6 +105,7 @@ impl Uploads {
                 self.0.insert(
                     id,
                     Upload {
+                        held: false,
                         owner: owner.clone(),
                         bytes: Vec::new(),
                         meta: None,
@@ -150,6 +152,7 @@ impl Uploads {
             );
             let u = self.0.get(id).context("attachment upload expired; retry the save")?;
             anyhow::ensure!(u.owner.is(owner), "attachment upload belongs to another connection");
+            anyhow::ensure!(!u.held, "attachment upload is pending delivery");
             result.push((
                 u.meta.clone().context("attachment upload is incomplete")?,
                 u.bytes.clone(),
@@ -169,6 +172,14 @@ impl Uploads {
     /// Every upload `owner` holds: a revoked grant's.
     pub fn discard_all(&mut self, owner: &Owner) {
         self.0.retain(|_, u| !u.owner.is(owner));
+    }
+
+    pub fn hold(&mut self, ids: &[Ulid], held: bool) {
+        for id in ids {
+            if let Some(upload) = self.0.get_mut(id) {
+                upload.held = held;
+            }
+        }
     }
 
     pub fn committed(&mut self, ids: &[Ulid]) {

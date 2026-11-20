@@ -34,7 +34,7 @@ use crate::paths::Paths;
 
 /// How long one CLI call may take before its group is killed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
-/// `ssh -G`'s deadline (T-838): it runs on the writer thread, once per
+/// `ssh -G`'s deadline (T-838): it runs once per
 /// SSH alias, and evaluates `Match exec` blocks of the person's own
 /// config, so a slow one must not hold the board for a CLI call's 20 s.
 const SSH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1906,6 +1906,7 @@ pub struct State {
     pub probes: HashMap<String, HostProbe>,
     /// Per repository directory: its remote, parsed once.
     pub remotes: HashMap<PathBuf, Option<Remote>>,
+    pub reading_remotes: bool,
     /// Per repository directory: every remote's path on its remote's host
     /// (`Remotes::paths`, T-800), what a PR's `repo` is matched against.
     pub paths: HashMap<PathBuf, Vec<String>>,
@@ -2206,15 +2207,6 @@ impl State {
             && local.pushed == basis.pushed
             && local.tail_opened == Some(false)
             && opened.iter().all(|u| basis.opened.iter().any(|b| forge::same_url(b, u)))
-    }
-
-    /// The remote a repository directory is read through, parsed once
-    /// (`remotes_of`) and kept, with its remotes' paths.
-    pub fn remote(&mut self, repo: &Path, base: &str) -> Option<&Remote> {
-        if !self.remotes.contains_key(repo) {
-            self.remember_remote(repo.to_path_buf(), remotes_of(repo, base));
-        }
-        self.remotes.get(repo).and_then(Option::as_ref)
     }
 
     /// Install the first completed read, including aliases used to match a PR.
@@ -4723,7 +4715,8 @@ mod tests {
         assert_eq!(r.paths, ["me/r", "o/r"], "the upstream beside it, the other host's not");
         assert_eq!(remote_of(&dir, "main"), Some(r.remote.clone()));
         let mut s = State::default();
-        assert_eq!(s.remote(&dir, "main").map(Remote::key).as_deref(), Some("github.com/me/r"));
+        s.remember_remote(dir.clone(), Some(r));
+        assert_eq!(s.remotes[&dir].as_ref().map(Remote::key).as_deref(), Some("github.com/me/r"));
         assert_eq!(s.repo_paths(&dir), ["me/r", "o/r"]);
         assert!(s.repo_paths(&dir.join("nope")).is_empty());
         let t = ulid::Ulid::new();

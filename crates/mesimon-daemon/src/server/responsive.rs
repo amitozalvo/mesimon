@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Jobs {
+    pub park_checks: std::collections::HashSet<uuid::Uuid>,
     pub reaping: HashMap<String, Instant>,
     pub resumes: std::collections::HashSet<uuid::Uuid>,
     pub shell_wakes: std::collections::HashSet<uuid::Uuid>,

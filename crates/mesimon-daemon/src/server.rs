@@ -115,6 +115,7 @@ mod crownrules;
 mod crownsample;
 mod crownwake;
 mod eviction;
+mod gate_reads;
 mod mcpcompat;
 mod mesophon;
 #[cfg(test)]
@@ -124,6 +125,7 @@ mod responsive;
 mod session_saves;
 mod shelf;
 mod shells;
+mod steer;
 mod teamglue;
 mod tiers;
 #[cfg(test)]
@@ -151,6 +153,7 @@ enum Park {
     /// A checked `sleep_agent` write; its receipt chain owns this park.
     Crown,
     Automatic,
+    Inactivity,
 }
 
 /// Who holds the exclusive focus token (D22): a ticket's session, or the
@@ -278,7 +281,7 @@ const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
 /// Why an agy start or wake is refused where its switch is off (T-1225).
 const AGY_SWITCHED_OFF: &str =
     "agy sessions are switched off in this build ∙ MESIMON_AGY=1 in the daemon's environment turns them on";
-/// How long a write to a subscriber's socket may block the writer thread
+/// How long a subscriber's own socket writer waits for the client
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
 /// is gone from the daemon's point of view.
@@ -374,6 +377,7 @@ struct ColumnEviction {
 }
 
 /// Why a worktree is going, which is what decides what stays behind.
+#[derive(Clone, Copy)]
 enum TeardownWhy {
     /// The ticket left through the grace band: the binding goes with it,
     /// and `discard` is the user's explicit `-D` on an unmerged branch.
@@ -494,6 +498,11 @@ struct WorktreeSample {
 }
 
 enum Msg {
+    SteerCheck(uuid::Uuid, ulid::Ulid, Sender<Result<(), String>>),
+    SteerPasted(steer::Attempt, Result<(), String>),
+    SteerPressed(uuid::Uuid, ulid::Ulid),
+    TicketGates(Box<gate_reads::ViewRead>),
+    TeardownChecked(Teardown, gate_reads::BranchQuery, Vec<gate_reads::LegRead>),
     PeerAnswered(ulid::Ulid, Box<Result<Response, String>>),
     Reaped(Vec<(String, Instant, bool)>, Duration),
     TerminalOpened(Result<(), String>, Vec<(&'static str, Duration)>),
@@ -514,6 +523,7 @@ enum Msg {
     /// The known-owner checks for orphaned Codex cleanup records came back
     /// (T-357): per record, its generation and whether every known native
     /// owner is provably gone. Off-thread because it forks `ps`.
+    ParkChecked(Box<SessionRecord>, Option<u64>),
     CodexOrphansChecked(Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>),
     /// The wheel.
     Tick,
@@ -554,6 +564,7 @@ enum Msg {
     WorktreeFlags(WorktreeSample),
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
+    ForgeRemotes(u64, Vec<(std::path::PathBuf, Option<crate::forge::Remotes>)>),
     ForgeSampled(u64, crate::forge::Sample),
     /// The pane sampler's reads landed (T-857): `pane_facts`, `activity`,
     /// the startup and composer captures, `ps`, `server_alive` and the
@@ -612,7 +623,7 @@ pub struct Daemon {
     backend: TmuxBackend,
     grace: HashMap<ulid::Ulid, GraceEntry>,
     uploads: crate::attachments::Uploads,
-    subscribers: Vec<Arc<Mutex<UnixStream>>>,
+    subscribers: HashMap<usize, std::sync::mpsc::SyncSender<()>>,
     focus: Option<FocusHold>,
     shutting_down: bool,
     /// `daemon.log`: started / stopping / stopped / slow turn (`journal`).
@@ -1219,6 +1230,8 @@ pub struct Daemon {
     /// The sample the `sample_agent` call in hand started (T-973): the
     /// writer loop parks that call's reply with it (`sample_park_reply`).
     sample_wait: Option<u64>,
+    steer_effects: HashMap<ulid::Ulid, Vec<steer::AfterPaste>>,
+    steer_calls: Option<Vec<std::sync::mpsc::Receiver<Result<(), String>>>>,
     /// Samples whose read is on a worker thread, by id, with their parked
     /// replies. Memory only: a restart drops the read and the call with it.
     samples: HashMap<u64, crownsample::Sampling>,
@@ -1808,6 +1821,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // Keep asynchronous inputs that arrive during the final save in order.
     // If the disk refuses shutdown, their workers must still be heard.
     let mut deferred = std::collections::VecDeque::new();
+    let mut merge_reads = Vec::new();
     loop {
         let msg = if d.shutting_down {
             rx.recv().ok()
@@ -1841,6 +1855,11 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
+            Msg::SteerCheck(..) | Msg::SteerPasted(..) | Msg::SteerPressed(..) => {
+                "codex steer".into()
+            }
+            Msg::TicketGates(_) => "ticket gates read".into(),
+            Msg::TeardownChecked(..) => "teardown checked".into(),
             Msg::PeerAnswered(..) => "peer answered".into(),
             Msg::Reaped(..) => "reaped".into(),
             Msg::TerminalOpened(..) => "terminal opened".into(),
@@ -1850,6 +1869,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ModHook(f) => format!("mod frame {}", f.event).into(),
             Msg::RoadProbed(_) => "claude road probed".into(),
             Msg::CodexSnapshots(_) => "Codex observations".into(),
+            Msg::ParkChecked(..) => "inactivity checked".into(),
             Msg::CodexOrphansChecked(_) => "Codex orphans checked".into(),
             Msg::Hook(f) => format!("hook {}", f.event).into(),
             Msg::RemotePermission(..) => "remote permission".into(),
@@ -1867,6 +1887,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::ForgeRemotes(..) => "forge remotes".into(),
             Msg::ForgeSampled(..) => "forge sampled".into(),
             Msg::PaneSampled(_) => "pane sampled".into(),
             Msg::ForgeBurst(..) => "forge burst".into(),
@@ -1883,6 +1904,20 @@ pub fn run(paths: Paths) -> Result<()> {
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
+            Msg::SteerCheck(id, receipt, answer) => {
+                let _ = answer.send(d.steer_allowed(id, receipt));
+            }
+            Msg::SteerPasted(job, result) => d.steer_pasted(job, result),
+            Msg::SteerPressed(id, receipt) => {
+                if d.owed.get(&id).is_some_and(|o| o.receipt_id == receipt)
+                    && d.finish_steer_press(id, now_ms())
+                {
+                    d.persist_sessions();
+                    d.broadcast();
+                }
+            }
+            Msg::TicketGates(read) => d.ticket_gates_read(*read),
+            Msg::TeardownChecked(job, query, reads) => d.teardown_checked(job, query, reads),
             Msg::PeerAnswered(id, answer) => d.peer_answered(id, *answer),
             Msg::Reaped(done, took) => d.reaped(done, took),
             Msg::TerminalOpened(result, timings) => d.terminal_opened(result, timings),
@@ -1911,6 +1946,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::RoadProbed(probe) => d.on_road_probed(probe),
             Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
+            Msg::ParkChecked(rec, timeout) => d.park_checked(*rec, timeout),
             Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
             Msg::Provisioned(ticket, result, took, inits) => {
                 d.on_provisioned(ticket, result, took, inits)
@@ -1927,7 +1963,37 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::CostScanned(done) => d.on_cost_scanned(done),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
-            Msg::WorktreeFlags(sample) => d.on_worktree_flags(sample),
+            Msg::WorktreeFlags(sample) => {
+                d.on_worktree_flags(sample);
+                if !d.wt_refresh_pending {
+                    for (generation, env, protocol, reply, stream) in merge_reads.drain(..) {
+                        if generation == d.merge_target_gen {
+                            deferred.push_back(Msg::Request(env, protocol, reply, stream));
+                        } else {
+                            // A request held on a PR board must not land a
+                            // local merge if the person switches targets again.
+                            d.session_reply(
+                                reply,
+                                Response::Err {
+                                    message: "the merge target changed during the request".into(),
+                                },
+                                None,
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+            Msg::ForgeRemotes(epoch, found) => {
+                if epoch == d.forge.epoch {
+                    d.forge.reading_remotes = false;
+                    for (dir, remote) in found {
+                        d.forge.remember_remote(dir, remote);
+                    }
+                    d.queue_worktree_flags();
+                    d.queue_forge_sample();
+                }
+            }
             Msg::ForgeSampled(gen, sample) => d.on_forge_sampled(gen, sample),
             Msg::PaneSampled(sample) => d.on_pane_sampled(*sample),
             Msg::ForgeBurst(epoch, sample) => d.on_forge_burst(epoch, sample),
@@ -1945,6 +2011,16 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ShelfRead(build, pages) => d.shelf_read(*build, pages),
             Msg::AgentSampled(id, read) => d.sample_landed(id, *read),
             Msg::CrownTold(session, gen) => d.crown_rules.acked(session, gen, now_ms()),
+            Msg::Request(env, protocol, reply, stream)
+                if matches!(env.command, Command::AgentMergeTicket { .. })
+                    && d.through_prs()
+                    && d.wt_refresh_pending =>
+            {
+                // Switching merge targets cleared the flags. The flags
+                // worker is learning the new upstream and remote. Judge
+                // the request, including its seen stamp, after that read.
+                merge_reads.push((d.merge_target_gen, env, protocol, reply, stream));
+            }
             Msg::Request(env, protocol, reply, stream) => {
                 // The mod's bridge poll is no tool call, so it tells no crown.
                 let caller = match (&env.principal, &env.command) {
@@ -1955,7 +2031,20 @@ pub fn run(paths: Paths) -> Result<()> {
                 let before = d.session_saves.requested;
                 let mutates = env.command.meta().action != Action::Read;
                 let shutdown = matches!(env.command, Command::Shutdown);
+                d.steer_calls = matches!(
+                    env.command,
+                    Command::PromptSession { .. }
+                        | Command::PromptColumn { .. }
+                        | Command::MergeToAgent { .. }
+                        | Command::MergeTicket { .. }
+                        | Command::SendQueuedAsk { .. }
+                        | Command::NoteToAgent { .. }
+                        | Command::AgentMergeTicket { .. }
+                        | Command::AgentAskTicket { .. }
+                )
+                .then(Vec::new);
                 let resp = d.handle_compatible(env, protocol, &stream);
+                let steers = d.steer_calls.take().unwrap_or_default();
                 if mutates {
                     d.persist_sessions();
                 }
@@ -1996,12 +2085,26 @@ pub fn run(paths: Paths) -> Result<()> {
                 if let Some(reply) = reply {
                     if shutdown && d.shutting_down && matches!(resp, Response::Ok) {
                         shutdown_reply = Some(reply);
+                    } else if let Response::AgentTicket { ticket } = resp {
+                        d.reply_ticket_view(
+                            ticket,
+                            reply,
+                            caller,
+                            d.session_saves.requested != before,
+                        );
                     } else {
+                        let wait = d.session_saves.requested != before;
                         let (response, told) = match caller {
                             Some(session) => d.with_crown_rules(session, resp),
                             None => (resp, None),
                         };
-                        d.session_reply(reply, response, told, d.session_saves.requested != before);
+                        if steers.is_empty() {
+                            d.session_reply(reply, response, told, wait);
+                        } else {
+                            d.after_session_save(wait, move |_, saved| {
+                                steer::reply_after_pastes(steers, saved, response, told, reply);
+                            });
+                        }
                     }
                 }
             }
@@ -2159,7 +2262,7 @@ impl Daemon {
             backend,
             grace: HashMap::new(),
             uploads: Default::default(),
-            subscribers: Vec::new(),
+            subscribers: HashMap::new(),
             focus: None,
             shutting_down: false,
             journal,
@@ -2337,6 +2440,8 @@ impl Daemon {
             crown_plans: HashMap::new(),
             plan_waits: None,
             sample_wait: None,
+            steer_effects: HashMap::new(),
+            steer_calls: None,
             samples: HashMap::new(),
             sample_seq: 0,
             crown_answer_lines: HashMap::new(),
@@ -3487,6 +3592,12 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         let resp = match serde_json::from_str::<mesimon_core::command::WireRequest>(&line) {
             Ok(request) => {
                 let env = request.envelope;
+                if matches!(env.command, Command::Subscribe) {
+                    // Shared socket option, set before any notification writer starts.
+                    if reader.get_ref().set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT)).is_err() {
+                        break;
+                    }
+                }
                 legacy_agent = matches!(env.principal, Principal::Agent { .. })
                     && request.mcp_protocol != mesimon_core::command::MCP_PROTOCOL;
                 match env.command {
@@ -3519,9 +3630,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         // Deferred replies take this path too. A legacy MCP reader does not
         // know the wrapper, and stripping it must not mark its rules told.
         let (resp, told) = mcpcompat::wire_reply(resp, told, legacy_agent);
-        // Serialize BEFORE taking the writer lock: this same Arc sits in
-        // `Daemon::subscribers`, and the writer thread's broadcast() blocks
-        // on it — a large response must hold it only for the write itself.
+        // Serialize before taking the socket lock shared with notifications.
         let Ok(json) = serde_json::to_string(&resp) else { break };
         if !write_reply(&writer, &json, told, &tx) {
             break;
@@ -3533,6 +3642,29 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     // Same `tx` as the requests above, so it orders after them: whatever
     // this connection armed is disarmed once its last word is in.
     let _ = tx.send(Msg::ClientGone(writer));
+}
+
+/// Only this worker and the connection's reply writer touch the socket.
+fn subscriber(stream: Arc<Mutex<UnixStream>>) -> std::sync::mpsc::SyncSender<()> {
+    let (notify, pending) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        use std::os::fd::AsRawFd;
+        let mut line = serde_json::to_vec(&Event::BoardChanged).expect("unit event");
+        line.push(b'\n');
+        while pending.recv().is_ok() {
+            let Ok(writer) = stream.lock() else { break };
+            // A full subscriber must also leave the socket mutex available
+            // to a terminal-open request. A partial frame ends the stream.
+            let sent = unsafe {
+                libc::send(writer.as_raw_fd(), line.as_ptr().cast(), line.len(), libc::MSG_DONTWAIT)
+            };
+            if sent != line.len() as isize {
+                let _ = writer.shutdown(std::net::Shutdown::Both);
+                break;
+            }
+        }
+    });
+    notify
 }
 
 /// One reply line on a connection, and only once it is written the crown's
@@ -3580,8 +3712,9 @@ enum AgentReplay {
 /// move reads the branch's tip and the transcripts now; a snapshot reads
 /// the flags' tip and the ledger, since it judges every held line on
 /// every broadcast.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reading {
+#[derive(Clone, Copy)]
+enum Reading<'a> {
+    Observed(&'a gate_reads::Facts),
     Fresh,
     Cached,
 }
@@ -3717,18 +3850,7 @@ impl Daemon {
             }
             Command::Subscribe => {
                 let was_headless = !self.git_has_reader();
-                // A subscriber that stops reading (a TUI under Ctrl+Z) must
-                // not hold the writer thread (T-838): its socket's send
-                // buffer is 8 KiB on macOS, and a push or a reply into a
-                // full one blocked for good, every tick, hook and other
-                // client behind it. The timeout is the socket's, so the
-                // reply writer's clone takes it too; a write that times
-                // out drops the subscriber and ends its loop, and the
-                // client reconnects as after any dropped line.
-                if let Ok(s) = stream.lock() {
-                    let _ = s.set_write_timeout(Some(SUBSCRIBER_WRITE_TIMEOUT));
-                }
-                self.subscribers.push(stream.clone());
+                self.subscribers.entry(conn_key(stream)).or_insert_with(|| subscriber(stream.clone()));
                 // A headless daemon stopped sampling (T-251): the first board
                 // back gets a fresh header now rather than at the next bucket.
                 if was_headless {
@@ -4272,7 +4394,7 @@ impl Daemon {
             self.want_panes();
         }
         if self.ticks.is_multiple_of(inactivity_park_ticks()) {
-            changed |= stage!(self, "park_inactive", self.park_inactive(now));
+            stage!(self, "park_inactive", self.park_inactive(now));
         }
         if self.ticks.is_multiple_of(RSS_TICKS) {
             changed |= self.want_rss();
@@ -5233,7 +5355,13 @@ impl Daemon {
                 Some(mode) => self.codex_modes.insert(id, mode),
                 None => self.codex_modes.remove(&id),
             };
-            if self.owed.get(&id).and_then(|o| o.steer).is_some_and(|from| snapshot.steers > from) {
+            if self
+                .owed
+                .get(&id)
+                .filter(|o| o.sent_at.is_some())
+                .and_then(|o| o.steer)
+                .is_some_and(|from| snapshot.steers > from)
+            {
                 steered.push(id);
             }
             // T-843: a seat held a minute past its turn's close goes to the
@@ -7275,6 +7403,12 @@ impl Daemon {
     /// drops the ask: they talked to the agent ahead of it, and the parked
     /// words may now be moot. The one settling site for every road (T-244).
     fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
+        if self.owed.get(&id).is_some_and(|o| o.steer.is_some() && o.sent_at.is_none()) {
+            // The runtime observed someone else's words while ours were
+            // still being checked. Invalidate the worker's reservation.
+            self.control_unsent(id);
+            self.drop_owed(id);
+        }
         // A `/` command or a `!` line acked off the screen (T-876, T-894)
         // is the box's own, not a prompt: words still unsent stay so, and
         // a queued ask stays queued.
@@ -9717,7 +9851,11 @@ impl Daemon {
                         let notice = self.notice_after_merge(target, &by);
                         let seen = self.crown_touched(ticket, target, "merged", write);
                         if notice == "sent" {
-                            self.await_notice_turn(target);
+                            self.after_paste(target, move |d, pasted| {
+                                if pasted {
+                                    d.await_notice_turn(target);
+                                }
+                            });
                         }
                         if let Some(o) = self.owed.values().find(|o| {
                             notice == "sent"
@@ -11665,7 +11803,7 @@ impl Daemon {
         self.agent_replay.insert((session, key), result);
     }
 
-    /// Where `move_ticket` would actually accept a move to, right now.
+    /// Candidate destinations before the ticket reply reads git and the transcripts.
     ///
     /// This is why `to_column` needs no schema `enum`: the valid set travels
     /// as transient result data instead of becoming permanent model context.
@@ -11675,17 +11813,18 @@ impl Daemon {
     /// then refuse it, nor one with an unticked summary box a
     /// `requires_ticked` column (T-735), nor one whose PR has not passed a
     /// `requires_pipeline` column (T-739, the same predicate, T-750).
-    fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
+    fn agent_candidate_columns(&self, id: ulid::Ulid) -> Vec<String> {
         let Some(t) = self.board.ticket(id) else { return Vec::new() };
         if self.agent_tools_for(id) < AgentTools::Full {
             return Vec::new();
         }
-        // `column_gate` reads a note or a transcript only for a column
-        // whose gate asks: a board with the gates off reads none here.
+        // The response finishes its merge and pipeline gates after their fresh reads.
         self.board
             .sorted_columns()
             .into_iter()
-            .filter(|c| c.name != t.column && self.column_gate(id, &c.name).is_none())
+            .filter(|c| {
+                c.name != t.column && (!c.settings.requires_ticked || self.open_boxes(id) == 0)
+            })
             .map(|c| c.name.clone())
             .collect()
     }
@@ -11759,6 +11898,13 @@ impl Daemon {
             return Some(true);
         }
         match read {
+            Reading::Observed(facts) => {
+                if self.costs.opened_owed(id, &owed) {
+                    Some(true)
+                } else {
+                    facts.urls.as_ref().map(|urls| urls.iter().any(|url| owed(url)))
+                }
+            }
             Reading::Fresh => self.costs.opened_unread(id, &self.live_transcripts(id), owed),
             Reading::Cached => Some(self.costs.opened_owed(id, owed)),
         }
@@ -11888,6 +12034,12 @@ impl Daemon {
                 let open = set.iter().any(|p| p.state.is_open() && paths.contains(&p.repo));
                 let tip = match read {
                     _ if !open => String::new(),
+                    Reading::Observed(facts) => facts
+                        .legs
+                        .iter()
+                        .find(|r| r.leg.repo == leg.repo)
+                        .map(|r| r.tip.clone())
+                        .unwrap_or_default(),
                     Reading::Fresh => worktree::branch_tip(&leg.repo, &b.branch),
                     Reading::Cached => self
                         .wt_repos
@@ -12129,7 +12281,13 @@ impl Daemon {
         let ack = Ack { by: "automation", word: "merge_notice_landed" };
         match self.merge_to_agent(id, req, by, ack) {
             Response::Ok => {
-                self.feed.board("automation", "merge_notified", Some(id));
+                self.after_paste(id, move |d, pasted| {
+                    d.feed.board(
+                        "automation",
+                        if pasted { "merge_notified" } else { "merge_notice_failed" },
+                        Some(id),
+                    );
+                });
                 "sent"
             }
             _ => {
@@ -12293,7 +12451,7 @@ impl Daemon {
                 }
                 _ => None,
             }),
-            allowed_columns: Some(self.agent_allowed_columns(id)),
+            allowed_columns: Some(self.agent_candidate_columns(id)),
             column_descriptions: self.agent_column_descriptions(),
             automove: Some(
                 self.board
@@ -12638,6 +12796,29 @@ impl Daemon {
         unmerged: impl Fn() -> Option<String>,
         read: Reading,
     ) -> Option<String> {
+        if let Some(why) = self.merge_pipeline_gate(id, dest, unmerged, read) {
+            return Some(why);
+        }
+        // Its summary-box twin (T-735), off unless a person turned it on:
+        // the card's open box says work is left, so the column refuses it.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_ticked) {
+            if let Some(message) =
+                open_boxes_refusal(self.open_boxes(id), &format!("before {dest}"))
+            {
+                return Some(message);
+            }
+        }
+
+        None
+    }
+
+    fn merge_pipeline_gate(
+        &self,
+        id: ulid::Ulid,
+        dest: &str,
+        unmerged: impl Fn() -> Option<String>,
+        read: Reading,
+    ) -> Option<String> {
         // M4 DONE gate (author rule 3), now the column's `requires_merge`
         // (T-117): entering means the work landed — an unmerged worktree
         // blocks the move. It lived inside the human's move path until T-84,
@@ -12667,15 +12848,6 @@ impl Daemon {
         if self.board.column(dest).is_some_and(|c| c.settings.requires_pipeline) {
             if let Some(why) = self.pipeline_refusal(id, read) {
                 return Some(format!("{why} — before {dest}"));
-            }
-        }
-        // Its summary-box twin (T-735), off unless a person turned it on:
-        // the card's open box says work is left, so the column refuses it.
-        if self.board.column(dest).is_some_and(|c| c.settings.requires_ticked) {
-            if let Some(message) =
-                open_boxes_refusal(self.open_boxes(id), &format!("before {dest}"))
-            {
-                return Some(message);
             }
         }
         None
@@ -14098,13 +14270,10 @@ impl Daemon {
         // Keep the focused status line's `!N` live while a session holds focus
         // (attention transitions land here via persist_and_notify).
         self.refresh_status_line();
-        let line = match serde_json::to_string(&Event::BoardChanged) {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        self.subscribers.retain(|s| {
-            let Ok(mut w) = s.lock() else { return false };
-            writeln!(w, "{line}").is_ok()
+        // One outstanding invalidation covers every change until the client
+        // receives it and requests its next snapshot.
+        self.subscribers.retain(|_, sub| {
+            !matches!(sub.try_send(()), Err(std::sync::mpsc::TrySendError::Disconnected(())))
         });
         self.team_after_broadcast();
         self.control_changed();
@@ -14707,9 +14876,11 @@ impl Daemon {
     ) -> bool {
         // Fresh check on gate paths (the 10 s cache may lag a just-made
         // merge).
-        if !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base) {
-            return true;
-        }
+        (!leg.base.is_empty() && worktree::branch_merged(&leg.repo, &b.branch, &leg.base))
+            || self.landed_beyond_ancestry(id, leg, tip)
+    }
+
+    fn landed_beyond_ancestry(&self, id: ulid::Ulid, leg: &worktree::Leg, tip: &str) -> bool {
         // The forge's word (T-739), at the branch's tip as it stands: a
         // merged head that is the tip, or carries it (T-799), where the
         // branch has work of its own: a tip still at its cut lands
@@ -15426,15 +15597,14 @@ impl Daemon {
         // conflict too (T-770): not again until a read finds none.
         if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
             let conflict = self.forge.pr_conflict(id);
-            self.train.record_ask(
-                id,
-                self.base_tip_of(id).to_string(),
-                conflict,
-                now_ms(),
-                by.is_human(),
-                Instant::now(),
-            );
-            self.persist_train();
+            let base = self.base_tip_of(id).to_string();
+            let human = by.is_human();
+            self.after_paste(id, move |d, pasted| {
+                if pasted {
+                    d.train.record_ask(id, base, conflict, now_ms(), human, Instant::now());
+                    d.persist_train();
+                }
+            });
         }
         Response::Ok
     }
@@ -15797,60 +15967,6 @@ impl Daemon {
         Ok(())
     }
 
-    /// Words into a running Codex turn (T-845), as its own composer takes
-    /// them: Codex 0.163 sends what is entered mid-turn as a `turn/steer`,
-    /// which the running turn reads. Only into the box — a dialog is the
-    /// person's (T-568) — by bracketed paste, then an Enter of its own a
-    /// cadence later, after paste detection settles (`settle_owed`). The ack
-    /// is the runtime counting the steer past `from`, or a new turn if this
-    /// one ended under the words.
-    fn codex_steer(
-        &mut self,
-        id: uuid::Uuid,
-        ticket: ulid::Ulid,
-        text: &str,
-        ack: Ack,
-        from: u64,
-    ) -> Result<(), String> {
-        let Some(sid) = self.board.session(id).map(|s| s.sid16()) else {
-            return Err("no live agent session on this ticket — start or wake one first".into());
-        };
-        // A few reads at the key, never one (T-907): a frame Codex is mid-way
-        // through drawing hides the box's cursor. At most 200 ms on the writer.
-        let sight = crate::agents::codex::steer_sight(|i| {
-            if i > 0 {
-                std::thread::sleep(Duration::from_millis(crate::agents::codex::STEER_READ_GAP_MS));
-            }
-            self.backend.capture_input_screen(&sid)
-        })
-        .map_err(|e| format!("could not deliver: {e}"))?;
-        match sight {
-            crate::agents::codex::SteerSight::Composer => {}
-            crate::agents::codex::SteerSight::Dialog => {
-                return Err(mesimon_core::command::ANSWER_IN_PANE_FIRST.into());
-            }
-            crate::agents::codex::SteerSight::Unseen => {
-                return Err(mesimon_core::command::COMPOSER_NOT_FOUND.into());
-            }
-        }
-        self.backend.paste_input(&sid, text).map_err(|e| format!("could not deliver: {e}"))?;
-        let now = now_ms();
-        let words = Parked { text: text.to_string(), brief: false, title: false };
-        self.owed.insert(
-            id,
-            Owed {
-                presses: SUBMIT_ATTEMPTS,
-                next_press: Some(now + SUBMIT_RETRY_MS),
-                expires: None,
-                sent: Some(words),
-                steer: Some(from),
-                ..Owed::pasted(ticket, ack, now)
-            },
-        );
-        self.control_pasted(id);
-        Ok(())
-    }
-
     /// Words pasted into a running Codex turn and not yet taken (T-845).
     fn steering(&self, id: uuid::Uuid) -> bool {
         self.owed.get(&id).is_some_and(|o| o.steer.is_some())
@@ -15870,22 +15986,42 @@ impl Daemon {
             self.owed.remove(&id);
             return false;
         };
-        let (sid, ticket) = (rec.sid16(), rec.ticket);
+        let sid = rec.sid16();
         let after = self.owed.get(&id).map_or(u64::MAX, |o| o.screen_after);
         if rec.state.has_pane()
             && !matches!(rec.state, SessionState::RequiresAction { .. })
-            && crate::agents::codex::steer_presses(self.screen_since(&sid, after), || {
-                self.backend.capture_input_screen(&sid).ok()
-            })
+            && self.screen_since(&sid, after).is_none_or(crate::agents::codex::composer_holds_text)
         {
-            let _ = self.backend.send_enter(&sid);
+            let key = rec.pane_key.clone();
+            let owed = self.owed.get_mut(&id).expect("due steer");
+            let receipt = owed.receipt_id;
+            owed.next_press = None;
+            let backend = self.backend.clone();
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                if let Ok(target) = steer::target(&backend, &sid, key.as_deref()) {
+                    if crate::agents::codex::steer_presses(None, || {
+                        backend.capture_input_screen(&target).ok()
+                    }) && steer::check(&tx, id, receipt).is_ok()
+                    {
+                        let _ = backend.send_enter(&target);
+                    }
+                }
+                let _ = tx.send(Msg::SteerPressed(id, receipt));
+            });
+            return false;
         }
+        self.finish_steer_press(id, now)
+    }
+
+    fn finish_steer_press(&mut self, id: uuid::Uuid, now: u64) -> bool {
         let Some(owed) = self.owed.get_mut(&id) else { return false };
         if owed.presses > 1 {
             owed.presses -= 1;
             owed.next_press = Some(now + SUBMIT_RETRY_MS);
             return false;
         }
+        let ticket = owed.ticket;
         self.control_cancel(id);
         self.drop_owed(id);
         self.feed.board("daemon", "prompt_submit_gave_up", Some(ticket));
@@ -15918,7 +16054,7 @@ impl Daemon {
     /// prune in `broadcast` would catch it on the next failed write), and
     /// the train it armed stops: nobody is watching the board it drives.
     fn on_client_gone(&mut self, stream: &Arc<Mutex<UnixStream>>) {
-        self.subscribers.retain(|s| !Arc::ptr_eq(s, stream));
+        self.subscribers.remove(&conn_key(stream));
         self.clients.remove(&conn_key(stream));
         // What this board asked to be read goes with it (T-327).
         self.usage.drop_conn(conn_key(stream));
@@ -16056,7 +16192,17 @@ impl Daemon {
                             let ack = Ack { by: "automation", word: "merge_train_notice_landed" };
                             match self.merge_to_agent(t, req, &by, ack) {
                                 Response::Ok => {
-                                    self.feed.board("automation", "merge_train_notified", Some(t));
+                                    self.after_paste(t, move |d, pasted| {
+                                        d.feed.board(
+                                            "automation",
+                                            if pasted {
+                                                "merge_train_notified"
+                                            } else {
+                                                "merge_train_refused:deliver_failed"
+                                            },
+                                            Some(t),
+                                        );
+                                    });
                                 }
                                 _ => self.feed.board(
                                     "automation",
@@ -16605,7 +16751,13 @@ impl Daemon {
                     started += 1;
                 }
                 _ => {
-                    self.feed.board("local", "prompt_column_sent", Some(ticket));
+                    self.after_paste(ticket, move |d, pasted| {
+                        d.feed.board(
+                            "local",
+                            if pasted { "prompt_column_sent" } else { "prompt_column_failed" },
+                            Some(ticket),
+                        );
+                    });
                     sent += 1;
                 }
             }
@@ -18369,7 +18521,7 @@ impl Daemon {
         let t = t.clone();
         let _ = store::save_ticket(&self.paths, &t);
         self.drop_crown_if(id);
-        self.reclaim_on_archive(id, None);
+        self.reclaim_on_archive(id);
         true
     }
 
@@ -18387,22 +18539,17 @@ impl Daemon {
     /// as before: the archive stays reversible for work that has not landed.
     /// A snooze takes none of this — a snooze is a return.
     ///
-    /// `merged` is the sample's verdict where the caller has one (T-857:
-    /// `reclaim_archived`, every bucket, forks nothing on the writer), and
-    /// `None` asks git, the one fork a person's archive still makes;
-    /// `process_teardowns` makes the fresh check where it tears down.
-    fn reclaim_on_archive(&mut self, id: ulid::Ulid, merged: Option<bool>) {
+    /// A person's archive queues the fresh check directly. The periodic
+    /// reclaim queues it only after its worktree sample reads merged.
+    fn reclaim_on_archive(&mut self, id: ulid::Ulid) {
         let Some(b) = self.worktrees.get(&id) else { return };
-        // A teardown already queued or under way is judged again where it
-        // lands (`process_teardowns`), so the forks below are owed nothing
-        // here (T-856: `ticket_merged` is one to three git forks per leg, on
-        // the writer thread, asked every bucket for a tree still standing).
+        // One outstanding check per binding, including across repeated samples.
         if self.pending_teardown.iter().any(|t| t.ticket == id) || self.tearing_down.contains(&id) {
             return;
         }
-        let merged = !b.branch.is_empty() && merged.unwrap_or_else(|| self.ticket_merged(id));
+        // The teardown worker checks landing before the writer releases the tree.
         let awake = self.board.ticket_awake_sessions(id);
-        if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
+        if !worktree::reclaim_on_archive(b, true, awake, self.worktrees_barred) {
             return;
         }
         self.pending_teardown.push(Teardown {
@@ -18441,7 +18588,7 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in due {
-            self.reclaim_on_archive(id, Some(true));
+            self.reclaim_on_archive(id);
         }
     }
 
@@ -19400,68 +19547,94 @@ impl Daemon {
             return;
         }
         for i in ready.into_iter().rev() {
-            let Teardown { ticket, why, .. } = self.pending_teardown.remove(i);
-            let Some(b) = self.worktrees.get(&ticket).cloned() else { continue };
-            let merged = !b.branch.is_empty() && self.ticket_merged(ticket);
-            let archived = matches!(why, TeardownWhy::Archived);
-            if archived {
-                let still_archived = self.board.ticket(ticket).is_some_and(|t| t.is_archived());
-                if !still_archived || !merged {
-                    // Restored before its turn, or no longer landed: the
-                    // archive's rule no longer holds, and the tree stays.
-                    continue;
-                }
+            let job = self.pending_teardown.remove(i);
+            let ticket = job.ticket;
+            if !self.tearing_down.insert(ticket) {
+                self.pending_teardown.push(job);
+                continue;
             }
-            if b.path.is_dir() {
-                // The worktree's terminal (T-273) stands in the directory
-                // about to go: it is no session of the ticket, so the reaper
-                // never saw it. Killed here, first — never remove a live cwd.
-                let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
-            }
-            // The gates are judged here, on the writer, with the board in
-            // hand; the removal itself goes to a worker (T-561). `worktree
-            // remove --force` unlinks every file of the tree — a `target/`
-            // of a few GB is seconds — and `archive_all` queues one per
-            // ticket for the same tick, so done here it was the whole
-            // board waiting on a snapshot for 5–13 s (the journal's
-            // `process_teardowns` lines). Every leg, then the container
-            // (T-368): a merged leg's branch goes with `-d`, a discard's
-            // with `-D`; unmerged without discard keeps the branch (commits
-            // survive). On a workspace each leg is judged on its own, so a
-            // landed leg's branch goes while an unmerged sibling's stays.
-            let discard = matches!(why, TeardownWhy::Deleted { discard: true });
-            let workspace = b.is_workspace();
-            // The legs as the daemon reads them, each with its base (a
-            // teardown needs only their paths and repos).
-            let legs = self.binding_legs(&b);
-            let branch = b.branch.clone();
+            let Some(query) = self.branch_query(ticket) else {
+                self.tearing_down.remove(&ticket);
+                continue;
+            };
             let tx = self.tx.clone();
-            self.tearing_down.insert(ticket);
             std::thread::spawn(move || {
-                let started = Instant::now();
-                let branch_kept = worktree::teardown(&b, &legs, &|leg| {
-                    let leg_merged = if workspace {
-                        !leg.base.is_empty()
-                            && worktree::branch_merged(&leg.repo, &branch, &leg.base)
-                    } else {
-                        merged
-                    };
-                    if leg_merged {
-                        Some(false)
-                    } else if discard {
-                        Some(true)
-                    } else {
-                        None
-                    }
-                });
-                let _ = tx.send(Msg::TornDown {
-                    ticket,
-                    archived,
-                    branch_kept,
-                    took: started.elapsed(),
-                });
+                let reads = query.read(true);
+                let _ = tx.send(Msg::TeardownChecked(job, query, reads));
             });
         }
+    }
+
+    fn teardown_checked(
+        &mut self,
+        job: Teardown,
+        query: gate_reads::BranchQuery,
+        reads: Vec<gate_reads::LegRead>,
+    ) {
+        let ticket = job.ticket;
+        let why = job.why;
+        let archived = matches!(why, TeardownWhy::Archived);
+        let merged = !query.branch.is_empty()
+            && self.open_pr(ticket).is_none()
+            && self.reads_landed(ticket, &reads, false);
+        let current = self.branch_query(ticket);
+        let binding_changed = current.as_ref() != Some(&query);
+        if self.worktrees_barred
+            || binding_changed
+            || (archived
+                && !(merged
+                    && self.board.ticket(ticket).is_some_and(|t| t.is_archived())
+                    && self.board.ticket_awake_sessions(ticket) == 0))
+        {
+            self.tearing_down.remove(&ticket);
+            if current.is_some() && (binding_changed || self.worktrees_barred) {
+                self.pending_teardown.push(job);
+            }
+            self.replay_worktree_waiters(ticket);
+            return;
+        }
+        let b = self.worktrees[&ticket].clone();
+        let backend = self.backend.clone();
+        // The gates are judged here, on the writer, with the board in
+        // hand; the removal itself goes to a worker (T-561). `worktree
+        // remove --force` unlinks every file of the tree — a `target/`
+        // of a few GB is seconds — and `archive_all` queues one per
+        // ticket for the same tick, so done here it was the whole
+        // board waiting on a snapshot for 5–13 s (the journal's
+        // `process_teardowns` lines). Every leg, then the container
+        // (T-368): a merged leg's branch goes with `-d`, a discard's
+        // with `-D`; unmerged without discard keeps the branch (commits
+        // survive). On a workspace each leg is judged on its own, so a
+        // landed leg's branch goes while an unmerged sibling's stays.
+        let discard = matches!(why, TeardownWhy::Deleted { discard: true });
+        let workspace = b.is_workspace();
+        // The legs as the daemon reads them, each with its base (a
+        // teardown needs only their paths and repos).
+        let legs: Vec<_> = reads.into_iter().map(|r| r.leg).collect();
+        let branch = b.branch.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            if b.path.is_dir() {
+                let _ = backend.kill_session(&terminal_name(Some(ticket)));
+            }
+            let branch_kept = worktree::teardown(&b, &legs, &|leg| {
+                let leg_merged = if workspace {
+                    !leg.base.is_empty() && worktree::branch_merged(&leg.repo, &branch, &leg.base)
+                } else {
+                    merged
+                };
+                if leg_merged {
+                    Some(false)
+                } else if discard {
+                    Some(true)
+                } else {
+                    None
+                }
+            });
+            let _ =
+                tx.send(Msg::TornDown { ticket, archived, branch_kept, took: started.elapsed() });
+        });
     }
 
     /// A worker finished removing a tree (T-561): the bookkeeping the
@@ -20079,6 +20252,17 @@ impl Daemon {
                     Some(w) if !mesimon_core::workspace::InitRun::ok(&w) => Some(w),
                     _ => Some(r.run.clone()),
                 });
+                // At its cut the branch has no work to land. Keep that
+                // observation even if its first flags sample finishes after
+                // the agent commits and the person fast-forwards the base.
+                if self.worktrees.get(&ticket).is_some_and(|prior| prior.branch.is_empty())
+                    && self
+                        .binding_legs(&b)
+                        .iter()
+                        .all(|leg| !leg.base_oid.is_empty() && leg.base_oid == leg.branch_oid)
+                {
+                    self.wt_answered.entry(ticket).or_insert(false);
+                }
                 self.worktrees.insert(ticket, b);
                 self.replay_worktree_waiters(ticket);
             }
@@ -20219,16 +20403,11 @@ impl Daemon {
                     self.upstreams.get(&leg.name).cloned().flatten()
                 };
                 // A forge's repository counts against its upstream (T-786):
-                // the remote parsed once, as `learn_remotes` does, and only
-                // where the upstream is asked too.
+                // the cached remote is filled by the discovery or flags worker.
                 // Only where the board merges through pull requests (T-810):
                 // into main, the local base is what the train moves.
                 let forge = self.through_prs()
-                    && if ask_upstream {
-                        self.forge.remote(&leg.repo, &leg.base).is_some()
-                    } else {
-                        self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some)
-                    };
+                    && self.forge.remotes.get(&leg.repo).is_some_and(Option::is_some);
                 queries.push(worktree::RepoQuery {
                     name: leg.name.clone(),
                     repo: leg.repo.clone(),
@@ -20283,8 +20462,7 @@ impl Daemon {
     /// One forge pass (T-739), on a worker: due on its own minute, over
     /// the repositories the tickets' legs are checkouts of plus any a
     /// `pr create` named, each read through the CLI its host's probe
-    /// found. The remotes are parsed once per repository directory, here,
-    /// since a parse is three git reads.
+    /// found. The discovery worker fills the per-directory remote cache.
     fn queue_forge_sample(&mut self) {
         // A board with no worktree still reads the forge for the PRs its
         // checkout tickets name (T-859); `forge_query` says when there is
@@ -20495,10 +20673,12 @@ impl Daemon {
 
     /// The legs of a ticket a forge may read (T-761): each leg whose
     /// repository has a remote, by that remote's path and the worktree.
-    fn forge_legs(&mut self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
+    fn forge_legs(&self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
         let mut out = Vec::new();
         for leg in legs {
-            let Some(remote) = self.forge.remote(&leg.repo, &leg.base).cloned() else { continue };
+            let Some(remote) = self.forge.remotes.get(&leg.repo).and_then(Option::as_ref) else {
+                continue;
+            };
             out.push(crate::forge::LegQuery {
                 repo_path: remote.path.clone(),
                 repo_paths: self.forge.repo_paths(&leg.repo),
@@ -20509,6 +20689,46 @@ impl Daemon {
         out
     }
 
+    /// Discover all the checkout and worktree remotes together. Until this
+    /// completes, neither an incomplete host list nor a guessed upstream is a reading.
+    fn forge_remotes_ready(&mut self) -> bool {
+        if self.forge.reading_remotes {
+            return false;
+        }
+        let root = self.paths.repo_root.clone();
+        let mut missing = HashMap::new();
+        if !self.forge.remotes.contains_key(&root) {
+            missing.insert(root.clone(), self.base_branch.clone().unwrap_or_default());
+        }
+        for (ticket, binding) in &self.worktrees {
+            if binding.branch.is_empty() || self.tearing_down.contains(ticket) {
+                continue;
+            }
+            for leg in self.binding_legs(binding) {
+                if !self.forge.remotes.contains_key(&leg.repo) {
+                    missing.entry(leg.repo).or_insert(leg.base);
+                }
+            }
+        }
+        if !missing.is_empty() {
+            let epoch = self.forge.epoch;
+            let tx = self.tx.clone();
+            self.forge.reading_remotes = true;
+            std::thread::spawn(move || {
+                let found = missing
+                    .into_iter()
+                    .map(|(dir, base)| {
+                        let remote = crate::forge::remotes_of(&dir, &base);
+                        (dir, remote)
+                    })
+                    .collect();
+                let _ = tx.send(Msg::ForgeRemotes(epoch, found));
+            });
+            return false;
+        }
+        true
+    }
+
     /// What a forge read asks: every ticket's set, or `only` those (a
     /// turn's end, T-761, which probes no host). `None` when there is
     /// nothing to ask.
@@ -20516,11 +20736,9 @@ impl Daemon {
         &mut self,
         only: Option<&std::collections::HashSet<ulid::Ulid>>,
     ) -> Option<crate::forge::Query> {
-        let base = self.base_branch.clone().unwrap_or_default();
-        // The checkout's own remote, learned once (T-859): what a ticket
-        // on the checkout pushes to, and a host a read reaches.
-        let root = self.paths.repo_root.clone();
-        self.forge.remote(&root, &base);
+        if !self.forge_remotes_ready() {
+            return None;
+        }
         // Each ticket with what it names (T-859), read once for the pass.
         let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>, NamedPrs)> = Vec::new();
         for (t, b) in &self.worktrees {
@@ -22324,68 +22542,88 @@ impl Daemon {
     /// transition, by the rule that is due (`Board::idle_park_due`): the
     /// ticket's column's own `sleep_after_minutes` over any idle at its
     /// prompt (T-543), the only timer since T-610.
-    fn park_inactive(&mut self, now: u64) -> bool {
-        let minute = inactivity_minute_ms();
+    fn park_inactive(&mut self, now: u64) {
+        if !self.responsive.park_checks.is_empty() {
+            return;
+        }
         let candidates: Vec<_> = self
             .board
             .sessions
             .iter()
             .filter_map(|rec| {
-                let (rule, timeout) = self.board.idle_park_due(rec, now, minute)?;
-                Some((rec, timeout, rule))
+                let (_, timeout) = self.inactive_candidate(rec, now)?;
+                Some((rec.clone(), timeout))
             })
-            .filter(|&(rec, _, _)| {
-                self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
-                    // A `!` command running in the composer (T-707) is the
-                    // person at work; never park the pane under it.
-                    && !self.foregrounds.contains_key(&rec.id)
-                    && !self.pending_resumes.iter().any(|pending| pending.session == rec.id)
-                    && !self.owed_on(rec.ticket)
-                    && !self.queued.iter().any(|q| q.ticket == rec.ticket)
-                    && self.machines.get(&rec.id).is_some_and(|m| {
-                        let view = m.view();
-                        view.state == rec.state
-                            && view.pending.is_none()
-                            && !view.compacting
-                    })
-            })
-            .map(|(rec, timeout, rule)| (rec.id, timeout, rule))
             .collect();
-        let mut changed = false;
-        for (id, timeout, rule) in candidates {
-            let by = Principal::Automation { rule: rule.into() };
-            let rec = self.board.session(id).expect("candidate exists");
-            if !matches!(
-                authorize(&by, &Action::Mutate, &Resource::Session { id }),
-                Decision::Allow
-            ) || self.resume_board_guard(rec).is_some()
-                || self.resume_guard(rec, false).is_some()
-            {
-                continue;
-            }
-            // A person attached to the pane and typing in it within the
-            // timeout holds it awake (T-543): a column's minute is short
-            // enough to land while someone reads the answer, and the sleep
-            // would close the terminal under them. One `list-clients` fork,
-            // only for a session already due; a client quiet past the
-            // timeout is someone who walked away, and the park goes on.
-            let quiet_secs = self.backend.client_quiet_secs(&rec.sid16()).ok().flatten();
-            if quiet_secs.is_some_and(|secs| secs.saturating_mul(1000) < timeout) {
-                continue;
-            }
-            let adapter = crate::agents::adapter(rec.kind).expect("agent adapter");
-            // Preserve the exact conversation, using the same history and identity
-            // predicates as resume. A fresh-start fallback is not an automatic park.
-            if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
-                continue;
-            }
-            let ticket = rec.ticket;
-            if self.sleep_one(id, false, Park::Automatic).is_ok() {
-                self.feed.board("automation", rule, Some(ticket));
-                changed = true;
-            }
+        if candidates.is_empty() {
+            return;
         }
-        changed
+        self.responsive.park_checks.extend(candidates.iter().map(|(rec, _)| rec.id));
+        let backend = self.backend.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let panes = backend.snapshot().ok();
+            for (rec, timeout) in candidates {
+                let sid = rec.sid16();
+                let pid = panes
+                    .as_ref()
+                    .and_then(|panes| panes.iter().find(|p| p.session_name == sid && !p.pane_dead))
+                    .map(|p| p.pane_pid);
+                let ready = crate::agents::adapter(rec.kind).is_some_and(|a| {
+                    a.conversation_key(&rec).is_some()
+                        && !a.history_missing(&rec)
+                        && a.external_owner(&rec, pid).is_none()
+                }) && backend.client_quiet_secs(&sid).is_ok_and(|quiet| {
+                    quiet.is_none_or(|secs| secs.saturating_mul(1000) >= timeout)
+                });
+                let _ = tx.send(Msg::ParkChecked(Box::new(rec), ready.then_some(timeout)));
+            }
+        });
+    }
+
+    fn inactive_candidate(&self, rec: &SessionRecord, now: u64) -> Option<(&'static str, u64)> {
+        let (rule, timeout) = self.board.idle_park_due(rec, now, inactivity_minute_ms())?;
+        let id = rec.id;
+        let eligible = self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
+            && !self.foregrounds.contains_key(&id)
+            && !self.pending_resumes.iter().any(|p| p.session == id)
+            && !self.owed_on(rec.ticket)
+            && !self.queued.iter().any(|q| q.ticket == rec.ticket)
+            && self.machines.get(&id).is_some_and(|m| {
+                let view = m.view();
+                view.state == rec.state && view.pending.is_none() && !view.compacting
+            })
+            && self.resume_board_guard(rec).is_none()
+            // Only the board's conversation owners; the worker asks the provider.
+            && self.resume_guard(rec, true).is_none()
+            && !authorize(&Principal::Automation { rule: rule.into() }, &Action::Mutate,
+                &Resource::Session { id }).denied();
+        eligible.then_some((rule, timeout))
+    }
+
+    fn park_checked(&mut self, checked: SessionRecord, timeout: Option<u64>) {
+        let id = checked.id;
+        self.responsive.park_checks.remove(&id);
+        let Some(timeout) = timeout else { return };
+        let Some(rec) = self.board.session(id) else { return };
+        let Some((rule, current_timeout)) = self.inactive_candidate(rec, now_ms()) else { return };
+        let Some(adapter) = crate::agents::adapter(rec.kind) else { return };
+        if current_timeout != timeout
+            || rec.state != checked.state
+            || rec.state_changed_at != checked.state_changed_at
+            || rec.pane_key != checked.pane_key
+            || rec.codex_generation != checked.codex_generation
+            || rec.cwd != checked.cwd
+            || rec.transcript_path != checked.transcript_path
+            || adapter.conversation_key(rec) != adapter.conversation_key(&checked)
+        {
+            return;
+        }
+        if self.sleep_one(id, false, Park::Inactivity).is_ok() {
+            self.feed.board("automation", rule, Some(checked.ticket));
+            self.persist_sessions();
+            self.broadcast();
+        }
     }
 
     /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
@@ -22441,7 +22679,7 @@ impl Daemon {
         let Some(rec) = self.board.session(id) else {
             return Err("no such session".into());
         };
-        if park == Park::Automatic {
+        if matches!(park, Park::Automatic | Park::Inactivity) {
             mesimon_core::quiet::bulk_sleep_eligible(rec.kind, &rec.state)
                 .map_err(str::to_owned)?;
         }
@@ -22479,9 +22717,29 @@ impl Daemon {
         // there is genuinely no conversation to resume the wake mints a fresh
         // one under a new uuid rather than losing anything. The other sleep
         // road never said it, so one gesture answered two ways.
-        self.park_record(id, transcript.as_deref(), now, park);
-        let _ = self.backend.signal_session(&sid);
-        self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        if park == Park::Inactivity {
+            self.park_record(id, None, now, park);
+            let stamp = Instant::now();
+            self.reaping.insert(sid.clone(), stamp);
+            self.responsive.reaping.insert(sid.clone(), stamp);
+            let backend = self.backend.clone();
+            let tx = self.tx.clone();
+            let dir = self.paths.transcripts_dir();
+            std::thread::spawn(move || {
+                if let Some(path) = transcript {
+                    if std::fs::create_dir_all(&dir).is_ok() {
+                        let _ = std::fs::copy(path, dir.join(format!("{id}.jsonl")));
+                    }
+                }
+                let _ = backend.signal_session(&sid);
+                // Still present: start its normal reaper grace, release waiting wakes.
+                let _ = tx.send(Msg::Reaped(vec![(sid, stamp, false)], stamp.elapsed()));
+            });
+        } else {
+            self.park_record(id, transcript.as_deref(), now, park);
+            let _ = self.backend.signal_session(&sid);
+            self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        }
         // The user parked the claude an ask was waiting for: a queued ask
         // needs an awake pane, and waking it later against their gesture is
         // not what they asked for.
@@ -22537,7 +22795,7 @@ impl Daemon {
             rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
-        if park != Park::Automatic {
+        if !matches!(park, Park::Automatic | Park::Inactivity) {
             self.lower_hand_of(id);
         }
         self.recovery.remove(&id);
@@ -22820,23 +23078,23 @@ impl Daemon {
             let said = self.codex_orphan_due.remove(&rec.id).and_then(|(_, why)| why);
             self.codex_orphan_due.insert(rec.id, (now + CODEX_ORPHAN_RETRY, said));
         }
-        // Pane absence is read here: the backend belongs to the writer. A
-        // server that answered with no pane is an answer (T-690: a `-D`
-        // server lives between its sessions); only no server at all sends
-        // the thread to the endpoint probe.
-        let Ok(panes) = self.backend.panes() else { return };
-        let tmux_answered_nothing = panes.is_none();
-        let live: std::collections::HashSet<String> = panes
-            .unwrap_or_default()
-            .iter()
-            .filter(|p| !p.pane_dead)
-            .map(|p| p.session_name.clone())
-            .collect();
+        let backend = self.backend.clone();
         let tmux_sock = self.paths.tmux_sock();
         let paths = self.paths.clone();
         let tx = self.tx.clone();
         self.codex_orphan_checking = true;
         std::thread::spawn(move || {
+            let Ok(panes) = backend.panes() else {
+                let _ = tx.send(Msg::CodexOrphansChecked(Vec::new()));
+                return;
+            };
+            let tmux_answered_nothing = panes.is_none();
+            let live: std::collections::HashSet<_> = panes
+                .into_iter()
+                .flatten()
+                .filter(|p| !p.pane_dead)
+                .map(|p| p.session_name)
+                .collect();
             let results = candidates
                 .into_iter()
                 .map(|rec| {
@@ -23921,17 +24179,42 @@ mod queued_person_push_tests {
         }
     }
 
-    /// Every `BoardChanged` the subscriber holds now.
-    fn pushes(sub: &mut BufReader<UnixStream>) -> usize {
-        sub.get_ref().set_nonblocking(true).unwrap();
-        let mut n = 0;
-        let mut line = String::new();
-        while matches!(sub.read_line(&mut line), Ok(k) if k > 0) {
-            assert!(line.contains("board_changed"), "{line}");
-            n += 1;
-            line.clear();
+    #[test]
+    fn a_stalled_subscriber_cannot_hold_another_clients_notification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = daemon(dir.path());
+        let (mut blocked, _suspended) = UnixStream::pair().unwrap();
+        blocked.set_nonblocking(true).unwrap();
+        loop {
+            match blocked.write(&[0; 4096]) {
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("filling subscriber: {e}"),
+            }
         }
-        n
+        blocked.set_nonblocking(false).unwrap();
+        let blocked = Arc::new(Mutex::new(blocked));
+        // Its connection writer can also hold the socket lock on a reply.
+        // Bound the hold so a regression fails instead of wedging the suite.
+        let (release, wait) = channel();
+        let (locked, ready) = channel();
+        let writer = blocked.clone();
+        let holder = std::thread::spawn(move || {
+            let _lock = writer.lock().unwrap();
+            locked.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        ready.recv().unwrap();
+        d.subscribers.insert(1, subscriber(blocked.clone()));
+        let (good, receiving) = UnixStream::pair().unwrap();
+        receiving.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        d.subscribers.insert(2, subscriber(Arc::new(Mutex::new(good))));
+        d.broadcast();
+        let mut line = String::new();
+        BufReader::new(receiving).read_line(&mut line).unwrap();
+        assert!(matches!(serde_json::from_str::<Event>(&line), Ok(Event::BoardChanged)));
+        let _ = release.send(());
+        assert!(holder.join().unwrap(), "broadcast waited for the suspended subscriber");
     }
 
     #[test]
@@ -23939,9 +24222,8 @@ mod queued_person_push_tests {
         let dir = std::env::temp_dir().join(format!("msmn-t966-push-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (mut d, sid, _rx) = daemon(&dir);
-        let (ours, theirs) = UnixStream::pair().unwrap();
-        d.subscribers.push(Arc::new(Mutex::new(ours)));
-        let mut sub = BufReader::new(theirs);
+        let (notify, sub) = std::sync::mpsc::sync_channel(1);
+        d.subscribers.insert(0, notify);
         let words = |d: &Daemon| d.queued_person_words();
         let gen = d.pane_gen;
         let t0 = now_ms();
@@ -23950,25 +24232,25 @@ mod queued_person_push_tests {
         d.screens.insert(sid.clone(), (t0 - 60_000, screen(&[RULE, "❯ ", RULE])));
         d.on_pane_sampled(sample(gen, &sid, t0, None));
         assert_eq!(words(&d), vec![None], "held, no word: the box is unread");
-        let _ = pushes(&mut sub);
+        let _ = sub.try_iter().count();
         // The same facts with the box read holding words: the word moves to
         // `after your draft`, and that alone pushes.
         let draft = screen(&[RULE, "❯ half a thought", RULE]);
         d.on_pane_sampled(sample(gen, &sid, t0 + 1_000, Some(draft.clone())));
         assert_eq!(words(&d), vec![Some("after your draft")]);
-        assert_eq!(pushes(&mut sub), 1, "the learned draft pushes");
+        assert_eq!(sub.try_iter().count(), 1, "the learned draft pushes");
         assert_eq!(d.queued.len(), 1, "the ask still waits");
         // The identical sample again: nothing moved, nothing pushes.
         d.on_pane_sampled(sample(gen, &sid, t0 + 2_000, Some(draft)));
         assert_eq!(words(&d), vec![Some("after your draft")]);
-        assert_eq!(pushes(&mut sub), 0, "the same sample pushes nothing");
+        assert_eq!(sub.try_iter().count(), 0, "the same sample pushes nothing");
         // The box read as no composer: `box unknown ∙ leave`, pushed.
         let dialog = screen(&["Do you want to proceed?", "  1. Yes", "  2. No"]);
         d.on_pane_sampled(sample(gen, &sid, t0 + 3_000, Some(dialog.clone())));
         assert_eq!(words(&d), vec![Some("box unknown ∙ leave")]);
-        assert_eq!(pushes(&mut sub), 1, "the unreadable box pushes");
+        assert_eq!(sub.try_iter().count(), 1, "the unreadable box pushes");
         d.on_pane_sampled(sample(gen, &sid, t0 + 4_000, Some(dialog)));
-        assert_eq!(pushes(&mut sub), 0, "and again, nothing");
+        assert_eq!(sub.try_iter().count(), 0, "and again, nothing");
         assert_eq!(d.queued.len(), 1, "the ask still waits");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -24866,6 +25148,65 @@ mod done_gate_leg_tests {
     }
 
     #[test]
+    fn a_ticket_read_offers_done_as_its_legs_stand_at_the_read() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, _, rx) = two_legs(dir.path());
+        for landed in [false, true] {
+            if landed {
+                crate::testrepo::run(
+                    &d.paths.repo_root.join("api"),
+                    &["merge", "-q", "--ff-only", "topic"],
+                );
+            }
+            let mut view = d.agent_ticket_view(ticket).unwrap();
+            view.allowed_columns = Some(vec!["DONE".into()]);
+            let (reply, waiting) = channel();
+            d.reply_ticket_view(view, reply, None, false);
+            loop {
+                if let Msg::TicketGates(read) = rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    d.ticket_gates_read(*read);
+                    break;
+                }
+            }
+            let Response::AgentTicket { ticket: view } = waiting.recv().unwrap().response else {
+                panic!("ticket read")
+            };
+            assert_eq!(view.allowed_columns.unwrap().iter().any(|c| c == "DONE"), landed);
+        }
+    }
+
+    #[test]
+    fn restoring_a_ticket_during_the_merge_check_keeps_its_tree() {
+        if !worktree::have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ticket, _, rx) = two_legs(dir.path());
+        crate::testrepo::run(
+            &d.paths.repo_root.join("api"),
+            &["merge", "-q", "--ff-only", "topic"],
+        );
+        d.archive_one(ticket, now_iso(), "local".into());
+        d.process_teardowns();
+        assert!(d.tearing_down.contains(&ticket));
+        d.board.ticket_mut(ticket).unwrap().archived = None;
+        loop {
+            if let Msg::TeardownChecked(job, query, reads) =
+                rx.recv_timeout(Duration::from_secs(5)).unwrap()
+            {
+                assert!(d.reads_landed(ticket, &reads, false));
+                d.teardown_checked(job, query, reads);
+                break;
+            }
+        }
+        assert!(!d.tearing_down.contains(&ticket));
+        assert_eq!(d.worktrees[&ticket].status, BindingStatus::Attached);
+    }
+
+    #[test]
     fn a_merge_refusal_names_the_leg_its_count_and_its_base() {
         if !worktree::have_git() {
             return;
@@ -25126,6 +25467,30 @@ mod landing_tests {
             unchecked,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_new_cut_can_land_before_its_first_flags_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
+        let ticket = ulid::Ulid::new();
+        d.board.crown = Some(ulid::Ulid::new());
+        d.wt_inflight = true;
+        let mut binding = Binding::new(
+            dir.path().join("work"),
+            String::new(),
+            String::new(),
+            String::new(),
+            BindingStatus::Provisioning,
+        );
+        d.worktrees.insert(ticket, binding.clone());
+        binding.branch = "topic".into();
+        binding.base_oid = "b0".into();
+        binding.branch_oid = "b0".into();
+        binding.status = BindingStatus::Attached;
+        d.on_provisioned(ticket, Ok(binding), Duration::ZERO, vec![]);
+        d.set_ticket_agg(ticket, &[leg("landed", true, false)]);
+        assert_eq!(d.crown_landed, [ticket]);
     }
 
     /// A budget-delayed recheck (T-1064): an answered merged branch whose

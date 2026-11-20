@@ -867,7 +867,7 @@ pub fn opened_in_tails(tails: &[(String, Arc<Cursor>)]) -> Option<bool> {
 /// The PR URLs `pr create` results printed in the tails past the ledger's
 /// cursors (`opened_in_tails`), every tail read. `None` when one could not
 /// be read.
-fn urls_in_tails(tails: &[(String, Arc<Cursor>)]) -> Option<Vec<String>> {
+pub(crate) fn urls_in_tails(tails: &[(String, Arc<Cursor>)]) -> Option<Vec<String>> {
     let mut all: Vec<(String, Arc<Cursor>)> = tails.to_vec();
     for (path, _) in tails {
         for sub in subagents(path) {

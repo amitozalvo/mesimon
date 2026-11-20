@@ -66,9 +66,21 @@ impl Daemon {
                 return Err(format!("could not keep a picture: {e:#}"));
             }
         }
+        let before = self.checking_steer(ticket);
         let response = send(self, text);
         if refused(&response) {
             let _ = attachments::discard_files(&self.paths, &key, uploads);
+        } else if self.checking_steer(ticket).is_some_and(|id| Some(id) != before) {
+            self.uploads.hold(uploads, true);
+            let uploads = uploads.to_vec();
+            self.after_paste(ticket, move |d, pasted| {
+                if pasted {
+                    d.uploads.committed(&uploads);
+                } else {
+                    let _ = attachments::discard_files(&d.paths, &key, &uploads);
+                    d.uploads.hold(&uploads, false);
+                }
+            });
         } else {
             self.uploads.committed(uploads);
         }
