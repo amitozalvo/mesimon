@@ -21,13 +21,13 @@ WORKER_STEPS = set("""
     forge_empty forge_bound_passed forge_fail forge_pass forge_merged_pass
     forge_merge_ready forge_merge forge_later forge_conflict forge_clear forge_restart
     forge_later_news forge_later_open prs_board forge_reviewed forge_prs forge_merge_all
-    forge_archived forge_again
+    forge_archived forge_again merge_with_notice
 """.split())
 
 
 CROWN_STEPS = set("""
     person_in_crown person_leaves person_idles peer_ask peer_reply crown_road
-    crown_away crown_rest crown_compact queue_in_compaction
+    crown_away crown_rest crown_compact queue_in_compaction merge_with_notice
 """.split())
 BOARD_STEPS = set("""
     person_start rebase shared_shell person_note restart_drop_mod phone_allow phone_deny
@@ -130,6 +130,8 @@ def validate_case(case):
             for key in targets:
                 if key not in owners:
                     fail(f"{action} needs a worker on {key} but none has started")
+        if action == "merge_with_notice" and guard != "fixture":
+            fail("the notice merge needs a fixture branch")
         if action == "train_on":
             if guard != "fixture" or uncrowned:
                 fail("train_on could land on the real base; use a fixture branch")

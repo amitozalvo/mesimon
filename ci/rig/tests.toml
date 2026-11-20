@@ -2889,3 +2889,22 @@ checks = ["started_by_person", "unlanded", "file:BT1.txt", "fed:background_task_
   [[test.steps]]
   rig = "person_start"
   stops = 2
+
+[[test]]
+id = "MN1"
+title = "MN1 · commit the fixture and verify it on the merged notice"
+workspace = "worktree"
+merge_guard = "fixture"
+wake_counts = "owed"
+brief = "Create MN1.txt containing ready and commit it. Reply ready. When the board tells you your branch has merged, run this foreground Bash command to wait for verification: for i in {1..60}; do test -f \"$(git rev-parse --git-path notice-released)\" && break; sleep 1; done. Reply verified and end your turn."
+expect = "The crown reports the fixture merge while its worker is still verifying. The rig then releases verification and the crown reports the worker's finish."
+checks = ["started_by_crown", "woke_once:merged", "crown_line:MN1 landed:landed", "crown_line:MN1 finished:finished", "replies:ready,verified"]
+
+  [[test.steps]]
+  starts = ["key"]
+  crown = "MN1: start {key} in a worktree. End your turn. When the worker delivers, reply MN1 delivered. When you hear the branch has landed, reply MN1 landed. When verification finishes, reply MN1 finished. Leave the worker running for the rig."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "merge_with_notice"

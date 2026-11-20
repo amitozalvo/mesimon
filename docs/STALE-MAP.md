@@ -48489,3 +48489,30 @@ The merge-train regression also blocks the atomic ticket save after Git succeeds
 Placement now saves the proposed ticket before recording or broadcasting the move.
 The live card and the restarted daemon both read REVIEW when the DONE write fails.
 The browser suite's disk check shipped on T-1363.
+## The crown hears the landing while the merged notice runs (T-1366, 2026-11-20)
+
+The person chose option 4. T-1194 still assigns the post-merge checks to the worker.
+Thirty deferred wakes accumulated 240 minutes in six days. T-596's combined landing and
+close-out made that delay part of scheduling the next worker. The landing establishes that
+another ticket can start. The notice turn's end establishes when its worker can be parked.
+
+With the default one-line notice, an idle crown used to hear one combined wake after the
+reply. It now hears the merge when the branch lands and a finish when the reply ends.
+A fix-forward commit is a delivery. A crown that merged the branch itself already has its
+receipt. When notices are off, the crown still hears the merge once at landing. A busy crown
+can receive both facts in one line if both become due before it is free. An uncrowned board
+sends neither wake.
+
+On rebased main the train e2e held the notice open. Its first observed landing-to-wake
+interval was 7.55 s for a held delivery and 7.08 s for a previously reported delivery.
+With the change, the same fixture observed those wakes at 423 ms and 839 ms respectively,
+before it allowed the notice turn to end. In the live MN1 rig, Claude Opus 5.5 at high effort received the merge prompt 503 ms after
+the merge receipt and reported the landing before the rig released verification. The worker
+stopped at 5.57 s. The finish prompt reached the crown at 8.71 s. The first rig attempt
+compared the card's state word with the internal state and was interrupted. The corrected
+case passed with exactly one merge wake.
+
+After rebasing onto T-1372, MN1 used the shared isolated merge fixture. It passed again on
+the same crown tier. The merge prompt reached the crown at +107 ms, the worker stopped at
++4.59 s and the close-out prompt arrived at +9.36 s. On that base the train e2e observed
+the two landing wakes at +523 ms and +953 ms.

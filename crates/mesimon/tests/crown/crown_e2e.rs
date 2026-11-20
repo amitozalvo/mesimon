@@ -3628,8 +3628,8 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     h.one_turn(&mut c, sa);
 
     // ---- 3. the person merges: the board tells the crown's worker in the
-    //         same step (T-613), and the crown hears the landing once, when
-    //         that notice turn is over (T-596) -------------------------------
+    //         same step (T-613), and the crown hears the landing at once, then hears
+    //         the notice turn end -------------------------------
     match c.request(Command::MergeTicket { id: w }) {
         Response::Merge {
             outcome: mesimon_core::command::MergeOutcome::Merged, notified, ..
@@ -3641,28 +3641,19 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice to reach the worker", || {
         lines_with("has been merged").len() == 1
     });
-    absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 2, "held while the notice is on its way");
-    h.one_turn(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the merge's wake", || {
+    wait_until(std::time::Duration::from_secs(10), "the landing", || {
         lines_with(&worker).len() == 3
     });
-    let merged = lines_with(&worker).pop().unwrap();
-    assert_eq!(
-        merged,
-        format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
-             get_ticket key={kw} for state and notes"
-        )
+    assert!(
+        lines_with(&worker)[2].starts_with(&format!("{worker} merged (merge_state ahead → merged"))
     );
     h.one_turn(&mut c, sa);
-    absence_window(2000);
-    assert_eq!(
-        lines_with(&worker).len(),
-        3,
-        "the crown heard the delivery, its answer and the merge, nothing else:\n{}",
-        std::fs::read_to_string(&got).unwrap()
-    );
+    h.one_turn(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+        lines_with(&worker).len() == 4
+    });
+    assert!(lines_with(&worker)[3].starts_with(&format!("{worker} finished its turn")));
+    h.one_turn(&mut c, sa);
     // And one more turn after it, with nothing new and nothing pending: the
     // worker finished (T-591), and what to do with a merged worker is the
     // crown's to decide. A prompt of its own on a DONE ticket is work again
@@ -3670,10 +3661,10 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     // merged notice's turn left it where it was (T-1247).
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the finish's wake", || {
-        lines_with(&worker).len() == 4
+        lines_with(&worker).len() == 5
     });
     assert_eq!(
-        lines_with(&worker)[3],
+        lines_with(&worker)[4],
         format!(
             "{worker} finished its turn (nothing new to merge, column REVIEW) ∙ get_ticket \
              key={kw} for state and notes"
@@ -3701,9 +3692,9 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     commit(&path, "more.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the second delivery's wake", || {
-        lines_with(&worker).len() == 5
+        lines_with(&worker).len() == 6
     });
-    assert!(lines_with(&worker)[4].starts_with(&format!("{worker} delivered")));
+    assert!(lines_with(&worker)[5].starts_with(&format!("{worker} delivered")));
     h.one_turn(&mut c, sa);
     commit(&h.repo, "elsewhere-again.txt");
     assert!(matches!(
@@ -3722,7 +3713,7 @@ fn one_landing_wakes_the_crown_for_the_delivery_and_its_own_ask() {
     absence_window(2000);
     assert_eq!(
         lines_with(&worker).len(),
-        5,
+        6,
         "the rebase the person asked for is theirs, at a new tip or not:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
@@ -4656,55 +4647,30 @@ fn a_held_delivery_waits_for_a_worker_unknown_across_a_restart() {
     assert!(said[0].contains("after a restart"), "{said:?}");
 }
 
-/// A merge's wake waits for the merge notice's turn across a restart
-/// (T-1004): the crown merged, the notice went in and its turn began, and
-/// the daemon went down in that turn. The new daemon read the worker
-/// `Unknown`, which no reading of `working` takes, let the held landing go,
-/// and told the crown `merged and finished its turn (…, after a restart)`
-/// a second after it started, while the turn ran; the turn's real end then
-/// found the merge told and said nothing. The landing waits for that end:
-/// one line, at the `Stop`, still `after a restart`.
+/// An observed merge survives the restart. Only a proven notice turn end is news.
 #[test]
 fn a_merge_notice_turn_across_a_restart_wakes_once_at_its_end() {
     merge_notice_across_a_restart("crown_notice_restart", After::RunsOn);
 }
 
-/// The bound on that wait (T-1004): a notice turn whose end fell in the
-/// restart's gap leaves a seat no hook will ever speak for (an idle agent
-/// sends none) and nothing in its transcript to date the close. Read
-/// `Unknown` when the restart's look settles (`MESIMON_RECHECK_MS`), the
-/// board knows the merge and not the end: the crown hears `merged (…, after
-/// a restart)` once, inside the window, with no `finished`, and the next
-/// turn's end is a finished turn, not the merge step's.
+/// No hook in the restart gap can prove that the turn finished.
 #[test]
-fn a_merge_notice_turn_ended_in_the_restart_s_gap_wakes_once_in_the_window() {
+fn a_merge_notice_turn_ended_in_the_restart_s_gap_waits_for_a_proven_end() {
     merge_notice_across_a_restart("crown_notice_gap", After::NextPrompt);
 }
 
-/// The same bound on a seat that was only silent (T-1006's cold read): the
-/// notice turn ran on past the window with no hook, and the window told the
-/// merge alone. That turn's own `Stop`, with no prompt between, is its end:
-/// one `finished its turn`, and no second `merged`.
 #[test]
 fn a_merge_notice_turn_silent_past_the_window_finishes_once_at_its_stop() {
     merge_notice_across_a_restart("crown_notice_silent", After::SameStop);
 }
 
-/// A merge mark taken on no end loses nothing (T-1006's second read): the
-/// notice turn reads `running` (the tail's seed, at Low) when the window
-/// settles, so the landing stays held; then the tail reads an abort record
-/// as an idle at Low, which takes the mark on no proven end. The crown hears
-/// the merge alone there, and the turn going on to its real `Stop` says
-/// `finished its turn` once, with no second `merged`.
 #[test]
 fn a_merge_notice_turn_guessed_idle_after_the_window_finishes_once_at_its_stop() {
     merge_notice_across_a_restart("crown_notice_guessed", After::GuessedIdle);
 }
 
-/// A merge told alone and its turn's end, owed together, are one line
-/// (T-1006's third read): the crown is busy while the window lets the merge
-/// go and while that turn's own `Stop` lands, so both wait for it. Freed,
-/// it hears one `merged and finished its turn`, never a bare `merged`.
+/// The crown was busy before the merge landed. Its queued merge and the
+/// subsequent notice end fold into one line, even across a handover.
 #[test]
 fn a_merge_and_its_end_owed_to_a_busy_crown_are_one_line() {
     merge_notice_across_a_restart("crown_notice_busy", After::CrownBusy);
@@ -4787,6 +4753,9 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     });
     // The crown has not handled this merge. A crown's own merge receipt
     // consumes its news; this test exercises an unseen merge across restart.
+    if after == After::CrownBusy {
+        start(&mut c, sa);
+    }
     assert!(matches!(
         c.request(Command::MergeTicket { id: w }),
         Response::Merge { outcome: mesimon_core::command::MergeOutcome::Merged, .. }
@@ -4794,7 +4763,7 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
         lines_with(&notice).len() == 1
     });
-    // The notice's turn takes the words, and the landing waits for it.
+    // The notice's turn takes the words and stays open across the restart.
     start(&mut c, ws);
     if after == After::GuessedIdle {
         // It calls a tool, in flight across the restart.
@@ -4802,11 +4771,21 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         append(json!({"uuid":"c", "type":"assistant", "message":{"stop_reason":"tool_use",
             "content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}));
     }
-    wait_until(std::time::Duration::from_secs(5), "the hold in the feed", || {
-        std::fs::read_to_string(&feed_path)
-            .is_ok_and(|f| f.contains("\"crown_wake_deferred:merge_step\""))
+    let bare = format!("{worker} merged (merge_state ahead → merged");
+    let heard = if after == After::CrownBusy { 1 } else { 2 };
+    wait_until(std::time::Duration::from_secs(10), "the landing owed before restart", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|f| {
+            f.lines().any(|l| {
+                l.contains("\"kind\":\"crown_wake\"") && l.contains("\"cause\":\"merged\"")
+            })
+        })
     });
-    assert_eq!(lines_with(&worker).len(), 1, "held while the notice turn runs");
+    if after != After::CrownBusy {
+        wait_until(std::time::Duration::from_secs(10), "the landing at the crown", || {
+            lines_with(&worker).get(1).is_some_and(|line| line.starts_with(&bare))
+        });
+        h.one_turn(&mut c, sa);
+    }
     drop(c);
 
     // ---- 2. the daemon restarts in that turn: Unknown, no word ------------
@@ -4825,28 +4804,19 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
     } else {
         assert!(matches!(seat.state, SessionState::Unknown { .. }), "{:?}", seat.state);
     }
-    assert_eq!(lines_with(&worker).len(), 1, "{}", std::fs::read_to_string(&got).unwrap());
-    let merged = format!("{worker} merged and finished its turn (merge_state ahead → merged");
-    let bare = format!("{worker} merged (merge_state ahead → merged");
+    assert_eq!(lines_with(&worker).len(), heard, "restart repeated the landing");
 
     if after == After::GuessedIdle {
         // ---- 3. running when the window settles (8 s): still held ---------
         absence_window(7000);
         assert_eq!(c.board().live_agent(w).unwrap().state, SessionState::Running);
-        assert_eq!(lines_with(&worker).len(), 1, "held while it reads running");
+        assert_eq!(lines_with(&worker).len(), 2, "no finish while running");
         // ---- 4. an abort record read as idle at Low: the merge alone -------
         append(json!({"uuid":"a", "type":"user",
             "message":{"content":"[Request interrupted by user]"}}));
-        wait_until(std::time::Duration::from_secs(10), "the merge at the guess", || {
-            lines_with(&worker).len() == 2
-        });
-        let seat = c.board().live_agent(w).unwrap().clone();
-        assert!(matches!(seat.state, SessionState::Idle { .. }), "{:?}", seat.state);
-        assert_eq!(seat.confidence, Confidence::Low);
-        let said = lines_with(&worker);
-        assert!(said[1].starts_with(&bare), "the merge, not the end: {said:?}");
-        assert!(!said[1].contains("finished"), "{said:?}");
-        assert!(said[1].contains("after a restart"), "{said:?}");
+        c.await_state(ws, "guessed idle", |s| matches!(s, SessionState::Idle { .. }));
+        assert_eq!(c.board().live_agent(w).unwrap().confidence, Confidence::Low);
+        assert_eq!(lines_with(&worker).len(), 2, "no close-out on a guess");
         // ---- 5. the turn goes on and ends: finished, once -----------------
         h.one_turn(&mut c, sa);
         hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
@@ -4868,16 +4838,15 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         hook_send(&hook_sock, &ws.to_string(), "PostToolUse", r#"{"tool_name":"Bash"}"#);
         c.await_state(ws, "running", |s| *s == SessionState::Running);
         absence_window(2000);
-        assert_eq!(lines_with(&worker).len(), 1, "held while the turn runs on");
+        assert_eq!(lines_with(&worker).len(), 2, "no finish while running");
         stop(&mut c, ws);
-        wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
-            lines_with(&worker).len() == 2
+        wait_until(std::time::Duration::from_secs(10), "the notice finish", || {
+            lines_with(&worker).len() == 3
         });
         absence_window(1500);
         let said = lines_with(&worker);
-        assert_eq!(said.len(), 2, "{said:?}");
-        assert!(said[1].starts_with(&merged), "{said:?}");
-        assert!(said[1].contains("after a restart"), "{said:?}");
+        assert_eq!(said.len(), 3);
+        assert!(said[2].starts_with(&format!("{worker} finished its turn")), "{said:?}");
         return;
     }
 
@@ -4893,10 +4862,8 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
                 })
                 .count()
         };
+        // Reassert the surviving crown seat's activity after the restart.
         start(&mut c, sa);
-        // ---- 3. the window lets the merge go, owed to the busy crown ------
-        wait_until(std::time::Duration::from_secs(15), "the merge owed", || wakes("merged") == 1);
-        // ---- 4. the same turn's Stop: its end folds into the merge --------
         stop(&mut c, ws);
         wait_until(std::time::Duration::from_secs(10), "the finish owed", || {
             wakes("finished") == 1
@@ -4910,28 +4877,15 @@ fn merge_notice_across_a_restart(name: &str, after: After) {
         absence_window(1500);
         let said = lines_with(&worker);
         assert_eq!(said.len(), 2, "{said:?}");
-        assert!(said[1].starts_with(&merged), "{said:?}");
-        assert!(said[1].contains("after a restart"), "{said:?}");
+        assert!(said[1].starts_with(&format!("{worker} merged and finished its turn")), "{said:?}");
         return;
     }
 
-    // ---- 3. no hook comes: the window's end tells the merge alone ---------
-    // The stub writes no transcript, so the seat stays `Unknown`; the
-    // restart's look settles 8 s after the start.
-    wait_until(std::time::Duration::from_secs(15), "the wake at the window's end", || {
-        lines_with(&worker).len() == 2
-    });
-    absence_window(1500);
-    let said = lines_with(&worker);
-    assert_eq!(said.len(), 2, "{said:?}");
-    assert!(said[1].starts_with(&bare), "the merge, not the end: {said:?}");
-    assert!(!said[1].contains("finished"), "{said:?}");
-    assert!(said[1].contains("after a restart"), "{said:?}");
-    assert!(
-        matches!(c.board().live_agent(w).unwrap().state, SessionState::Unknown { .. }),
-        "let go on the window, not on an end: {:?}",
-        c.board().live_agent(w).unwrap().state
-    );
+    // The restart window expires with the seat still unknown. Neither
+    // that expiry nor the handover can repeat the merge or prove a finish.
+    absence_window(7000);
+    assert_eq!(lines_with(&worker).len(), 2);
+    assert!(matches!(c.board().live_agent(w).unwrap().state, SessionState::Unknown { .. }));
 
     // ---- 4. the turn's end, its own or the next prompt's: finished, once ---
     h.one_turn(&mut c, sa);
@@ -7061,15 +7015,10 @@ fn a_delivery_the_train_will_take_wakes_the_crown_at_its_merge() {
     assert_eq!(lines_with(&worker).len(), 3, "once");
 }
 
-/// The crown hears a landing when its worker is finished entirely (T-596):
-/// the train merges a crown-started worker's branch and pastes the merged
-/// notice, and the wake waits while the notice is on its way and while its
-/// turn runs. It arrives when that turn ends, saying so, and the crown's
-/// close-out — `sleep_agent`, then DONE — goes through right after it. A
-/// delivery held for the train (T-554) and landed with a notice waits the
-/// same way.
+/// Measure from the first observation of the fast-forward. Hold the notice
+/// turn open until the crown has heard the landing and acted on that wake.
 #[test]
-fn the_merged_wake_waits_for_the_notice_turn() {
+fn the_merge_wakes_the_crown_before_the_notice_turn_ends() {
     // The flags (and the train) every second rather than every ten.
     let Some(h) =
         Harness::boot_with_env("crown_notice", Some(RECORDING_STUB_PER_TICKET), CROWN_ENV)
@@ -7102,24 +7051,27 @@ fn the_merged_wake_waits_for_the_notice_turn() {
             Response::Ok
         ));
     };
-    // The train merged and pasted its notice; nothing reaches the crown
-    // while the notice waits for the worker, nor while its turn runs. Then
-    // the turn ends and the one line comes.
     let land = |c: &mut TestClient, notices: usize, heard: usize| {
         wait_until(std::time::Duration::from_secs(15), "the train to merge it", merged);
-        wait_until(std::time::Duration::from_secs(10), "the train's merged notice", || {
-            lines_with("has been merged").len() == notices
-        });
-        absence_window(2000);
-        assert_eq!(lines_with(&worker).len(), heard, "held while the notice is on its way");
-        start(c, ws);
-        absence_window(2000);
-        assert_eq!(lines_with(&worker).len(), heard, "held while the notice turn runs");
-        stop(c, ws);
-        wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+        let landed_at = std::time::Instant::now();
+        wait_until(std::time::Duration::from_secs(10), "the landing wake", || {
             lines_with(&worker).len() == heard + 1
         });
-        lines_with(&worker).pop().unwrap()
+        let elapsed = landed_at.elapsed();
+        let landing = lines_with(&worker)[heard].clone();
+        eprintln!("merge {notices}: wake observed {elapsed:?} after fast-forward observed");
+        wait_until(std::time::Duration::from_secs(10), "the merged notice", || {
+            lines_with("has been merged").len() == notices
+        });
+        start(c, ws);
+        h.one_turn(c, sa);
+        assert_eq!(lines_with(&worker).len(), heard + 1, "worker still verifying");
+        stop(c, ws);
+        wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+            lines_with(&worker).len() == heard + 2
+        });
+        assert!(lines_with(&worker)[heard + 1].starts_with(&format!("{worker} finished its turn")));
+        landing
     };
 
     // ---- 1. a delivery held for the train, landed with its notice ---------
@@ -7127,15 +7079,14 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     commit(&path, "one.txt");
     h.one_turn(&mut c, ws);
     let line = land(&mut c, 1, 0);
-    assert!(
-        line.contains(&format!(
-            "{worker} delivered and finished its turn (merge_state merged, column "
-        )),
-        "{line}"
-    );
+    assert!(line.contains(&format!("{worker} delivered (merge_state merged, column ")), "{line}");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
     assert_eq!(feed.matches("\"crown_wake_deferred\"").count(), 1, "the train's hold");
-    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "the notice's");
+    assert_eq!(
+        feed.matches("\"crown_wake_deferred:merge_step\"").count(),
+        0,
+        "the landing was immediate"
+    );
     h.one_turn(&mut c, sa);
 
     // ---- 2. a delivery heard, then merged with its notice -----------------
@@ -7151,16 +7102,16 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     commit(&path, "two.txt");
     h.one_turn(&mut c, ws);
     wait_until(std::time::Duration::from_secs(10), "the delivery's wake", || {
-        lines_with(&worker).len() == 2
+        lines_with(&worker).len() == 3
     });
-    assert!(lines_with(&worker)[1].starts_with(&format!("{worker} delivered (")));
+    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} delivered (")));
     h.one_turn(&mut c, sa);
     train(&mut c, true);
-    let line = land(&mut c, 2, 2);
+    let line = land(&mut c, 2, 3);
     assert_eq!(
         line,
         format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
+            "{worker} merged (merge_state ahead → merged, column DONE) ∙ \
              get_ticket key={kw} for state and notes"
         )
     );
@@ -7205,8 +7156,8 @@ fn the_merged_wake_waits_for_the_notice_turn() {
     absence_window(2000);
     assert_eq!(
         lines_with(&worker).len(),
-        3,
-        "one wake per landing:\n{}",
+        5,
+        "one landing and one finish per merge:\n{}",
         std::fs::read_to_string(&got).unwrap()
     );
 }
@@ -7216,7 +7167,7 @@ fn the_merged_wake_waits_for_the_notice_turn() {
 /// train merges whose crown read `merged` mid-turn were never told the
 /// turn ended (a post-merge suite's result among them); one with no read
 /// was. The read takes the held merge; the turn's end still wakes the
-/// crown, once, as `merged and finished its turn`.
+/// crown once as a finished turn.
 #[test]
 fn a_crown_read_mid_notice_turn_keeps_its_end() {
     let Some(h) =
@@ -7252,20 +7203,22 @@ fn a_crown_read_mid_notice_turn_keeps_its_end() {
         lines_with("has been merged").len() == 1
     });
     h.prompt_turn(&mut c, ws);
-    // The crown reads the ticket while the notice turn runs.
+    // An idle crown can receive the landing before this read. Either
+    // observation covers the merge, while the notice still owes its end.
     let v = c.agent_read(sa, &kw).unwrap();
     assert_eq!(v.merge_state.as_deref(), Some("merged"));
-    absence_window(2000);
-    assert!(lines_with(&worker).is_empty(), "held while the notice turn runs");
+    h.one_turn(&mut c, sa);
+    let before = lines_with(&worker);
+    assert!(before.len() <= 1 && before.iter().all(|line| line.contains("merged")));
     h.end_turn(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
-        lines_with(&worker).len() == 1
+    wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+        lines_with(&worker).len() == before.len() + 1
     });
     let line = lines_with(&worker).pop().unwrap();
-    assert!(line.contains(&format!("{worker} merged and finished its turn ∙")), "{line}");
+    assert!(line.contains(&format!("{worker} finished its turn")), "{line}");
     assert!(!line.contains("merge_state"), "the read saw the merge: {line}");
-    absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 1, "once");
+    absence_window(1500);
+    assert_eq!(lines_with(&worker).len(), before.len() + 1, "once");
 }
 
 /// T-566: a worker stopped on `AskUserQuestion` reads `needs-you` with the
@@ -10599,13 +10552,13 @@ fn the_crown_merges_where_the_train_will_not() {
         lines_with(&worker).len() == 5
     });
     let line = lines_with(&worker)[4].clone();
-    assert!(line.contains(&format!("{worker} merged and finished its turn ∙")), "{line}");
+    assert!(line.contains(&format!("{worker} finished its turn (nothing new to merge)")), "{line}");
     assert!(!line.contains("merge_state"), "the receipt said the merge: {line}");
     assert!(line.ends_with(&format!("get_ticket key={kw} for state and notes")), "{line}");
     absence_window(1500);
     assert_eq!(lines_with(&worker).len(), 5, "said once");
     let feed = std::fs::read_to_string(&feed_path).unwrap();
-    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 1, "{feed}");
+    assert_eq!(feed.matches("\"crown_wake_deferred:merge_step\"").count(), 0, "{feed}");
     assert!(feed.contains("\"merge_notified\""), "{feed}");
     h.one_turn(&mut c, sa);
 
@@ -10685,8 +10638,7 @@ fn the_crown_merges_where_the_train_will_not() {
 /// T-613: a person's `m` on a worker the crown started tells the worker by
 /// itself — the merged notice goes in the same step where the pref is on,
 /// the reply says `notified`, so the dialog offers no second press — and the
-/// crown's `merged` wake waits for that notice turn (T-596), so the person's
-/// gesture and the crown's close-out no longer collide. A person's own
+/// crown hears the landing and then the notice turn's close-out. A person's own
 /// worker keeps the two steps: its merge reply is not `notified`, and no
 /// notice goes until the person's second `m`.
 #[test]
@@ -10771,23 +10723,19 @@ fn a_hand_merge_of_a_crown_started_worker_tells_it_by_itself() {
     wait_until(std::time::Duration::from_secs(10), "the merged notice to W", || {
         lines_with(&notice_w).len() == 1
     });
-    // The crown's wake waits for the notice turn, then says so.
-    absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 1, "held while the notice is on its way");
-    start(&mut c, ws);
-    absence_window(2000);
-    assert_eq!(lines_with(&worker).len(), 1, "held while the notice turn runs");
-    stop(&mut c, ws);
-    wait_until(std::time::Duration::from_secs(10), "the wake at the turn's end", || {
+    wait_until(std::time::Duration::from_secs(10), "the landing wake", || {
         lines_with(&worker).len() == 2
     });
-    assert_eq!(
-        lines_with(&worker)[1],
-        format!(
-            "{worker} merged and finished its turn (merge_state ahead → merged, column DONE) ∙ \
-             get_ticket key={kw} for state and notes"
-        )
+    assert!(
+        lines_with(&worker)[1].starts_with(&format!("{worker} merged (merge_state ahead → merged"))
     );
+    start(&mut c, ws);
+    h.one_turn(&mut c, sa);
+    stop(&mut c, ws);
+    wait_until(std::time::Duration::from_secs(10), "the notice turn's end", || {
+        lines_with(&worker).len() == 3
+    });
+    assert!(lines_with(&worker)[2].starts_with(&format!("{worker} finished its turn")));
 
     // ---- 2. the person's own worker keeps the two steps -------------------
     // W's merge moved main under P: P rebases in its turn first.
@@ -16331,7 +16279,7 @@ fn a_merge_s_receipt_stamp_outlives_the_notice_turn() {
         lines_with(&worker).len() == 2
     });
     assert!(
-        lines_with(&worker)[1].contains("merged and finished its turn"),
+        lines_with(&worker)[1].contains("finished its turn (nothing new to merge"),
         "{:?}",
         lines_with(&worker)
     );

@@ -2588,6 +2588,45 @@ Reply with the single word ready and end your turn."""
     def rig_step(self, test, what, record, step=None):
         step = step or {}
         say(f"  → rig: {what}")
+        if what == "merge_with_notice":
+            from rebase import git as fixture_git
+            ticket = test["ticket"]
+            checkout = test["fixture_checkout"]
+            worker = self.agent_of(self.board(), ticket)
+            cwd = worker["cwd"]
+            tip = fixture_git(cwd, "rev-parse", "HEAD")
+            if (self.board().get("merge_into") != test["fixture_target"]
+                    or fixture_git(cwd, "rev-parse", "HEAD^") != fixture_git(checkout, "rev-parse", "HEAD")):
+                record["failures"].append("worker did not deliver one commit onto its fixture")
+                return False
+            gate = os.path.join(fixture_git(cwd, "rev-parse", "--absolute-git-dir"), "notice-released")
+            crown = self.agent_of(self.board(), self.crown)
+
+            def said(line):
+                return line.lower() in bare_replies(replies(transcript(crown)))
+
+            try:
+                merged = self.wire.request({"cmd": "merge_ticket", "id": ticket})
+                if not merged.get("notified") or fixture_git(checkout, "rev-parse", "HEAD") != tip:
+                    record["failures"].append("fixture merge did not send its notice")
+                    return False
+
+                def heard_while_running():
+                    return (self.agent_of(self.board(), ticket)["state"]["state"] == "running"
+                            and said("MN1 landed"))
+
+                if not self.wait_for("the crown's merge reply while the worker verifies",
+                                     heard_while_running, 60, self.watch):
+                    record["failures"].append("the crown did not report the landing during verification")
+                    return False
+            finally:
+                with open(gate, "w"):
+                    pass
+            if not self.wait_for("the crown's close-out reply", lambda: said("MN1 finished"),
+                                 STEP_TIMEOUT, self.watch):
+                record["failures"].append("the crown did not report the notice turn ending")
+                return False
+            return True
         if what == "rebase":
             import rebase
 
