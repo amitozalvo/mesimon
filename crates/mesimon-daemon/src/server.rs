@@ -4080,9 +4080,10 @@ impl Daemon {
                 self.uploads.discard(&crate::attachments::Owner::stream(stream), &uploads);
                 Response::Ok
             }
-            Command::UploadAttachment { upload, offset, data, complete } => {
+            Command::UploadAttachment { file, upload, offset, data, complete } => {
                 let owner = crate::attachments::Owner::stream(stream);
-                match self.uploads.chunk(&owner, upload, offset, &data, complete) {
+                if file.as_ref().is_some_and(|f| self.board.ticket(f.ticket).is_none()) { return no_such_ticket(); }
+                match self.uploads.chunk(&owner, file, upload, offset, &data, complete) {
                     Ok(upload) => Response::AttachmentUploaded { upload },
                     Err(e) => Response::Err { message: format!("could not upload picture: {e:#}") },
                 }
@@ -14590,8 +14591,12 @@ impl Daemon {
         let images = if text.trim().is_empty() {
             Vec::new()
         } else {
-            match self.uploads.prepare(&crate::attachments::Owner::stream(stream), &uploads, &text)
-            {
+            match self.uploads.prepare(
+                &crate::attachments::Owner::stream(stream),
+                None,
+                &uploads,
+                &text,
+            ) {
                 Ok(images) => images,
                 Err(e) => {
                     return Response::Err { message: format!("could not save pictures: {e:#}") }

@@ -9,7 +9,35 @@ pub const CHUNK_BYTES: usize = 256 * 1024;
 pub const PREFIX: &str = "mesimon-attachment:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileUpload {
+    pub ticket: Ulid,
+    pub name: String,
+}
+
+/// A basename is display data. Only the daemon's ID becomes a filesystem path.
+pub fn valid_basename(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name.len() <= 255
+        && !matches!(name, "." | "..")
+        && !name.contains(['/', '\\'])
+        && !name.chars().any(char::is_control)
+        && crate::text::scrub_text(name) == name
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Png,
+    File {
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
+    #[serde(default)]
+    pub kind: Kind,
     pub id: Ulid,
     pub width: u32,
     pub height: u32,

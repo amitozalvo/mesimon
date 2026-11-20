@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use crate::{store, Paths};
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use mesimon_core::attachment::{Attachment, CHUNK_BYTES, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS};
+use mesimon_core::attachment::{
+    Attachment, FileUpload, Kind, CHUNK_BYTES, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS,
+};
 use ulid::Ulid;
 
 /// Who may add to an upload and commit it: the desk's connection, gone with
@@ -51,6 +53,7 @@ const GRANT_MAX_BYTES: usize = DRAFT_MAX_BYTES / 2;
 const GRANT_MAX_UPLOADS: usize = 8;
 
 struct Upload {
+    file: Option<FileUpload>,
     held: bool,
     owner: Owner,
     bytes: Vec<u8>,
@@ -69,16 +72,24 @@ impl Uploads {
     pub fn chunk(
         &mut self,
         owner: &Owner,
+        file: Option<FileUpload>,
         id: Option<Ulid>,
         offset: usize,
         data: &str,
         complete: bool,
     ) -> Result<Ulid> {
         self.prune();
+        if let Some(f) = &file {
+            anyhow::ensure!(
+                mesimon_core::attachment::valid_basename(&f.name),
+                "invalid attachment filename"
+            );
+        }
         anyhow::ensure!(data.len() <= CHUNK_BYTES.div_ceil(3) * 4, "attachment chunk too large");
         let bytes = STANDARD.decode(data).context("invalid attachment base64")?;
         anyhow::ensure!(
-            !bytes.is_empty() && bytes.len() <= CHUNK_BYTES,
+            (!bytes.is_empty() || (file.is_some() && id.is_none() && complete && offset == 0))
+                && bytes.len() <= CHUNK_BYTES,
             "invalid attachment chunk size"
         );
         anyhow::ensure!(
@@ -105,6 +116,7 @@ impl Uploads {
                 self.0.insert(
                     id,
                     Upload {
+                        file: file.clone(),
                         held: false,
                         owner: owner.clone(),
                         bytes: Vec::new(),
@@ -121,11 +133,22 @@ impl Uploads {
             u.meta.is_none() && offset == u.bytes.len(),
             "attachment upload offset mismatch"
         );
-        anyhow::ensure!(offset + bytes.len() <= MAX_BYTES, "picture exceeds 10 MiB");
+        anyhow::ensure!(offset + bytes.len() <= MAX_BYTES, "attachment exceeds 10 MiB");
+        anyhow::ensure!(u.file == file, "attachment target or name changed");
         u.bytes.extend(bytes);
         u.touched = Instant::now();
         if complete {
-            match validate(id, &u.bytes) {
+            let metadata = match &u.file {
+                Some(f) => Ok(Attachment {
+                    id,
+                    kind: Kind::File { name: f.name.clone() },
+                    bytes: u.bytes.len(),
+                    width: 0,
+                    height: 0,
+                }),
+                None => validate(id, &u.bytes),
+            };
+            match metadata {
                 Ok(meta) => u.meta = Some(meta),
                 Err(e) => {
                     self.0.remove(&id);
@@ -139,6 +162,7 @@ impl Uploads {
     pub fn prepare(
         &self,
         owner: &Owner,
+        prompt_ticket: Option<Ulid>,
         ids: &[Ulid],
         text: &str,
     ) -> Result<Vec<(Attachment, Vec<u8>)>> {
@@ -152,6 +176,10 @@ impl Uploads {
             );
             let u = self.0.get(id).context("attachment upload expired; retry the save")?;
             anyhow::ensure!(u.owner.is(owner), "attachment upload belongs to another connection");
+            anyhow::ensure!(
+                u.file.as_ref().is_none_or(|f| Some(f.ticket) == prompt_ticket),
+                "file belongs to a different ticket or prompt"
+            );
             anyhow::ensure!(!u.held, "attachment upload is pending delivery");
             result.push((
                 u.meta.clone().context("attachment upload is incomplete")?,
@@ -203,7 +231,7 @@ pub fn validate(id: Ulid, bytes: &[u8]) -> Result<Attachment> {
     limits.max_alloc = Some(MAX_PIXELS * 8);
     reader.limits(limits);
     reader.decode().context("invalid PNG picture")?;
-    Ok(Attachment { id, width, height, bytes: bytes.len() })
+    Ok(Attachment { id, kind: Kind::Png, width, height, bytes: bytes.len() })
 }
 
 pub fn directory(paths: &Paths, key: &str) -> PathBuf {
@@ -240,11 +268,19 @@ fn check_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn payload_path(dir: &Path, meta: &Attachment) -> PathBuf {
+    let extension = match meta.kind {
+        Kind::Png => "png",
+        Kind::File { .. } => "bin",
+    };
+    dir.join(format!("{}.{extension}", meta.id))
+}
+
 pub fn save(paths: &Paths, key: &str, meta: &Attachment, bytes: &[u8]) -> Result<()> {
     let dir = directory(paths, key);
     std::fs::create_dir_all(&dir)?;
     check_dir(&dir)?;
-    store::write_atomic_bytes(&dir.join(format!("{}.png", meta.id)), bytes, 0o644)?;
+    store::write_atomic_bytes(&payload_path(&dir, meta), bytes, 0o644)?;
     store::write_atomic(
         &dir.join(format!("{}.json", meta.id)),
         &serde_json::to_string(meta)?,
@@ -261,7 +297,7 @@ pub(crate) fn discard_files(paths: &Paths, key: &str, ids: &[Ulid]) -> Result<()
     }
     check_dir(&dir)?;
     for id in ids {
-        for extension in ["png", "json", "tmp"] {
+        for extension in ["png", "bin", "json", "tmp"] {
             match std::fs::remove_file(dir.join(format!("{id}.{extension}"))) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -280,7 +316,7 @@ pub fn read(paths: &Paths, key: &str, id: Ulid) -> Result<(Attachment, Vec<u8>)>
             .context("image unavailable on this machine")?,
     )?;
     anyhow::ensure!(meta.id == id, "attachment metadata mismatch");
-    let bytes = bounded(&dir.join(format!("{id}.png")), MAX_BYTES)?;
+    let bytes = bounded(&payload_path(&dir, &meta), MAX_BYTES)?;
     anyhow::ensure!(meta.bytes == bytes.len(), "attachment size mismatch");
     Ok((meta, bytes))
 }
@@ -328,23 +364,55 @@ mod tests {
         let stream = stream();
         let owner = Owner::stream(&stream);
         let bytes = png();
-        let id = uploads.chunk(&owner, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
+        let id =
+            uploads.chunk(&owner, None, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
         let text = format!("[Image #1]({})", mesimon_core::attachment::target(id));
-        assert!(uploads.prepare(&owner, &[id], &text).is_err());
-        assert!(uploads.chunk(&owner, Some(id), 0, "AA==", false).is_err());
+        assert!(uploads.prepare(&owner, None, &[id], &text).is_err());
+        assert!(uploads.chunk(&owner, None, Some(id), 0, "AA==", false).is_err());
         let other_stream = self::stream();
         let other = Owner::stream(&other_stream);
-        assert!(uploads.chunk(&other, Some(id), 12, "AA==", false).is_err());
+        assert!(uploads.chunk(&other, None, Some(id), 12, "AA==", false).is_err());
         uploads.discard(&other, &[id]);
         assert!(uploads.0.contains_key(&id));
-        uploads.chunk(&owner, Some(id), 12, &STANDARD.encode(&bytes[12..]), true).unwrap();
-        let images = uploads.prepare(&owner, &[id], &text).unwrap();
+        uploads.chunk(&owner, None, Some(id), 12, &STANDARD.encode(&bytes[12..]), true).unwrap();
+        let images = uploads.prepare(&owner, None, &[id], &text).unwrap();
         assert_eq!((images[0].0.width, images[0].0.height), (2, 3));
-        assert!(uploads.prepare(&other, &[id], &text).is_err());
-        assert!(uploads.prepare(&owner, &[id], "no reference").is_err());
-        assert!(uploads.prepare(&owner, &[id, id], &text).is_err());
+        assert!(uploads.prepare(&other, None, &[id], &text).is_err());
+        assert!(uploads.prepare(&owner, None, &[id], "no reference").is_err());
+        assert!(uploads.prepare(&owner, None, &[id, id], &text).is_err());
         uploads.committed(&[id]);
         assert!(uploads.0.is_empty());
+    }
+
+    #[test]
+    fn regular_files_are_bound_to_the_prompt_ticket_and_grant() {
+        let mut uploads = Uploads::default();
+        let phone = Owner::Grant("phone".into());
+        let other = Owner::Grant("other".into());
+        let ticket = Ulid::new();
+        let file = Some(FileUpload { ticket, name: "sales.csv".into() });
+        let id = uploads.chunk(&phone, file.clone(), None, 0, "/w==", false).unwrap();
+        assert!(uploads.chunk(&other, file.clone(), Some(id), 1, "AA==", true).is_err());
+        assert!(uploads.chunk(&phone, file.clone(), Some(id), 0, "AA==", true).is_err());
+        let switched = Some(FileUpload { ticket: Ulid::new(), name: "sales.csv".into() });
+        assert!(uploads.chunk(&phone, switched, Some(id), 1, "AA==", true).is_err());
+        uploads.chunk(&phone, file.clone(), Some(id), 1, "AA==", true).unwrap();
+        let empty = uploads.chunk(&phone, file, None, 0, "", true).unwrap();
+        let words = format!(
+            "[sales.csv](mesimon-attachment:{id}) [sales.csv #2](mesimon-attachment:{empty})"
+        );
+        assert!(uploads.prepare(&phone, None, &[id], &words).is_err());
+        assert!(uploads.prepare(&phone, Some(Ulid::new()), &[id], &words).is_err());
+        let result = uploads.prepare(&phone, Some(ticket), &[id, empty], &words).unwrap();
+        assert_eq!(result[0].1, [255, 0]);
+        assert!(result[1].1.is_empty());
+        uploads.discard_all(&phone);
+        assert!(uploads.prepare(&phone, Some(ticket), &[id], &words).is_err());
+        for name in ["..", "../foo", "two/parts", "two\\parts", "line\nfeed"] {
+            assert!(uploads
+                .chunk(&phone, Some(FileUpload { ticket, name: name.into() }), None, 0, "", true)
+                .is_err());
+        }
     }
 
     #[test]
@@ -352,17 +420,17 @@ mod tests {
         let mut uploads = Uploads::default();
         let stream = stream();
         let owner = Owner::stream(&stream);
-        assert!(uploads.chunk(&owner, None, 0, "not base64", true).is_err());
-        assert!(uploads.chunk(&owner, None, 0, "AA==", true).is_err());
+        assert!(uploads.chunk(&owner, None, None, 0, "not base64", true).is_err());
+        assert!(uploads.chunk(&owner, None, None, 0, "AA==", true).is_err());
         assert!(uploads.0.is_empty());
         assert!(uploads
-            .chunk(&owner, None, 0, &STANDARD.encode(vec![0; CHUNK_BYTES + 1]), false)
+            .chunk(&owner, None, None, 0, &STANDARD.encode(vec![0; CHUNK_BYTES + 1]), false)
             .is_err());
-        let id = uploads.chunk(&owner, None, 0, "AA==", false).unwrap();
+        let id = uploads.chunk(&owner, None, None, 0, "AA==", false).unwrap();
         uploads.0.get_mut(&id).unwrap().touched -= Duration::from_secs(601);
         uploads.prune();
         assert!(uploads.0.is_empty());
-        uploads.chunk(&owner, None, 0, "AA==", false).unwrap();
+        uploads.chunk(&owner, None, None, 0, "AA==", false).unwrap();
         drop(stream);
         uploads.prune();
         assert!(uploads.0.is_empty());
@@ -377,14 +445,15 @@ mod tests {
         let desk_stream = stream();
         let desk = Owner::stream(&desk_stream);
         let bytes = png();
-        let id = uploads.chunk(&phone, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
+        let id =
+            uploads.chunk(&phone, None, None, 0, &STANDARD.encode(&bytes[..12]), false).unwrap();
         uploads.prune();
-        assert!(uploads.chunk(&other, Some(id), 12, "AA==", false).is_err());
-        assert!(uploads.chunk(&desk, Some(id), 12, "AA==", false).is_err());
-        uploads.chunk(&phone, Some(id), 12, &STANDARD.encode(&bytes[12..]), true).unwrap();
+        assert!(uploads.chunk(&other, None, Some(id), 12, "AA==", false).is_err());
+        assert!(uploads.chunk(&desk, None, Some(id), 12, "AA==", false).is_err());
+        uploads.chunk(&phone, None, Some(id), 12, &STANDARD.encode(&bytes[12..]), true).unwrap();
         let text = format!("[Image #1]({})", mesimon_core::attachment::target(id));
-        assert!(uploads.prepare(&other, &[id], &text).is_err());
-        assert_eq!(uploads.prepare(&phone, &[id], &text).unwrap().len(), 1);
+        assert!(uploads.prepare(&other, None, &[id], &text).is_err());
+        assert_eq!(uploads.prepare(&phone, None, &[id], &text).unwrap().len(), 1);
         uploads.discard_all(&other);
         assert!(uploads.0.contains_key(&id));
         uploads.discard_all(&phone);
@@ -400,14 +469,14 @@ mod tests {
         let piece = STANDARD.encode(vec![0; CHUNK_BYTES]);
         let mut staged = 0;
         let refused = loop {
-            let id = match uploads.chunk(&phone, None, 0, &piece, false) {
+            let id = match uploads.chunk(&phone, None, None, 0, &piece, false) {
                 Ok(id) => id,
                 Err(e) => break e,
             };
             staged += CHUNK_BYTES;
             let mut offset = CHUNK_BYTES;
             while offset + CHUNK_BYTES <= MAX_BYTES && staged + CHUNK_BYTES <= GRANT_MAX_BYTES {
-                uploads.chunk(&phone, Some(id), offset, &piece, false).unwrap();
+                uploads.chunk(&phone, None, Some(id), offset, &piece, false).unwrap();
                 (offset, staged) = (offset + CHUNK_BYTES, staged + CHUNK_BYTES);
             }
         };
@@ -415,18 +484,18 @@ mod tests {
         assert_eq!(staged, GRANT_MAX_BYTES);
         let desk_stream = stream();
         let desk = Owner::stream(&desk_stream);
-        let id = uploads.chunk(&desk, None, 0, &piece, false).unwrap();
+        let id = uploads.chunk(&desk, None, None, 0, &piece, false).unwrap();
         let mut offset = CHUNK_BYTES;
         while offset + CHUNK_BYTES <= MAX_BYTES {
-            uploads.chunk(&desk, Some(id), offset, &piece, false).unwrap();
+            uploads.chunk(&desk, None, Some(id), offset, &piece, false).unwrap();
             offset += CHUNK_BYTES;
         }
         uploads.discard_all(&phone);
         for _ in 0..GRANT_MAX_UPLOADS {
-            uploads.chunk(&phone, None, 0, "AA==", false).unwrap();
+            uploads.chunk(&phone, None, None, 0, "AA==", false).unwrap();
         }
-        assert!(uploads.chunk(&phone, None, 0, "AA==", false).is_err(), "past the count");
-        uploads.chunk(&Owner::Grant("bb".into()), None, 0, "AA==", false).unwrap();
+        assert!(uploads.chunk(&phone, None, None, 0, "AA==", false).is_err(), "past the count");
+        uploads.chunk(&Owner::Grant("bb".into()), None, None, 0, "AA==", false).unwrap();
     }
 
     #[test]

@@ -4272,6 +4272,7 @@ mod tests {
         let s = uuid::Uuid::nil();
         let denied = vec![
             Command::UploadAttachment {
+                file: None,
                 upload: None,
                 offset: 0,
                 data: "AA==".into(),

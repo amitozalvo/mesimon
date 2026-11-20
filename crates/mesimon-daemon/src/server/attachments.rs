@@ -54,7 +54,7 @@ impl Daemon {
         let clean = mesimon_core::command::sanitize_prompt(&text)?.unwrap_or_default();
         let prepared = (|| -> Result<_> {
             let t = self.board.ticket(ticket).ok_or_else(|| anyhow::anyhow!("no such ticket"))?;
-            Ok((t.short_key.clone(), self.uploads.prepare(owner, uploads, &clean)?))
+            Ok((t.short_key.clone(), self.uploads.prepare(owner, Some(ticket), uploads, &clean)?))
         })();
         let (key, images) = match prepared {
             Ok(prepared) => prepared,
@@ -105,7 +105,7 @@ impl Daemon {
                 mesimon_core::board::sanitize_note(&text) == text,
                 "note must fit within its text limit"
             );
-            Ok((t.short_key.clone(), self.uploads.prepare(owner, &uploads, &text)?))
+            Ok((t.short_key.clone(), self.uploads.prepare(owner, None, &uploads, &text)?))
         })();
         let (key, images) = match prepared {
             Ok(prepared) => prepared,

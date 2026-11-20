@@ -198,6 +198,7 @@ impl App {
             for (index, bytes) in png.chunks(attachment::CHUNK_BYTES).enumerate() {
                 let offset = index * attachment::CHUNK_BYTES;
                 match self.req(Command::UploadAttachment {
+                    file: None,
                     upload,
                     offset,
                     data: STANDARD.encode(bytes),

@@ -3202,7 +3202,7 @@ impl Daemon {
                 if note.trim().is_empty() {
                     return reject("pictures need a description".into());
                 }
-                match self.uploads.prepare(owner, ids, &note) {
+                match self.uploads.prepare(owner, None, ids, &note) {
                     Ok(images) => images,
                     Err(e) => return reject(format!("could not save pictures: {e:#}")),
                 }
@@ -4183,7 +4183,7 @@ impl Daemon {
             Err(_) => return reject("unknown picture"),
         };
         let owner = crate::attachments::Owner::Grant(grant.to_hex());
-        match self.uploads.chunk(&owner, upload, offset, data, complete) {
+        match self.uploads.chunk(&owner, None, upload, offset, data, complete) {
             Ok(upload) => Reply::Uploaded { upload: upload.to_string() },
             Err(e) => reject(&format!("{e:#}")),
         }

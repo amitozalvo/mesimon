@@ -10,6 +10,7 @@ const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z
 
 fn upload(c: &mut TestClient) -> ulid::Ulid {
     match c.request(Command::UploadAttachment {
+        file: None,
         upload: None,
         offset: 0,
         data: PNG.into(),

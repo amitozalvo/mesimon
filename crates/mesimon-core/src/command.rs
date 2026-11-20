@@ -409,6 +409,8 @@ pub enum Command {
     },
     /// A base64 PNG chunk. The first chunk mints a connection-owned handle.
     UploadAttachment {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<crate::attachment::FileUpload>,
         upload: Option<ulid::Ulid>,
         offset: usize,
         data: String,
