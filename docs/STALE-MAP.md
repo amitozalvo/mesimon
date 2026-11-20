@@ -48788,3 +48788,13 @@ passed (3,356, 13 ignored), the five `agy_e2e` cases and the seven offline
 rig verdict tests passed. The corrected no-model rig listed `get_ticket`.
 All disposable boards were cleaned up. The live run above is a failed
 acceptance check, and there was no second model call.
+
+## Remote Control confirms Archive in Actions and Details (T-1377, 2026-11-20)
+
+T-737 already delivered phone archive, refusal and Restore. The missing step
+was the desk's deliberate second press. The shared Archive row now asks
+`Archive T-n?` and offers Cancel and Archive ticket. Leaving the surface,
+losing the live archive capability or seeing the agent wake clears the choice.
+The Chromium phone fixture counted zero edits on the first tap and one archive
+on confirmation from each surface. An unmerged worktree survives archiving,
+so the phone uses the existing daemon gates and wire request.

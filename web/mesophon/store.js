@@ -1082,7 +1082,7 @@ export class Store {
   // host refuses a ticket whose agent is awake, as the desk does.
   archiveTicket(id) {
     const ticket = this.board?.tickets.find((t) => t.id === id);
-    if (!ticket || this.editWaiting(ticket, "archive")) return;
+    if (!ticket || (ticket.agent && ticket.agent.state !== "sleeping") || this.editWaiting(ticket, "archive")) return;
     if (!this.edit(ticket, "archive", {}, {}, { restore: false })) return;
     if (this.cardSheet === id) this.cardSheet = undefined;
     if (this.detailOpen && this.board.selected === id) this.back();

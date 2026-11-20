@@ -2538,8 +2538,8 @@ async function workspaceFlow(browser, engineName, size, viewport) {
   }
 }
 
-// A ticket into the archive from its card sheet (T-737), the board's `a a`:
-// the card leaves at once and the page with it, the toast's Restore brings
+// Archive from Actions or Details, the board's `a a`: on confirmation
+// the card leaves and the page with it, the toast's Restore brings
 // it back, an awake agent holds it on the board, an idle one is parked
 // first (T-1090), a refusal is said in the host's words, and an older host
 // offers nothing.
@@ -2563,6 +2563,22 @@ async function archiveFlow(browser, engineName, size, viewport) {
   const lastEdit = () => page.evaluate(() => fixture.edits.at(-1));
   const sheet = page.locator("#card-sheet");
   const card = (id) => page.locator(`.ticket.card[data-id="${id}"]`);
+  const editCount = () => page.evaluate(() => fixture.edits.length);
+  const arm = async (surface, key) => {
+    const before = await editCount();
+    await surface.getByRole("button", { name: "Archive", exact: true }).click();
+    await surface.getByRole("group", { name: `Archive ${key}?`, exact: true }).waitFor();
+    assert.equal(await editCount() - before, 0, "opening the confirmation sends zero edits");
+    return before;
+  };
+  const confirm = async (surface, before) => {
+    const surfaceId = await surface.getAttribute("id");
+    await surface.getByRole("button", { name: "Archive ticket", exact: true }).click();
+    const sent = await editCount() - before;
+    assert.equal(sent, 1, "confirm sends exactly one edit");
+    assert.deepEqual(await lastEdit(), { op: "archive", ticket: "ticket-3" });
+    console.log(`${engineName} ${size} ${surfaceId}: first tap 0 archive requests, confirm ${sent}`);
+  };
   const open = async (id) => {
     await overview();
     await card(id).click();
@@ -2607,6 +2623,14 @@ async function archiveFlow(browser, engineName, size, viewport) {
     await page.locator("#card-park").waitFor({ state: "detached" });
     assert.equal(await page.locator("#card-archive").isDisabled(), false);
     assert.equal(await page.locator(".card-archive .field-note").count(), 0);
+    const beforeWake = await arm(sheet, "T-5");
+    await page.evaluate(() => {
+      fixture.tickets[5].agent.state = "working";
+      fixture.update();
+    });
+    await sheet.getByRole("button", { name: "Archive", exact: true, disabled: true }).waitFor();
+    assert.equal(await sheet.getByRole("button", { name: "Archive ticket" }).count(), 0);
+    assert.equal(await editCount(), beforeWake);
     await page.locator("#card-done").click();
     await sheet.waitFor({ state: "hidden" });
 
@@ -2616,7 +2640,7 @@ async function archiveFlow(browser, engineName, size, viewport) {
     await card("ticket-3").click();
     await page.locator("#card-line").waitFor();
     assert.equal(await page.locator("#card-line-hint").textContent(), "Move, tag or archive this ticket");
-    await page.locator("#card-line").click();
+    await page.locator("#ticket-more").click();
     await sheet.waitFor({ state: "visible" });
     assert.equal(await page.locator(".card-archive .field-note").count(), 0);
     if (size === "phone") {
@@ -2624,8 +2648,16 @@ async function archiveFlow(browser, engineName, size, viewport) {
       assert(height >= 44, `the archive press is ${height}px`);
     }
     await shot("archive-sheet");
-    await page.locator("#card-archive").click();
-    assert.deepEqual(await lastEdit(), { op: "archive", ticket: "ticket-3" });
+    const beforeArchive = await arm(sheet, "T-3");
+    await shot("archive-confirm");
+    await sheet.getByRole("button", { name: "Cancel" }).click();
+    await arm(sheet, "T-3");
+    await page.locator("#card-done").click();
+    await sheet.waitFor({ state: "hidden" });
+    await page.locator("#ticket-more").click();
+    await arm(sheet, "T-3");
+    assert.equal(await editCount(), beforeArchive, "cancel and closing the sheet send nothing");
+    await confirm(sheet, beforeArchive);
     await sheet.waitFor({ state: "hidden" });
     await card("ticket-3").waitFor({ state: "detached" });
     if (size === "phone") assert.equal(await page.locator("#back").isVisible(), false, "the page went back to the list");
@@ -2643,8 +2675,15 @@ async function archiveFlow(browser, engineName, size, viewport) {
       fixture.editDisposition = "rejected";
       fixture.editRefusal = "sessions still awake — sleep them first";
     });
-    await open("ticket-3");
-    await page.locator("#card-archive").click();
+    await overview();
+    await card("ticket-3").click();
+    await page.locator("#tab-details").click();
+    const details = page.locator("#details-pane");
+    const beforeDetails = await arm(details, "T-3");
+    await page.locator("#tab-terminal, #tab-chat").first().click();
+    await page.locator("#tab-details").click();
+    await arm(details, "T-3");
+    await confirm(details, beforeDetails);
     await until(page, () => document.querySelector("#toast")?.textContent.includes("Not archived"));
     assert.equal(await page.locator("#toast").textContent(), "Not archived: sessions still awake — sleep them first");
     await card("ticket-3").waitFor();
@@ -2653,12 +2692,17 @@ async function archiveFlow(browser, engineName, size, viewport) {
     });
 
     // An older host takes no archive: the sheet offers none.
+    await open("ticket-3");
+    const beforeReconnect = await arm(sheet, "T-3");
     await page.evaluate(() => {
       fixture.features = fixture.features.filter((f) => f !== "archive");
       fixture.channel().close();
     });
-    await until(page, () => document.querySelector("#connection").textContent === "Connected");
-    await open("ticket-3");
+    await until(page, () => document.querySelector("#connection").textContent === "Connected" &&
+      document.querySelector("#card-line-hint")?.textContent === "Move or tag this ticket");
+    if (!await sheet.isVisible()) await page.locator("#ticket-more").click();
+    assert.equal(await sheet.getByRole("button", { name: "Archive ticket" }).count(), 0);
+    assert.equal(await editCount(), beforeReconnect);
     assert.equal(await page.locator("#card-archive").count(), 0);
     assert.equal(await page.locator("#card-line-hint").textContent(), "Move or tag this ticket");
     await page.locator("#card-done").click();

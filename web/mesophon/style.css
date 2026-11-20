@@ -1539,6 +1539,16 @@ select {
 .card-archive .field-note {
   padding: 0 10px;
 }
+.archive-confirm {
+  grid-template-columns: auto auto;
+  justify-content: start;
+  gap: 4px 8px;
+  margin-inline: 0;
+}
+.archive-confirm p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 /* A switch row (T-701): the label and its one fact, the box at the right. */
 .setting-switch {
   grid-template-columns: minmax(0, 1fr) auto;

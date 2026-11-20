@@ -168,9 +168,10 @@ and `TagTicket` (a tag the board already has). `edits.js` wears each edit on the
 board until its answer, and a dropped connection forgets them: the next board
 says what took, and nothing is sent again.
 
-The `archive` op (T-737) is the fifth, under `ArchiveTicket`: the sheet's foot
-takes the ticket off the board as the desk's `a a` does (`archive_ticket`, so an
-awake session refuses), and the toast's Restore sends it again with `restore`.
+In Actions and Details, **Archive** shows a confirmation naming the ticket.
+**Cancel** closes the confirmation. **Archive ticket** sends
+the `archive` op under `ArchiveTicket` (T-737), as the desk's `a a` does.
+The host refuses while a session is awake. The toast's Restore sends the op with `restore`.
 An archive is worn by taking the card off the board; a restore wears nothing
 until the host's board brings the card back.
 

@@ -1,7 +1,7 @@
 // Writing a ticket: the New ticket sheet and Sent's one-line bar share one
 // draft in the store. A ticket lands quietly, and starts an agent only when
 // the sheet's own switch asks for it (T-1208).
-import { html, useLayoutEffect, useRef } from "./html.js";
+import { html, useLayoutEffect, useRef, useState } from "./html.js";
 import { Icon, Tick } from "./icons.js";
 import { PictureBar, pastePictures } from "./notepad.js";
 import { DESCRIPTION_MAX_BYTES, PROMPT_MAX_BYTES } from "./store.js";
@@ -385,12 +385,22 @@ function ParkChoice({ store, ticket, pre = "card" }) {
 // toast's Restore, or the desk's, brings it back. An awake agent holds it
 // on the board, as at the desk; an idle one is parked first (T-1090).
 function ArchiveChoice({ store, ticket, pre = "card" }) {
-  if (!store.canEdit("archive")) return null;
+  const [confirming, setConfirming] = useState(false);
+  const live = store.canEdit("archive");
   const awake = !!ticket.agent && ticket.agent.state !== "sleeping";
+  // A confirmation belongs to the live ticket and the surface that opened it.
+  useLayoutEffect(() => setConfirming(false),
+    [ticket.id, store.connection, live, awake, store.detailOpen, store.cardSheet]);
+  if (!live) return null;
+  const armed = confirming && !awake;
   const why = parksAgent(store, ticket) ? "Its agent is awake. Park it first." : "Its agent is awake. Archive it once the agent sleeps.";
-  return html`<div class="card-archive">
+  return html`<div class=${armed ? "card-archive archive-confirm" : "card-archive"} role="group"
+      aria-labelledby=${armed ? `${pre}-archive-question` : undefined}>
+    ${armed && html`<p id=${`${pre}-archive-question`}>Archive ${ticket.key}?</p>`}
     <button id=${`${pre}-archive`} type="button" class="btn btn-quiet" disabled=${awake}
-      onClick=${() => store.archiveTicket(ticket.id)}><${Icon} name="archive" size=${16} /><span>Archive</span></button>
+      onClick=${() => setConfirming(!armed)}>
+      ${!armed && html`<${Icon} name="archive" size=${16} />`}<span>${armed ? "Cancel" : "Archive"}</span></button>
+    ${armed && html`<button type="button" class="btn" onClick=${() => store.archiveTicket(ticket.id)}>Archive ticket</button>`}
     ${awake && html`<p class="field-note">${why}</p>`}
   </div>`;
 }
