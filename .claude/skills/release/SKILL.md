@@ -5,18 +5,19 @@ description: Cutting a mesimon release — the order (bump, CHANGELOG, test run,
 
 # Releasing mesimon
 
-See `AGENTS.md` for the shared development contract. Production deploys — `deploy/ship.sh`, the tag, the push, `ci/release.sh` — are the author's.
+See `AGENTS.md` for the shared development contract. When the person asks for a release,
+the release agent runs it through production.
 
 **Release order**: bump + CHANGELOG (`cargo update --workspace --offline` for the lock) → commit →
-`ci/release-prepare.sh` → the relay's lock commit + `deploy/ship.sh all --dry-run` → hand the author
-`deploy/ship.sh all`. Never verify before the bump — the bump relinks every crate and the run is
+`ci/release-prepare.sh` → merge any relay changes → commit the relay lock update →
+dry run → ship. Never verify before the bump — the bump relinks every crate and the run is
 thrown away. `ci/release-prepare.sh` (T-1101) is the one command after the commit: it refuses a
 dirty tree or a CHANGELOG whose top heading is not the version's, runs the stamped gate
 (`ci/test-run.py --both-roads --exclusive`, with hooks and mod running side by side), and once the tests are running
 warms beside them, niced, what `release.sh` and the ship will run again on the same commit: the
 gate's clippy (a red one stops the gate: the commit will change), the drift check, the site, and
 in the main checkout the macOS and two Linux release builds with `MESIMON_RELEASE=1`, so the
-author's ship finds them built. In a worktree the release builds are skipped (cargo keys
+ship script finds them built. In a worktree the release builds are skipped (cargo keys
 artifacts by source path) and the stamp is the deliverable.
 
 The gate waits for other bounded runs and holds the exclusive lock through both roads and any
@@ -31,9 +32,18 @@ six. The observed four-job and six-job gates used different candidates. Record t
 road summaries and elapsed gate time at the next real release before changing the default.
 Logs land in `target/release-prepare/`.
 
-From the tag on, the author runs **one command, the
-relay repository's `deploy/ship.sh all`** (`--dry-run` runs every check): the relay, then the tag,
-push and `ci/release.sh`, which publishes the site. `ci/release.sh` refuses while the live relay
+Resolve `../mesimon-relay` relative to the main mesimon checkout. Use the resolved absolute
+path wherever `<relay>` appears below. If the release changes relay code or tests, confirm
+the relay checkout is clean and on `main`. The release agent fast-forwards it with
+`git -C "<relay>" merge --ff-only <relay-branch>`, using the actual `msmn/…` branch from
+the relay worktree.
+
+Invoke the ship script by absolute path. Run `"<relay>/deploy/ship.sh" all --dry-run`.
+When it passes, run `"<relay>/deploy/ship.sh" all` directly.
+It deploys the relay, tags and pushes the release, then runs `ci/release.sh` to
+publish the site. Raise a hand only for an unexpected result or a permission denial.
+On denial, name the exact missing allow rule for the blocked command.
+`ci/release.sh` refuses while the live relay
 lacks a change to what it serves (`ci/check-relay.sh` reads its `/version`). The runner stamps
 `target/suite-passed.json` (HEAD sha + the tmux that drove it, by path and hash) and `release.sh`
 skips its own suite when the stamp matches; `MESIMON_RELEASE_RETEST=1` overrides. Releases are

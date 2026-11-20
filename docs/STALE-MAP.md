@@ -48432,3 +48432,12 @@ the fixture SHA. The runner's 41 tests passed, including the release shell fixtu
 Six jobs per road stays the default. T-1101 measured 1,071 s on hooks and 1,038 s on mod at
 six. The later four- and six-job releases used different candidates, so their times cannot
 isolate the effect of the job count. Measure wall time at the next real release.
+
+## The release agent runs the ship command (T-1369, 2026-11-20)
+
+On 2026-11-17, during T-1299, the person asked the agent to run the release unattended.
+The shared release skill still handed the final command back to the person. It now records
+that the agent runs `deploy/ship.sh all` by absolute path after a green dry run. When a release
+changes relay code or tests, the agent first fast-forwards relay `main` to the relay worktree's
+branch. T-1351 waited 153.9 minutes for that merge despite permission to ship. An unexpected
+result or a denial warrants a hand, and a denial names the missing allow rule.
