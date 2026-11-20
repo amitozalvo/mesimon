@@ -619,15 +619,19 @@ impl Search {
 }
 
 /// An archived ticket's records, asked for by the screen showing it (T-804).
+#[derive(Default)]
 pub(crate) struct Held {
     ticket: ulid::Ulid,
     sessions: Vec<mesimon_core::board::SessionRecord>,
+    cost: Option<mesimon_core::cost::TicketCost>,
+    worktree: Option<WorktreeItem>,
     /// A snapshot landed since they were read.
     stale: bool,
 }
 
 /// The archived tickets, asked for (T-842): the snapshot leaves them out.
 pub(crate) struct HeldArchive {
+    prs: Vec<mesimon_core::command::PrItem>,
     tickets: Vec<Ticket>,
     /// Rows supplied by this separate read, rather than the latest snapshot.
     inserted: std::collections::HashSet<ulid::Ulid>,
@@ -1940,6 +1944,7 @@ pub struct App {
     /// What each ticket's agents have spent (T-327), off the snapshot: the
     /// card's `$` corner, the ticket page's facts line, the Usage dialog.
     pub costs: Vec<mesimon_core::cost::TicketCost>,
+    pub(crate) board_cost: Option<mesimon_core::cost::BoardCost>,
     /// When `SetUsageWants` was last pushed, and what it said — the
     /// reconcile's back-off, and what a settings change compares against.
     usage_pushed: Option<(Instant, mesimon_core::usage::Wants)>,
@@ -2813,8 +2818,9 @@ impl App {
             model_homes: None,
             tier_models: Default::default(),
             tier_kept_model: String::new(),
-            usage: Default::default(),
-            costs: Vec::new(),
+            usage: snap.usage,
+            board_cost: snap.board_cost,
+            costs: snap.costs,
             usage_pushed: None,
             clock: |secs| Some(mesimon_core::usage::utc_of(secs)),
             now: mesimon_core::clock::now_ms,
@@ -4361,6 +4367,7 @@ impl App {
             machine_tiers,
             usage,
             costs,
+            board_cost,
             prs,
             forge,
         } = snap;
@@ -4453,6 +4460,7 @@ impl App {
         self.machine_tiers = machine_tiers;
         self.usage = usage;
         self.costs = costs;
+        self.board_cost = board_cost;
         self.take_prs(prs);
         self.forge = forge;
         self.links = links;
@@ -7737,9 +7745,24 @@ impl App {
         })
     }
 
+    pub(crate) fn cost_windows(&self) -> Option<mesimon_core::cost::BoardCost> {
+        self.board_cost.or_else(|| mesimon_core::cost::BoardCost::from_rows(&self.costs))
+    }
+
+    /// Details read on demand apply only while the archive supplies this ticket.
+    fn held_details(&self, ticket: ulid::Ulid) -> Option<&Held> {
+        self.held.as_ref().filter(|h| {
+            h.ticket == ticket
+                && self.archive.as_ref().is_some_and(|a| a.inserted.contains(&ticket))
+        })
+    }
+
     /// One ticket's account (T-327), if its agents have spent anything.
     pub(crate) fn cost_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::cost::TicketCost> {
-        self.costs.iter().find(|c| c.ticket == ticket)
+        self.costs
+            .iter()
+            .find(|c| c.ticket == ticket)
+            .or_else(|| self.held_details(ticket)?.cost.as_ref())
     }
 
     /// The Usage dialog's ticket rows: the board's costliest tickets on the
@@ -8692,17 +8715,22 @@ impl App {
     /// keystroke, never two (T-1293).
     fn ask_archive_now(&mut self) -> bool {
         if !self.wants_archive(&self.board) {
-            self.archive = None;
+            // The inserted tickets remain in this board until the next snapshot.
+            // Keep their ownership if the picker reopens before then.
+            if let Some(archive) = &mut self.archive {
+                archive.stale = true;
+            }
             return false;
         }
         if self.archive.as_ref().is_some_and(|a| !a.stale) {
             return false;
         }
-        let tickets = match self.ask_archive() {
+        let (tickets, prs) = match self.ask_archive() {
             None => return false,
-            Some(Response::Tickets { tickets }) => tickets,
+            Some(Response::Tickets { tickets, prs }) => (tickets, prs),
             Some(_) => {
                 self.archive = Some(HeldArchive {
+                    prs: Vec::new(),
                     tickets: Vec::new(),
                     inserted: Default::default(),
                     stale: false,
@@ -8710,7 +8738,7 @@ impl App {
                 return false;
             }
         };
-        Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets);
+        Self::hold_archive(&mut self.archive, Arc::make_mut(&mut self.board), tickets, prs);
         self.transcript_links_dirty();
         self.clamp_screen();
         true
@@ -8723,14 +8751,19 @@ impl App {
     }
 
     /// Hold the asked-for archived tickets, laid into `board`.
-    fn hold_archive(archive: &mut Option<HeldArchive>, board: &mut Board, tickets: Vec<Ticket>) {
+    fn hold_archive(
+        archive: &mut Option<HeldArchive>,
+        board: &mut Board,
+        tickets: Vec<Ticket>,
+        prs: Vec<mesimon_core::command::PrItem>,
+    ) {
         if let Some(old) = archive {
             board.tickets.retain(|t| !old.inserted.contains(&t.id));
         }
         let inserted =
             tickets.iter().filter(|t| board.ticket(t.id).is_none()).map(|t| t.id).collect();
         Self::lay_tickets(board, &tickets);
-        *archive = Some(HeldArchive { tickets, inserted, stale: false });
+        *archive = Some(HeldArchive { tickets, prs, inserted, stale: false });
     }
 
     /// Lay the held archived tickets into a snapshot's board (T-842) while
@@ -8743,8 +8776,8 @@ impl App {
             return;
         }
         if self.archive.is_none() {
-            if let Some(Response::Tickets { tickets }) = self.ask_archive() {
-                Self::hold_archive(&mut self.archive, board, tickets);
+            if let Some(Response::Tickets { tickets, prs }) = self.ask_archive() {
+                Self::hold_archive(&mut self.archive, board, tickets, prs);
             } else {
                 // A newly archived open page must not disappear while its
                 // separate archive read is pending.
@@ -8755,7 +8788,7 @@ impl App {
                     .filter(|t| t.is_archived() || Some(t.id) == self.ticket_page())
                     .cloned()
                     .collect();
-                Self::hold_archive(&mut self.archive, board, tickets);
+                Self::hold_archive(&mut self.archive, board, tickets, Vec::new());
                 if let Some(held) = self.archive.as_mut() {
                     held.stale = true;
                 }
@@ -8809,14 +8842,14 @@ impl App {
         ) else {
             return false;
         };
-        let Response::Sessions { sessions } = response else {
-            self.held = Some(Held { ticket, sessions: Vec::new(), stale: false });
+        let Response::Sessions { sessions, cost, worktree } = response else {
+            self.held = Some(Held { ticket, ..Default::default() });
             return false;
         };
         let board = Arc::make_mut(&mut self.board);
         board.sessions.retain(|s| !sessions.iter().any(|h| h.id == s.id));
         board.sessions.extend(sessions.iter().cloned());
-        self.held = Some(Held { ticket, sessions, stale: false });
+        self.held = Some(Held { ticket, sessions, cost, worktree, stale: false });
         true
     }
 
@@ -9218,7 +9251,7 @@ impl App {
             transcript_scrolls: self
                 .open_transcript_view()
                 .is_some_and(|t| t.pager.view.get().max > 0),
-            has_prs: subject.is_some_and(|t| self.prs.iter().any(|p| p.ticket == t)),
+            has_prs: subject.is_some_and(|t| self.all_prs().any(|p| p.ticket == t)),
             summary_on_task: self.summary_cursor().is_some(),
             summary_on_link: self
                 .summary_cursor()
@@ -14525,8 +14558,7 @@ impl App {
             let mut cell = self.searcher.borrow_mut();
             let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
             let prs: Vec<_> = self
-                .prs
-                .iter()
+                .all_prs()
                 .map(|p| mesimon_core::search::PullRequest {
                     ticket: p.ticket,
                     text: format!("{} {} {} {} {}", p.label(), p.title, p.repo, p.state, p.url),
@@ -15841,12 +15873,21 @@ impl App {
 
     /// The ticket's worktree binding, as the last snapshot reported it.
     pub fn wt_item(&self, ticket: ulid::Ulid) -> Option<&WorktreeItem> {
-        self.worktrees.iter().find(|w| w.ticket == ticket)
+        self.worktrees
+            .iter()
+            .find(|w| w.ticket == ticket)
+            .or_else(|| self.held_details(ticket)?.worktree.as_ref())
+    }
+
+    fn all_prs(&self) -> impl Iterator<Item = &mesimon_core::command::PrItem> {
+        self.prs.iter().chain(self.archive.iter().flat_map(|archive| {
+            archive.prs.iter().filter(|p| archive.inserted.contains(&p.ticket))
+        }))
     }
 
     /// A ticket's pull requests (T-739), newest first.
     pub fn prs_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::command::PrItem> {
-        self.prs.iter().filter(|p| p.ticket == ticket).collect()
+        self.all_prs().filter(|p| p.ticket == ticket).collect()
     }
 
     /// The pull requests a card's line shows (T-797): those open or merged,
@@ -17573,7 +17614,7 @@ impl App {
     pub(crate) fn ticket_linkable(&self, ticket: ulid::Ulid) -> bool {
         self.board.ticket(ticket).is_some_and(|t| t.description().is_some())
             || self.latest_transcript(ticket).is_some()
-            || self.prs.iter().any(|p| p.ticket == ticket)
+            || self.all_prs().any(|p| p.ticket == ticket)
     }
 
     /// What that transcript's agent last said, as the peek reads it — the
@@ -17838,6 +17879,7 @@ struct Snapshot {
     machine_tiers: mesimon_core::tier::MachineTiers,
     usage: mesimon_core::usage::Usage,
     costs: Vec<mesimon_core::cost::TicketCost>,
+    board_cost: Option<mesimon_core::cost::BoardCost>,
     /// Each ticket's pull requests as the forge last said (T-739).
     prs: Vec<mesimon_core::command::PrItem>,
     forge: mesimon_core::command::ForgeStatus,
@@ -17871,6 +17913,7 @@ impl Snapshot {
                 machine_tiers,
                 usage,
                 costs,
+                board_cost,
                 prs,
                 forge,
                 links,
@@ -17902,6 +17945,7 @@ impl Snapshot {
                 machine_tiers,
                 usage,
                 costs,
+                board_cost,
                 prs,
                 forge,
             }),
@@ -18263,11 +18307,11 @@ pub(crate) mod test_support {
                         .filter(|s| s.ticket == ticket)
                         .cloned()
                         .collect();
-                    return Ok(Response::Sessions { sessions });
+                    return Ok(Response::Sessions { sessions, cost: None, worktree: None });
                 }
                 Command::ArchivedTickets => {
                     let tickets = self.board.archived_tickets().into_iter().cloned().collect();
-                    return Ok(Response::Tickets { tickets });
+                    return Ok(Response::Tickets { tickets, prs: Vec::new() });
                 }
                 Command::ReadNote { ticket, note } => {
                     let known = self.board.ticket(ticket).and_then(|t| t.note(note)).cloned();
@@ -18547,6 +18591,7 @@ pub(crate) mod test_support {
                         crown_said: Vec::new(),
                         machine_tiers: self.machine_tiers.clone(),
                         usage: self.usage.clone(),
+                        board_cost: None,
                         costs: Vec::new(),
                         links: self.links.clone(),
                         board_touches: self.board_touches.clone(),
@@ -20439,6 +20484,7 @@ mod tests {
             crown_said: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            board_cost: None,
             costs: Vec::new(),
             links: Vec::new(),
             board_touches: Vec::new(),
@@ -23093,7 +23139,7 @@ mod tests {
     /// snapshot, so a test reads them through the ask the board makes.
     fn archived_tickets(app: &mut App) -> Vec<Ticket> {
         match app.req(Command::ArchivedTickets) {
-            Response::Tickets { tickets } => tickets,
+            Response::Tickets { tickets, .. } => tickets,
             other => panic!("archived_tickets: {other:?}"),
         }
     }

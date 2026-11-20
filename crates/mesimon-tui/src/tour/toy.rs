@@ -243,6 +243,9 @@ impl World {
     fn snapshot(&self) -> Response {
         // As the daemon's: archived tickets stay home (T-842), asked for.
         let (board, archived) = self.board.for_snapshot();
+        let kept = |id| board.ticket(id).is_some();
+        let worktrees = self.worktrees.iter().filter(|w| kept(w.ticket)).cloned().collect();
+        let prs = self.prs.iter().filter(|p| kept(p.ticket)).cloned().collect();
         Response::Board {
             board,
             archived,
@@ -250,7 +253,7 @@ impl World {
             external: self.external.clone(),
             external_scanning: false,
             resources: Default::default(),
-            worktrees: self.worktrees.clone(),
+            worktrees,
             notices: Vec::new(),
             shell_env: Default::default(),
             git: Default::default(),
@@ -267,8 +270,9 @@ impl World {
             crown_said: Vec::new(),
             machine_tiers: self.machine_tiers.clone(),
             usage: Default::default(),
+            board_cost: None,
             costs: Vec::new(),
-            prs: self.prs.clone(),
+            prs,
             forge: Default::default(),
             links: Vec::new(),
             board_touches: Vec::new(),
@@ -292,7 +296,24 @@ impl World {
     fn answer(&mut self, command: Command) -> Response {
         match command {
             Command::Snapshot | Command::Subscribe => self.snapshot(),
+            Command::TicketSessions { ticket } => Response::Sessions {
+                sessions: self
+                    .board
+                    .sessions
+                    .iter()
+                    .filter(|s| s.ticket == ticket)
+                    .cloned()
+                    .collect(),
+                cost: None,
+                worktree: self.worktrees.iter().find(|w| w.ticket == ticket).cloned(),
+            },
             Command::ArchivedTickets => Response::Tickets {
+                prs: self
+                    .prs
+                    .iter()
+                    .filter(|p| self.board.ticket(p.ticket).is_some_and(|t| t.is_archived()))
+                    .cloned()
+                    .collect(),
                 tickets: self.board.archived_tickets().into_iter().cloned().collect(),
             },
             Command::CreateTicket { column, title, tier, .. } => {

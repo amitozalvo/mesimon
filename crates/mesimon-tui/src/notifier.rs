@@ -637,6 +637,7 @@ mod tests {
                 crown_said: Vec::new(),
                 machine_tiers: Default::default(),
                 usage: Default::default(),
+                board_cost: None,
                 costs: Default::default(),
                 shell_env: Default::default(),
                 git: Default::default(),

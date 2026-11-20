@@ -54,7 +54,7 @@ fn archive_reclaims_a_landed_worktree() {
 
     assert!(matches!(c.request(Command::ArchiveTicket { id }), Response::Ok));
     wait_until(Duration::from_secs(20), "the archive to reclaim the worktree", || {
-        !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
+        !path.exists() && !branch_exists(&repo, &branch) && archived_worktree(&mut c, id).is_none()
     });
     let t = c.ticket_any(id).expect("archived, not deleted");
     assert!(t.is_archived());
@@ -62,7 +62,7 @@ fn archive_reclaims_a_landed_worktree() {
     assert!(
         matches!(
             c.request(Command::TicketSessions { ticket: id }),
-            Response::Sessions { sessions } if !sessions.is_empty()
+            Response::Sessions { sessions, .. } if !sessions.is_empty()
         ),
         "the session record is the ticket's history and stays"
     );
@@ -105,7 +105,8 @@ fn archive_keeps_an_unmerged_worktree() {
     std::thread::sleep(Duration::from_millis(1500));
     assert!(path.join("beta.txt").is_file(), "the tree stands");
     assert!(branch_exists(&repo, &branch), "the branch stands");
-    let wt = wt_of(&mut c, id).expect("the binding stands");
+    assert!(wt_of(&mut c, id).is_none(), "an archived binding leaves the snapshot");
+    let wt = archived_worktree(&mut c, id).expect("the binding stands");
     assert_eq!(wt.status, "attached");
     assert!(matches!(c.request(Command::UnarchiveTicket { id }), Response::Ok));
     assert_eq!(wt_of(&mut c, id).unwrap().status, "attached", "and a restore finds it as it was");
@@ -137,7 +138,7 @@ fn archive_after_a_squash_keeps_the_branch_and_the_wake_rebuilds_the_tree() {
 
     assert!(matches!(c.request(Command::ArchiveTicket { id }), Response::Ok));
     wait_until(Duration::from_secs(20), "the archive to reclaim the directory", || {
-        !path.exists() && wt_of(&mut c, id).is_some_and(|w| w.status == "evicted")
+        !path.exists() && archived_worktree(&mut c, id).is_some_and(|w| w.status == "evicted")
     });
     assert!(branch_exists(&repo, &branch), "git refused -d on the squashed branch: it stands");
 
@@ -206,11 +207,11 @@ fn the_offer_reclaims_like_a_single_archive() {
     wait_until(Duration::from_secs(20), "the offer to reclaim the landed worktree", || {
         !landed_path.exists()
             && !branch_exists(&repo, &landed_branch)
-            && wt_of(&mut c, landed).is_none()
+            && archived_worktree(&mut c, landed).is_none()
     });
     assert!(open_path.join("epsilon.txt").is_file(), "unmerged work keeps its tree");
     assert!(branch_exists(&repo, &open_branch));
-    assert_eq!(wt_of(&mut c, open).expect("its binding stands").status, "attached");
+    assert_eq!(archived_worktree(&mut c, open).expect("its binding stands").status, "attached");
     wait_until(Duration::from_secs(5), "a feed row per archived ticket", || {
         feed_count(&h, "archive_all", landed) == 1
             && feed_count(&h, "archive_all", open) == 1
@@ -241,7 +242,7 @@ fn the_sweep_reclaims_an_archived_tree_whose_work_landed_later() {
 
     git(&repo, &["merge", "-q", "--no-ff", "-m", "eta", &branch]);
     wait_until(Duration::from_secs(20), "the sweep to reclaim the late-landed tree", || {
-        !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
+        !path.exists() && !branch_exists(&repo, &branch) && archived_worktree(&mut c, id).is_none()
     });
     wait_until(Duration::from_secs(5), "the sweep's teardown in the feed", || {
         feed_count(&h, "worktree_torn_down", id) == 1
@@ -274,7 +275,7 @@ fn a_restart_reclaims_a_tree_whose_archived_work_landed_meanwhile() {
     h.restart();
     let mut c = h.client("arch-boot-2");
     wait_until(Duration::from_secs(20), "the start's sweep to reclaim the tree", || {
-        !path.exists() && !branch_exists(&repo, &branch) && wt_of(&mut c, id).is_none()
+        !path.exists() && !branch_exists(&repo, &branch) && archived_worktree(&mut c, id).is_none()
     });
     wait_until(Duration::from_secs(5), "the teardown in the feed", || {
         feed_count(&h, "worktree_torn_down", id) == 1
@@ -300,7 +301,9 @@ fn archive_reclaims_a_worktree_with_its_idle_terminal_open() {
     let terminal = format!("msmn-term-{id}");
     assert!(matches!(c.request(Command::ArchiveTicket { id }), Response::Ok));
     wait_until(Duration::from_secs(20), "archive closes terminal and reclaims worktree", || {
-        !path.exists() && !branch_exists(&h.repo, &branch) && wt_of(&mut c, id).is_none()
+        !path.exists()
+            && !branch_exists(&h.repo, &branch)
+            && archived_worktree(&mut c, id).is_none()
     });
     let panes = tmux(&h.paths.tmux_sock())
         .args(["list-panes", "-a", "-F", "#{session_name}"])

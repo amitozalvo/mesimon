@@ -47893,3 +47893,39 @@ the merged commit.
 When teardown removes the last binding, the shared worktree queue clears the cached flags
 immediately and invalidates any outstanding sample. A teardown test delivers that sample
 late and checks that its branch conflict stays cleared.
+
+## Board snapshots carry rows for the tickets they include (T-1340, 2026-11-20)
+
+An archived ticket stays in the snapshot for as long as it has a pane. The
+session pass that copies the records now also marks those tickets in the
+archive index. Tickets and sessions are emitted in their original order.
+Cost and worktree rows are filtered by the projected ticket IDs, and forge
+rows are built from the projected tickets.
+
+The Usage settings and dialog were summing every cost row, including archived
+spending. The snapshot now carries one board-wide estimate for its three time
+windows. A new TUI can still sum rows from an older daemon. An older TUI on
+the new daemon sums the visible rows until its build is updated. The picker searches
+archived PRs from its existing archive-list request. The page and picker preview
+get one archived ticket's cost and worktree with its session details. Remote
+Control builds its cards directly from daemon state. This version has no
+`mesimon cost` subcommand.
+
+Measured on one frozen copy of this board's columns, tickets, sessions, ledger
+and bindings, loaded into a disposable daemon fixture. It held 1,183 tickets,
+1,120 archived, and 1,107 sessions. Both snapshots carried 63 tickets. Times
+are medians of 101 samples in a debug build. Both timings exclude serialization.
+Bytes are the length of the compact JSON response.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Snapshot bytes | 251,593 | 105,028 |
+| Whole snapshot build, excluding serialization | 14.662 ms | 2.533 ms |
+| `Board::for_snapshot` alone | 10.799 ms | 0.813 ms |
+| Cost rows | 1,040 | 21 |
+| Worktree rows | 38 | 18 |
+
+The persisted forge cache was inactive on this board (zero PR rows both ways).
+A daemon regression binds a PR, cost and worktree to an archived ticket,
+parks its last pane, and checks both the trimmed snapshot and the archive reads.
+Cost aggregation still walks the historical hour/model buckets for the board total.

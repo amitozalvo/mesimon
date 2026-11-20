@@ -456,17 +456,13 @@ pub enum Command {
         ticket: ulid::Ulid,
         note: ulid::Ulid,
     },
-    /// An archived ticket's session records (T-804). The snapshot leaves out
-    /// a parked record of an archived ticket — on a long-lived board they
-    /// were two thirds of every snapshot — so the ticket page and the
-    /// picker's preview ask for the one ticket they are showing.
+    /// The sessions, cost and worktree for one ticket. The page and picker
+    /// preview request these details when showing an archived ticket.
     TicketSessions {
         ticket: ulid::Ulid,
     },
-    /// The archived tickets (T-842). The snapshot carries none of them —
-    /// on a long-lived board they were three quarters of every push — so
-    /// the archived list, the picker and a page on one ask for them, whole,
-    /// newest archive first.
+    /// All archived tickets, newest archive first, and their searchable PRs.
+    /// A routine snapshot includes an archived ticket only while it has a pane.
     ArchivedTickets,
     /// Several notes' bodies at once (T-882): the picker's corpus, asked for
     /// when `/` is first typed into and again for the notes a snapshot shows
@@ -2107,9 +2103,8 @@ pub enum Response {
     },
     Board {
         board: Board,
-        /// How many tickets are archived (T-842): `board.tickets` carries
-        /// none of them, and `ArchivedTickets` returns them. Absent from an
-        /// older daemon parses as 0, and that daemon's board carries them all.
+        /// Total archived tickets, including any still on the snapshot for
+        /// an open pane. Older daemons omit the count and carry every ticket.
         #[serde(default)]
         archived: usize,
         grace: Vec<GraceItem>,
@@ -2205,7 +2200,11 @@ pub enum Response {
         /// nothing read and nothing wanted, which draws no line.
         #[serde(default)]
         usage: crate::usage::Usage,
-        /// What each ticket's agents have spent (T-327): tokens off their
+        /// Board-wide rolling estimates, including archived tickets. Older daemons
+        /// send all cost rows and the client sums them locally.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        board_cost: Option<crate::cost::BoardCost>,
+        /// What each snapshot ticket's agents have spent (T-327): tokens off their
         /// transcripts, priced at the API list price where this build knows
         /// the model. An estimate, and the board says so. Absent from an
         /// older daemon parses as none.
@@ -2316,14 +2315,20 @@ pub enum Response {
     AgentBoard {
         board: AgentBoardView,
     },
-    /// TicketSessions' answer: the ticket's records, decorated and
-    /// trimmed as the snapshot's are.
+    /// The records and details for a single ticket, read on demand.
     Sessions {
         sessions: Vec<crate::board::SessionRecord>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost: Option<crate::cost::TicketCost>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree: Option<WorktreeItem>,
     },
     /// ArchivedTickets' answer: every archived ticket, newest archive first.
     Tickets {
         tickets: Vec<crate::board::Ticket>,
+        /// The picker searches PRs across every archived ticket in the list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prs: Vec<PrItem>,
     },
     /// ReadNote / AgentReadNote's answer: the body and its metadata.
     Note {

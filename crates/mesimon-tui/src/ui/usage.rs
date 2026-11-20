@@ -331,24 +331,22 @@ pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(fit_line(spans, width));
     }
     use mesimon_core::cost::usd_word;
-    let (day, week, month) =
-        app.costs.iter().fold((0.0, 0.0, 0.0), |(d, w, m), c| (d + c.day, w + c.week, m + c.month));
-    let board = if app.costs.is_empty() {
-        vec![head("this board"), Span::styled("nothing counted yet", theme.dim2())]
-    } else {
+    let board = if let Some(total) = app.cost_windows() {
         vec![
             head("this board"),
             Span::styled(
                 format!(
                     "24 hours {} ∙ 7 days {} ∙ 30 days {}",
-                    usd_word(day),
-                    usd_word(week),
-                    usd_word(month)
+                    usd_word(total.day),
+                    usd_word(total.week),
+                    usd_word(total.month)
                 ),
                 theme.dim2(),
             ),
             Span::styled("   an estimate", theme.dim3()),
         ]
+    } else {
+        vec![head("this board"), Span::styled("nothing counted yet", theme.dim2())]
     };
     lines.push(fit_line(board, width));
     lines
@@ -498,29 +496,20 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         ],
     ));
     let rows = app.costly_tickets();
-    if rows.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "     nothing counted yet ∙ a ticket's agents count as they work".to_string(),
-            theme.dim2(),
-        )));
-    } else {
+    if let Some(total) = app.cost_windows() {
         use mesimon_core::cost::{tokens_word, usd_word};
-        let (day, week, month) = app
-            .costs
-            .iter()
-            .fold((0.0, 0.0, 0.0), |(d, w, m), c| (d + c.day, w + c.week, m + c.month));
         lines.push(Line::from(Span::styled(
             format!(
                 "     24 hours {} ∙ 7 days {} ∙ 30 days {}",
-                usd_word(day),
-                usd_word(week),
-                usd_word(month)
+                usd_word(total.day),
+                usd_word(total.week),
+                usd_word(total.month)
             ),
             theme.dim2(),
         )));
         // As many rows as the screen has room for, the cursor's in view.
         let room = (f.area().height as usize).saturating_sub(lines.len() + 6).max(1);
-        let idx = idx.min(rows.len() - 1);
+        let idx = idx.min(rows.len().saturating_sub(1));
         let first = idx.saturating_sub(room.saturating_sub(1));
         for (i, c) in rows.iter().enumerate().skip(first).take(room) {
             let Some(t) = app.board.ticket(c.ticket) else { continue };
@@ -548,6 +537,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
             picks.push((lines.len(), i));
             lines.push(line);
         }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "     nothing counted yet ∙ a ticket's agents count as they work".to_string(),
+            theme.dim2(),
+        )));
     }
     lines.push(Line::default());
     let area = dialog::centred(f.area(), lines.len() as u16, dialog::MAX_W);

@@ -11913,7 +11913,7 @@ fn a_wake_s_receipt_names_what_waits_and_it_goes_once() {
         park(c, &kw2, ws2);
         assert!(matches!(c.request(Command::ArchiveTicket { id: w2 }), Response::Ok));
         wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W2's tree", || {
-            !tree.exists() && wt_of(c, w2).is_some_and(|wt| wt.status == "evicted")
+            !tree.exists() && archived_worktree(c, w2).is_some_and(|wt| wt.status == "evicted")
         });
         assert!(matches!(c.request(Command::UnarchiveTicket { id: w2 }), Response::Ok));
     };
@@ -15366,7 +15366,7 @@ fn an_expectation_waits_for_its_wake_behind_a_worktree_rebuild() {
     c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
     assert!(matches!(c.request(Command::ArchiveTicket { id: w }), Response::Ok));
     wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W's tree", || {
-        !tree.exists() && wt_of(&mut c, w).is_some_and(|wt| wt.status == "evicted")
+        !tree.exists() && archived_worktree(&mut c, w).is_some_and(|wt| wt.status == "evicted")
     });
     assert!(matches!(c.request(Command::UnarchiveTicket { id: w }), Response::Ok));
 
@@ -15485,7 +15485,7 @@ fn an_expectation_behind_a_rebuild_is_its_own_words_alone() {
         c.await_state(ws, "parked", |s| *s == SessionState::Sleeping);
         assert!(matches!(c.request(Command::ArchiveTicket { id: w }), Response::Ok));
         wait_until(std::time::Duration::from_secs(20), "the archive to reclaim W's tree", || {
-            !tree.exists() && wt_of(c, w).is_some_and(|wt| wt.status == "evicted")
+            !tree.exists() && archived_worktree(c, w).is_some_and(|wt| wt.status == "evicted")
         });
         assert!(matches!(c.request(Command::UnarchiveTicket { id: w }), Response::Ok));
         std::fs::write(&hold, "").unwrap();

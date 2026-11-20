@@ -13836,6 +13836,19 @@ fn golden_usage_dialog() {
     assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(1)));
 }
 
+#[test]
+fn usage_shows_the_board_estimate_when_every_costed_ticket_is_archived() {
+    let mut app = usage_app(14.0, mesimon_core::usage::Severity::Normal);
+    app.board_cost = mesimon_core::cost::BoardCost::from_rows(&cost_fixture());
+    assert!(app.costs.is_empty());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Usage;
+    app.mode = Mode::Settings { idx: 0 };
+    let expected = "24 hours $3.40 ∙ 7 days $12.52 ∙ 30 days $12.52";
+    assert!(render(&app, 120, 30).join("\n").contains(expected));
+    app.mode = Mode::Usage { idx: 0 };
+    assert!(render(&app, 120, 30).join("\n").contains(expected));
+}
+
 /// A reading a few seconds old is read `just now`, never `now ago` — the
 /// age slot's `now` is a slot word, not a duration (T-327).
 #[test]

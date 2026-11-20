@@ -12982,7 +12982,6 @@ impl Daemon {
                 live_sessions: g.sessions.len(),
             })
             .collect();
-        let worktrees = self.worktrees.iter().map(|(tid, b)| self.worktree_item(tid, b)).collect();
         // Standing notices, plus any ticket whose flap fuse is currently
         // blown. The fuse is a real change in how the board behaves — cards
         // stop moving themselves — so it is said out loud rather than left
@@ -13061,6 +13060,37 @@ impl Daemon {
         // `ArchivedTickets` for them, the ticket page and the picker's
         // preview `TicketSessions` for the one archived ticket they show.
         let (mut board, archived) = self.board.for_snapshot();
+        let visible: std::collections::HashSet<_> = board.tickets.iter().map(|t| t.id).collect();
+        let worktrees = self
+            .worktrees
+            .iter()
+            .filter(|(id, _)| visible.contains(*id))
+            .map(|(id, b)| self.worktree_item(id, b))
+            .collect();
+        let prs = self.forge_items(&board.tickets);
+        // The board-wide estimate still includes the archive. Only construct
+        // context readings and keep individual cost rows for tickets on screen.
+        let mut seats = HashMap::new();
+        for rec in self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| s.holds_agent_seat() && visible.contains(&s.ticket))
+        {
+            seats.entry(rec.ticket).or_insert(rec);
+        }
+        let mut board_cost = None;
+        let mut costs = Vec::new();
+        for mut row in self.costs.view(now_ms()) {
+            board_cost.get_or_insert_with(mesimon_core::cost::BoardCost::default).add(&row);
+            if visible.contains(&row.ticket) {
+                row.context_pct = seats
+                    .get(&row.ticket)
+                    .and_then(|rec| self.context_view_of(rec))
+                    .and_then(|v| v.pct);
+                costs.push(row);
+            }
+        }
         for rec in &mut board.sessions {
             self.decorate(rec);
         }
@@ -13111,27 +13141,10 @@ impl Daemon {
             board_touches: self.recent_board_touches(),
             machine_tiers: self.machine_tiers.value.clone(),
             usage: self.usage.view(),
-            prs: self.forge_items(),
+            prs,
             forge: self.forge_status(),
-            costs: {
-                // Each ticket's seat, found in one pass: `live_agent` per
-                // costed ticket scanned every session for each.
-                let mut seats = HashMap::new();
-                for rec in self.board.sessions.iter().filter(|s| s.holds_agent_seat()) {
-                    seats.entry(rec.ticket).or_insert(rec);
-                }
-                self.costs
-                    .view(now_ms())
-                    .into_iter()
-                    .map(|mut c| {
-                        c.context_pct = seats
-                            .get(&c.ticket)
-                            .and_then(|rec| self.context_view_of(rec))
-                            .and_then(|v| v.pct);
-                        c
-                    })
-                    .collect()
-            },
+            board_cost,
+            costs,
         }
     }
 
@@ -16148,7 +16161,9 @@ impl Daemon {
     /// `Command::ArchivedTickets` (T-842): every archived ticket, newest
     /// archive first, as the snapshot would carry them if it carried them.
     fn archived_tickets(&self) -> Response {
-        Response::Tickets { tickets: self.board.archived_tickets().into_iter().cloned().collect() }
+        let tickets = self.board.archived_tickets();
+        let prs = self.forge_items(tickets.iter().copied());
+        Response::Tickets { tickets: tickets.into_iter().cloned().collect(), prs }
     }
 
     /// `Command::TicketSessions` (T-804): one ticket's records, as the
@@ -16168,7 +16183,12 @@ impl Daemon {
                 rec
             })
             .collect();
-        Response::Sessions { sessions }
+        let cost = self.costs.account(ticket, now_ms()).map(|(mut cost, _)| {
+            cost.context_pct = self.agent_context_view(ticket).and_then(|v| v.pct);
+            cost
+        });
+        let worktree = self.worktrees.get(&ticket).map(|b| self.worktree_item(&ticket, b));
+        Response::Sessions { sessions, cost, worktree }
     }
 
     /// One note's body, whole, for the ticket page or an agent. The file is
@@ -21173,9 +21193,12 @@ impl Daemon {
     }
 
     /// Each ticket's pull requests for the snapshot (T-739), newest first.
-    fn forge_items(&self) -> Vec<mesimon_core::command::PrItem> {
+    fn forge_items<'a>(
+        &self,
+        tickets: impl IntoIterator<Item = &'a Ticket>,
+    ) -> Vec<mesimon_core::command::PrItem> {
         let mut out = Vec::new();
-        for t in &self.board.tickets {
+        for t in tickets {
             let Some(set) = self.forge.sets.get(&t.id) else { continue };
             for pr in set {
                 out.push(mesimon_core::command::PrItem {
@@ -23720,7 +23743,7 @@ mod cost_scan_tests {
         scan(&mut d, &rx);
         d.cost_saves.flush(&d.paths, &d.costs).unwrap();
         let before = std::fs::read(d.paths.costs_file()).unwrap();
-        assert_eq!(d.costs.view(now_ms())[0].tokens, 30);
+        assert_eq!(d.costs.view(now_ms()).next().unwrap().tokens, 30);
 
         d.board.sessions.clear();
         append(&path, "second", 20);
@@ -23732,7 +23755,7 @@ mod cost_scan_tests {
         assert!(!d.cost_scanning, "idle archive started a regular worker");
         d.archive_cost_scan = Some(Instant::now() - ARCHIVED_COST_INTERVAL);
         scan(&mut d, &rx);
-        assert_eq!(d.costs.view(now_ms())[0].tokens, 150);
+        assert_eq!(d.costs.view(now_ms()).next().unwrap().tokens, 150);
         d.cost_saves.flush(&d.paths, &d.costs).unwrap();
         let after = std::fs::read(d.paths.costs_file()).unwrap();
         drop(d);
@@ -23745,7 +23768,7 @@ mod cost_scan_tests {
             std::fs::write(restarted.paths.costs_file(), durable).unwrap();
             restarted.costs = crate::cost::load_or_recover(&restarted.paths).0;
             scan(&mut restarted, &rx);
-            assert_eq!(restarted.costs.view(now_ms())[0].tokens, 150);
+            assert_eq!(restarted.costs.view(now_ms()).next().unwrap().tokens, 150);
             restarted.cost_saves.flush(&restarted.paths, &restarted.costs).unwrap();
         }
     }
@@ -24962,6 +24985,67 @@ mod done_gate_leg_tests {
             reviewed: false,
         };
         d.forge.sets.insert(ticket, vec![pr]);
+    }
+
+    #[test]
+    fn snapshot_ticket_rows_follow_the_last_pane_and_remain_readable_in_the_archive() {
+        use mesimon_core::cost::Tokens;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = queued_person_push_tests::daemon(dir.path());
+        let id = d.board.sessions[0].ticket;
+        let mut ticket = queued_person_push_tests::worker_ticket(id, "TODO", "a");
+        ticket.archived = Some(serde_json::from_value(serde_json::json!({"at": "@1"})).unwrap());
+        d.board.tickets.push(ticket);
+        bind_mr(&mut d, id, mesimon_core::forge::PrState::Open, "head");
+        d.worktrees.insert(
+            id,
+            worktree::Binding::new(
+                dir.path().join("worker"),
+                "worker".into(),
+                String::new(),
+                String::new(),
+                BindingStatus::Evicted,
+            ),
+        );
+        let hour = now_ms() / 3_600_000;
+        let mut ledger = crate::cost::TicketLedger::default();
+        ledger
+            .hours
+            .entry(hour)
+            .or_default()
+            .insert("claude-opus-5-5".into(), Tokens { output: 1000, ..Default::default() });
+        d.costs.tickets.insert(id, Arc::new(ledger));
+
+        let Response::Board { board, costs, board_cost, worktrees, prs, .. } = d.snapshot() else {
+            panic!()
+        };
+        assert!(board.ticket(id).is_some());
+        assert_eq!(costs[0].ticket, id);
+        assert!(board_cost.unwrap().day > 0.0);
+        assert_eq!(worktrees[0].ticket, id);
+        assert_eq!(prs[0].ticket, id);
+
+        d.board.sessions[0].state = SessionState::Sleeping;
+        let Response::Board {
+            board,
+            costs: parked_costs,
+            board_cost: parked_total,
+            worktrees,
+            prs: parked_prs,
+            ..
+        } = d.snapshot()
+        else {
+            panic!()
+        };
+        assert!(board.ticket(id).is_none());
+        assert!(parked_costs.is_empty() && worktrees.is_empty() && parked_prs.is_empty());
+        assert_eq!(parked_total, board_cost);
+
+        let Response::Tickets { prs: archive_prs, .. } = d.archived_tickets() else { panic!() };
+        assert_eq!(archive_prs, prs);
+        let Response::Sessions { cost, worktree, .. } = d.ticket_sessions(id) else { panic!() };
+        assert_eq!(cost.as_ref(), costs.first());
+        assert_eq!(worktree.unwrap().branch, "worker");
     }
 
     /// T-1301 (the simbly board's T-381, automations MR !4): the one

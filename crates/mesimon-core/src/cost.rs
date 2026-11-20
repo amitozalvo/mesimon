@@ -426,6 +426,33 @@ pub fn delta(prev: &Tokens, now: &Tokens) -> Tokens {
     }
 }
 
+/// The board-wide estimate at API prices, including tickets outside the snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct BoardCost {
+    pub day: f64,
+    pub week: f64,
+    pub month: f64,
+}
+
+impl BoardCost {
+    pub fn add(&mut self, cost: &TicketCost) {
+        self.day += cost.day;
+        self.week += cost.week;
+        self.month += cost.month;
+    }
+
+    /// An empty ledger and a counted ticket with zero priced tokens display differently.
+    pub fn from_rows<'a>(rows: impl IntoIterator<Item = &'a TicketCost>) -> Option<Self> {
+        let mut rows = rows.into_iter();
+        let mut total = Self::default();
+        total.add(rows.next()?);
+        for row in rows {
+            total.add(row);
+        }
+        Some(total)
+    }
+}
+
 /// One ticket's account, as the snapshot carries it.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TicketCost {

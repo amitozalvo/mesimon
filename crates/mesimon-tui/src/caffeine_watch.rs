@@ -286,6 +286,7 @@ mod tests {
             crown_said: Vec::new(),
             machine_tiers: Default::default(),
             usage: Default::default(),
+            board_cost: None,
             costs: Default::default(),
             pending: if in_flight {
                 vec![Pending {

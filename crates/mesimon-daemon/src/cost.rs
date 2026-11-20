@@ -556,25 +556,22 @@ impl Ledger {
     /// (ticket, hour, model) bucket, and the lookup is a scan. A Gemini
     /// model's rates moved on a date (T-1237), so the lookup is by the model
     /// and which side of that date the hour is.
-    pub fn view(&self, now_ms: u64) -> Vec<TicketCost> {
+    pub fn view(&self, now_ms: u64) -> impl Iterator<Item = TicketCost> + '_ {
         let mut prices: HashMap<(&str, bool), Option<mesimon_core::cost::Price>> = HashMap::new();
-        self.tickets
-            .iter()
-            .filter_map(|(ticket, t)| {
-                let mut c = TicketCost { ticket: *ticket, ..TicketCost::default() };
-                for (hour, models) in &t.hours {
-                    for (model, tokens) in models {
-                        let at_ms = hour.saturating_mul(3_600_000);
-                        let later = mesimon_core::cost::rate_epoch(model, at_ms);
-                        let price = prices
-                            .entry((model.as_str(), later))
-                            .or_insert_with(|| mesimon_core::cost::price_at(model, at_ms));
-                        c.fold_at(price.as_ref(), tokens, *hour, now_ms);
-                    }
+        self.tickets.iter().filter_map(move |(ticket, t)| {
+            let mut c = TicketCost { ticket: *ticket, ..TicketCost::default() };
+            for (hour, models) in &t.hours {
+                for (model, tokens) in models {
+                    let at_ms = hour.saturating_mul(3_600_000);
+                    let later = mesimon_core::cost::rate_epoch(model, at_ms);
+                    let price = prices
+                        .entry((model.as_str(), later))
+                        .or_insert_with(|| mesimon_core::cost::price_at(model, at_ms));
+                    c.fold_at(price.as_ref(), tokens, *hour, now_ms);
                 }
-                (c.tokens > 0).then_some(c)
-            })
-            .collect()
+            }
+            (c.tokens > 0).then_some(c)
+        })
     }
 }
 
@@ -1086,13 +1083,17 @@ mod tests {
         let mut ledger = Ledger::default();
         ledger.learn(t, &path, Reader::Claude, true);
         ledger.apply(scan(ledger.jobs(), NOW));
-        assert_eq!(ledger.view(NOW)[0].tokens, 111, "before any report the tail counts");
+        assert_eq!(
+            ledger.view(NOW).next().unwrap().tokens,
+            111,
+            "before any report the tail counts"
+        );
         let turn = Tokens { input: 1, output: 100, write_5m: 10, ..Tokens::default() };
         // A subagent's turn before the fence is the tail's; the first main
         // turn sets the fence and adds nothing (its lines were read).
         assert!(!ledger.count_mod(t, &path, true, ms("16:00:01"), "claude-opus-5-5", turn));
         assert!(ledger.count_mod(t, &path, false, ms("16:00:02"), "claude-opus-5-5", turn));
-        assert_eq!(ledger.view(NOW)[0].tokens, 111);
+        assert_eq!(ledger.view(NOW).next().unwrap().tokens, 111);
         // The next turn: the tail reads it into the check, the mod's report
         // into the hours, its writes at the hour the transcript showed.
         std::fs::create_dir_all(dir.path().join("s/subagents")).unwrap();
@@ -1116,7 +1117,7 @@ mod tests {
         assert!(ledger.count_mod(t, &path, false, ms("16:00:06"), "claude-opus-5-5", turn));
         let l = &ledger.tickets[&t];
         assert_eq!(l.check, Check { by_mod: 127, by_tail: 127 });
-        assert_eq!(ledger.view(NOW)[0].tokens, 111 + 127, "each turn once");
+        assert_eq!(ledger.view(NOW).next().unwrap().tokens, 111 + 127, "each turn once");
         let writes: u64 = l.hours.values().flat_map(|m| m.values()).map(|t| t.write_5m).sum();
         assert_eq!(writes, 0, "the transcript said the writes live an hour");
         assert!(ledger.disagreements().is_empty());
@@ -1129,7 +1130,7 @@ mod tests {
         ledger.learn(t, &path, Reader::Claude, false);
         writeln!(f, "{}", line_at("m4", 100, "16:00:08")).unwrap();
         ledger.apply(scan(ledger.jobs(), NOW));
-        assert_eq!(ledger.view(NOW)[0].tokens, 111 + 127 + 111);
+        assert_eq!(ledger.view(NOW).next().unwrap().tokens, 111 + 127 + 111);
         // The ledger round-trips with its check and its hint.
         let back: Ledger = serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
         assert_eq!(back, ledger);
@@ -1184,7 +1185,7 @@ mod tests {
         assert!(ledger.learn(t, &path.display().to_string(), Reader::Claude, false));
         assert!(!ledger.learn(t, &path.display().to_string(), Reader::Claude, false));
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
-        let c = &ledger.view(NOW)[0];
+        let c = &ledger.view(NOW).next().unwrap();
         assert_eq!(c.tokens, 152, "m1 once, m2 once");
         assert!((c.usd - (2.0 * 4.0 + 150.0 * 20.0) / 1e6).abs() < 1e-12);
         // Nothing grew: nothing read.
@@ -1197,7 +1198,7 @@ mod tests {
         writeln!(f, "tant\"}}").unwrap();
         writeln!(f, "{}", line("m3", 10)).unwrap();
         assert!(ledger.apply(scan(ledger.jobs(), NOW)));
-        assert_eq!(ledger.view(NOW)[0].tokens, 163);
+        assert_eq!(ledger.view(NOW).next().unwrap().tokens, 163);
     }
 
     /// T-1237: an agy transcript, recorded on 1.5.9, is counted a model step
@@ -1469,7 +1470,7 @@ mod tests {
         ledger.learn(a, &main.display().to_string(), Reader::Claude, false);
         ledger.learn(b, &rollout.display().to_string(), Reader::Codex, false);
         ledger.apply(scan(ledger.jobs(), NOW));
-        let view = ledger.view(NOW);
+        let view: Vec<_> = ledger.view(NOW).collect();
         let of = |t| view.iter().find(|c| c.ticket == t).unwrap();
         assert_eq!(of(a).tokens, 2 + 30, "the subagent's tokens are the ticket's");
         assert_eq!(ledger.tickets[&a].conversations.len(), 2, "and its transcript is learned");

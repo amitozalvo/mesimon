@@ -4126,23 +4126,6 @@ impl Board {
             .collect()
     }
 
-    /// Whether the snapshot carries this ticket (T-842): a live one, or an
-    /// archived one with a pane still open on it, so a record that rides
-    /// (`snapshot_record`) never names a ticket the board lacks. A parked
-    /// agent on an archived ticket keeps its ticket home with its record.
-    fn snapshot_ticket(&self, t: &Ticket) -> bool {
-        !t.is_archived() || self.ticket_awake_sessions(t.id) > 0
-    }
-
-    /// Whether the snapshot carries this record (T-804): one with a pane
-    /// always, a parked or gone one only on a ticket that is not archived.
-    fn snapshot_record(
-        rec: &SessionRecord,
-        archived: &std::collections::HashSet<ulid::Ulid>,
-    ) -> bool {
-        rec.state.has_pane() || !archived.contains(&rec.ticket)
-    }
-
     /// The board as the snapshot sends it, without an archived ticket
     /// (T-842) or a record with no pane on one (T-804). On a board months
     /// old the records were 614 of 629 and two thirds of every snapshot, and
@@ -4155,17 +4138,30 @@ impl Board {
     /// launch argv — and dropped them. Every other field is cloned whole.
     /// The count beside it is how many tickets are archived, kept or not.
     pub fn for_snapshot(&self) -> (Board, usize) {
-        let archived: std::collections::HashSet<ulid::Ulid> =
-            self.tickets.iter().filter(|t| t.is_archived()).map(|t| t.id).collect();
+        // Index the archive once. The same pass that copies the kept sessions
+        // marks archived tickets with an open pane, regardless of session order.
+        let mut archived: std::collections::HashMap<_, _> =
+            self.tickets.iter().filter(|t| t.is_archived()).map(|t| (t.id, false)).collect();
+        let sessions = self
+            .sessions
+            .iter()
+            .filter(|rec| {
+                if let Some(has_pane) = archived.get_mut(&rec.ticket) {
+                    let keep = rec.state.has_pane();
+                    *has_pane |= keep;
+                    keep
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+        let tickets =
+            self.tickets.iter().filter(|t| !t.is_archived() || archived[&t.id]).cloned().collect();
         let board = Board {
             columns: self.columns.clone(),
-            tickets: self.tickets.iter().filter(|t| self.snapshot_ticket(t)).cloned().collect(),
-            sessions: self
-                .sessions
-                .iter()
-                .filter(|rec| Self::snapshot_record(rec, &archived))
-                .cloned()
-                .collect(),
+            tickets,
+            sessions,
             agent_provider: self.agent_provider,
             crown_budget: self.crown_budget,
             crown_mode: self.crown_mode,

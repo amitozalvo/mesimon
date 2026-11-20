@@ -480,7 +480,7 @@ impl TestClient {
     /// snapshot leaves those out (T-804).
     pub fn sessions_of(&mut self, ticket: ulid::Ulid) -> Vec<mesimon_core::board::SessionRecord> {
         match self.request(Command::TicketSessions { ticket }) {
-            Response::Sessions { sessions } => sessions,
+            Response::Sessions { sessions, .. } => sessions,
             other => panic!("ticket_sessions: {other:?}"),
         }
     }
@@ -489,7 +489,7 @@ impl TestClient {
     /// out (T-842).
     pub fn archived(&mut self) -> Vec<mesimon_core::board::Ticket> {
         match self.request(Command::ArchivedTickets) {
-            Response::Tickets { tickets } => tickets,
+            Response::Tickets { tickets, .. } => tickets,
             other => panic!("archived_tickets: {other:?}"),
         }
     }
@@ -1270,6 +1270,14 @@ pub fn worktrees_of(c: &mut TestClient) -> Vec<WorktreeItem> {
 /// One ticket's worktree row, if it has one.
 pub fn wt_of(c: &mut TestClient, ticket: ulid::Ulid) -> Option<WorktreeItem> {
     worktrees_of(c).into_iter().find(|w| w.ticket == ticket)
+}
+
+/// An archived ticket's binding, as its page reads it after it leaves the snapshot.
+pub fn archived_worktree(c: &mut TestClient, ticket: ulid::Ulid) -> Option<WorktreeItem> {
+    match c.request(Command::TicketSessions { ticket }) {
+        Response::Sessions { worktree, .. } => worktree,
+        other => panic!("ticket_sessions: {other:?}"),
+    }
 }
 
 /// Poll until the ticket's binding reads `attached` (a lazy provision lands

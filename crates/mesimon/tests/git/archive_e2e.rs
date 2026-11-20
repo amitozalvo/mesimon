@@ -235,7 +235,7 @@ fn archive_gates_suggests_and_restores() {
     // Its parked record stays off the snapshot (T-804) and comes on its own ask.
     assert!(!board.sessions.iter().any(|s| s.id == sid), "the snapshot leaves it out");
     match c.request(Command::TicketSessions { ticket: cold }) {
-        Response::Sessions { sessions } => {
+        Response::Sessions { sessions, .. } => {
             assert!(
                 matches!(sessions.as_slice(), [s] if s.id == sid && s.state == SessionState::Sleeping),
                 "{sessions:?}"
