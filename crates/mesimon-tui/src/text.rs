@@ -651,6 +651,7 @@ impl TextArea {
         self.text.split('\n').count()
     }
 
+    #[cfg(test)]
     pub(crate) fn lines(&self) -> impl Iterator<Item = &str> {
         self.text.split('\n')
     }
@@ -834,14 +835,24 @@ impl TextArea {
         self.cursor = cursor;
     }
 
+    fn wrapped_rows(&self, width: usize) -> AreaLayout {
+        AreaLayout::new(&self.text, width)
+    }
+}
+
+pub(crate) struct AreaLayout {
+    pub(crate) rows: Vec<std::ops::Range<usize>>,
+}
+
+impl AreaLayout {
     /// Byte ranges keep all whitespace and explicit newlines in the buffer.
     /// Prefer breaks after whitespace; split an oversized word only at a
     /// grapheme boundary. Even a viewport narrower than a cluster advances.
-    fn wrapped_rows(&self, width: usize) -> AreaLayout {
+    pub(crate) fn new(text: &str, width: usize) -> Self {
         let width = width.max(1);
         let mut rows = Vec::new();
         let mut offset = 0;
-        for line in self.lines() {
+        for line in text.split('\n') {
             let mut start = 0;
             while start < line.len() {
                 let mut end = start;
@@ -873,15 +884,9 @@ impl TextArea {
             }
             offset += line.len() + 1;
         }
-        AreaLayout { rows }
+        Self { rows }
     }
-}
 
-struct AreaLayout {
-    rows: Vec<std::ops::Range<usize>>,
-}
-
-impl AreaLayout {
     fn cursor_row(&self, cursor: usize) -> usize {
         self.rows.partition_point(|row| row.start <= cursor).saturating_sub(1)
     }

@@ -15812,11 +15812,16 @@ fn app_crowned_worker(name: &str) -> (App, std::path::PathBuf) {
         ticket: ulid_n(3),
         act: word.into(),
         detail: detail.into(),
+        previous_title: None,
         words,
         cause,
     };
     app.crown_acts.set(vec![
         act(120, "moved", "REVIEW", None, Some(Cause::Person)),
+        CrownAct {
+            previous_title: Some("Fix login".into()),
+            ..act(180, "renamed", "Fix login redirect", None, Some(Cause::Person))
+        },
         act(
             298,
             "asked",
@@ -15864,7 +15869,55 @@ fn golden_ticket_crown_acts_120() {
     let raised = app.theme.selected_bg;
     assert_eq!(Some(buf[at(person, "Fix the")].bg), raised, "the person's on the raised ground");
     assert_ne!(Some(buf[at(words, "Token v2")].bg), raised, "the crown's ask is not theirs");
+    let renamed = row("♛ crown renamed this ticket");
+    assert!(moved < renamed && renamed < asked);
+    assert_eq!(row("Before  Fix login"), renamed + 1);
+    assert_eq!(row("After   Fix login redirect"), renamed + 2);
+    assert!(lines[renamed + 3].contains("after you asked the crown"));
     golden("ticket_crown_acts_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+#[test]
+fn narrow_transcripts_wrap_both_rename_titles_literally() {
+    let (mut app, path) = app_crowned_worker("rename-wrap");
+    let mut acts = app.crown_acts.all().as_ref().clone();
+    let rename = acts.iter_mut().find(|a| a.act == "renamed").unwrap();
+    let prefix = "login redirect ".repeat(5);
+    rename.previous_title = Some(format!("{prefix}**old**"));
+    rename.detail = format!("{prefix}`new`");
+    app.crown_acts.set(acts);
+    app.poll_page_transcript();
+    let check = |lines: &[String], body_offset| {
+        let row = |part: &str| {
+            lines
+                .iter()
+                .position(|s| s.contains(part))
+                .unwrap_or_else(|| panic!("{part}: {lines:#?}"))
+        };
+        let head = row("crown renamed this ticket");
+        assert!(lines[head].contains(">1y"));
+        assert_eq!(row("Before  login"), head + body_offset);
+        let end_before = row("**old**");
+        assert!(end_before > head + body_offset);
+        assert_eq!(row("After   login"), end_before + 1);
+        let end_after = row("`new`");
+        assert!(end_after > end_before + 1);
+        assert!(lines[end_after + 1].contains("after you asked the crown"));
+    };
+    // The preview first appears beside Sessions at 107 columns.
+    check(&render(&app, 107, 48), 1);
+    app.screen = Screen::Board;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    press(&mut app, '}');
+    app.poll_transcript();
+    // From the newest reply, step back past the crown's ask to the rename.
+    press(&mut app, '{');
+    press(&mut app, '{');
+    let lines = render(&app, 80, 48);
+    let dialog = lines.iter().position(|l| l.contains("TRANSCRIPT ∙")).expect("dialog");
+    check(&lines[dialog..], 2);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

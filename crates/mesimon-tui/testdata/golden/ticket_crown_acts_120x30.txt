@@ -4,27 +4,27 @@
  IN PROGRESS for >1y ∙ created >1y ago
 
 
-  PREVIEW                                                                                  SESSIONS                  2
+  PREVIEW                                                              { } page preview    SESSIONS                  2
 
-   you  >1y                                                                               ⠋ ✻ claude               >1y
- ❯ Fix the login redirect loop.                                                           ◦ $ bash                 >1y
-                                                                                           x sleep
-   claude  >1y
+ ❯ Fix the login redirect loop.                                                           ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
+   claude  >1y                                                                             x sleep
    Found it: the refresh sets the cookie path to /api. Fixed, with a test.
 
    ♛ crown moved this ticket to REVIEW  >1y
    after you asked the crown
 
+   ♛ crown renamed this ticket  >1y
+   Before  Fix login
+   After   Fix login redirect
+   after you asked the crown
+
    ♛ crown asked  >1y
    Token v2 ships Monday. Does the fix still hold with the new format?
-   after the relay board's crown asked
-
-   claude  >1y
-   It holds: the format changes, the cookie does not.
-                                                                                             ▀█ ▄▀▀   █▀
-    ● working                                                                               ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
-                                                                                            ███▀▀████▀▀█ █▀████
-                                                                                            █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
+   after the relay board's crown asked                                                       ▀█ ▄▀▀   █▀
+                                                                                            ▄▀█▀▄▄▄▄▄▀▀▄ █▀▀▀▀█
+   claude  >1y                                                                              ███▀▀████▀▀█ █▀████
+   It holds: the format changes, the cookie does not.                                       █▀█▀▀▀▀██▀▀█▄▀▀▀▀▀█
                                                                                             ▀▀▀▀▀▀▀▀▀▀▀█▀▀▀█████▄
-
+    ● working
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

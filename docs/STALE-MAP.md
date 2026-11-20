@@ -48821,3 +48821,26 @@ A held Stop has a different job. Four of 439 saved Stops in the November
 and replied without calling a tool in two. The held-Stop e2e follows that
 order through the later Stop and delivery. The person kept the crown's
 told-hand wording outside this change.
+
+## A crown rename keeps the title it replaced (T-1376, 2026-11-20)
+
+A successful crown rename of another ticket records the stored title it replaced
+in the optional `CrownAct.previous_title` and the accepted title in `detail`.
+Both have their own 240-byte allowance and show an ellipsis when clipped.
+The worker's and crown's transcripts and Remote Control's Conversation show
+one timed act with literal Before and After lines. The crown's heading names
+the target by key, so a later rename cannot rewrite the history of this one.
+
+Looking up the target on the board supplies only its current title. Older log
+entries hold just the new title and keep their original sentence. The crown
+e2e reads the journal after successive renames using the same receipt. The
+ticket golden, narrow preview and dialog, phone page budget, and browser chat
+flow cover how the two recorded values reach the reader.
+
+The rename assertions passed in the crown e2e, which then twice observed a
+live worktree seat before its `started_by` reached disk (in the batch and
+alone). T-1335 moved the save to a worker. This worktree start had already
+replied that the seat was pending. The test now waits for the specific seat
+and crown ID on disk and passed alone. The initial narrow test used an
+80-column ticket page, where Sessions occupies the whole width. It passed
+with the preview at its 107-column minimum and the dialog at 80 columns.

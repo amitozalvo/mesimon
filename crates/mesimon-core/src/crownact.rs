@@ -29,6 +29,9 @@ pub struct CrownAct {
     /// the other board's name, the wake's news.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
+    /// The title immediately before a recorded rename. Older acts hold only the new title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_title: Option<String>,
     /// The key of the words this act put in a conversation (`words_key`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<u64>,
@@ -55,6 +58,19 @@ pub enum Cause {
 
 /// The longest `detail` a line keeps.
 pub const DETAIL_BYTES: usize = 240;
+
+const BEFORE: &str = "Before  ";
+const AFTER: &str = "After   ";
+pub const RENAME_BODY_BYTES: usize = BEFORE.len() + DETAIL_BYTES + 1 + AFTER.len() + DETAIL_BYTES;
+
+/// A journaled title marks a cut inside its own detail allowance.
+pub fn title_detail(title: &str) -> String {
+    let clean = crate::text::scrub_text(title);
+    if clean.len() <= DETAIL_BYTES {
+        return clean;
+    }
+    format!("{}…", crate::text::cap_bytes(&clean, DETAIL_BYTES - "…".len()))
+}
 
 /// The road words into the crown, and the crown's own words out to another
 /// board: acts on the crown's own ticket.
@@ -106,6 +122,7 @@ pub fn sentence(act: &CrownAct, s: &Subject) -> Option<String> {
     let said = match act.act.as_str() {
         "moved" if !d.is_empty() => format!("crown moved {name} to {d}"),
         "moved" => format!("crown moved {name}"),
+        "renamed" if act.previous_title.is_some() => format!("crown renamed {name}"),
         "renamed" if !d.is_empty() => format!("crown renamed {name} “{d}”"),
         "renamed" => format!("crown renamed {name}"),
         "tagged" if !d.is_empty() => format!("crown tagged {name} {d}"),
@@ -183,6 +200,8 @@ pub struct Line {
     pub road: bool,
     /// Words the act carries itself (the crown's answer), else empty.
     pub body: String,
+    /// Two labeled, literal title lines in the body.
+    pub rename: bool,
     pub cause: Option<String>,
     /// The key of the words it put in a conversation: that prompt is
     /// marked, and the act is no row of its own.
@@ -217,12 +236,17 @@ pub fn lines_of(
         } else {
             a
         };
+        let previous = a.previous_title.as_deref().filter(|_| a.act == "renamed");
         let (name, owns);
         let mut title = String::new();
         let subject = if own && a.ticket != ticket {
             let Some(t) = board.ticket(a.ticket) else { continue };
-            name = format!("{} “{}”", t.short_key, t.title);
-            title = t.title.clone();
+            if previous.is_some() {
+                name = t.short_key.clone();
+            } else {
+                name = format!("{} “{}”", t.short_key, t.title);
+                title = t.title.clone();
+            }
             owns = format!("{name}'s");
             Subject { name: &name, own: &owns }
         } else {
@@ -243,7 +267,11 @@ pub fn lines_of(
             title,
             alone: said,
             road: is_board_road(a),
-            body: body(a).unwrap_or_default().to_string(),
+            body: match previous {
+                Some(before) => format!("{BEFORE}{before}\n{AFTER}{}", a.detail),
+                None => body(a).unwrap_or_default().to_string(),
+            },
+            rename: previous.is_some(),
             // The crown's own conversation says what started its turn.
             cause: a.cause.as_ref().filter(|_| !own).map(cause_line),
             words,
@@ -263,6 +291,7 @@ mod tests {
             ticket: ulid::Ulid(2),
             act: word.into(),
             detail: detail.into(),
+            previous_title: None,
             words: None,
             cause: None,
         }
@@ -336,6 +365,27 @@ mod tests {
         assert_eq!(
             cause_line(&Cause::Wake { news: "T-14 “Fix” delivered".into() }),
             "after the board told the crown: T-14 “Fix” delivered"
+        );
+    }
+
+    #[test]
+    fn a_rename_keeps_two_independently_bounded_titles_and_reads_older_acts() {
+        let old = act("renamed", "New");
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("previous_title").is_none());
+        let legacy: CrownAct = serde_json::from_value(json).unwrap();
+        assert_eq!(sentence(&legacy, &HERE).unwrap(), "crown renamed this ticket “New”");
+        let long = format!("{}雪", "a".repeat(DETAIL_BYTES - 1));
+        let before = title_detail(&long);
+        assert_eq!(before, format!("{}…", "a".repeat(DETAIL_BYTES - "…".len())));
+        let after = title_detail(&"ש".repeat(DETAIL_BYTES));
+        assert!(after.ends_with('…') && after.len() <= DETAIL_BYTES);
+        assert_eq!(title_detail("a\x07b"), "ab");
+        assert_eq!(title_detail(&"a".repeat(DETAIL_BYTES)), "a".repeat(DETAIL_BYTES));
+        let change = CrownAct { previous_title: Some(before), detail: after, ..old };
+        assert_eq!(
+            serde_json::from_value::<CrownAct>(serde_json::to_value(&change).unwrap()).unwrap(),
+            change
         );
     }
 

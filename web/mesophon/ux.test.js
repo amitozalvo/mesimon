@@ -3046,20 +3046,26 @@ async function chatFlow(browser, engineName, size, viewport) {
       fixture.acts = [
         { ms: t0 + 30000, text: "crown started this ticket's agent on Opus", cause: "after you asked the crown" },
         { ms: t0 + 50000, text: "crown asked", prompt: true },
+        { ms: t0 + 90000, text: "crown renamed this ticket", body: "Before  **Fix login**\nAfter   Fix `redirect`", cause: "after you asked the crown" },
         // Another board's crown's reply with its words' key (T-1309): the
         // prompt that holds them is that crown's, not a bubble of yours.
         { ms: t0 + 179000, text: "the relay board's crown replied", road: true, prompt: true, words: "898653eb37d6cc01" },
         { ms: Date.now() - 60000, text: "crown moved this ticket to REVIEW" },
       ];
     });
-    await until(page, () => document.querySelectorAll("#chat .chat-act").length === 3);
+    await until(page, () => document.querySelectorAll("#chat .chat-act").length === 4);
     await until(page, () => document.querySelectorAll("#chat .chat-crowned").length === 1);
     assert.equal(await page.locator("#crown-line").count(), 0, "no banner over a conversation that says it");
     assert.deepEqual(
       await chat.locator(".chat-row:not(.chat-doing)").evaluateAll((rows) => rows.map((r) => r.querySelector("span")?.textContent ?? r.textContent)),
-      ["conversation cleared", "Crown started this ticket's agent on Opus", "Crown asked", "Crown's words", "On it",
+      ["conversation cleared", "Crown started this ticket's agent on Opus", "Crown asked", "Crown's words", "Crown renamed this ticket", "On it",
         "The relay board's crown replied", "Crown moved this ticket to REVIEW"],
     );
+    const rename = chat.locator(".chat-act", { hasText: "Crown renamed this ticket" });
+    assert.equal(await rename.count(), 1);
+    assert.equal(await rename.locator(".chat-act-body").innerText(), "Before  **Fix login**\nAfter   Fix `redirect`");
+    assert(await rename.locator("time").innerText());
+    assert.equal(await rename.locator(".chat-act-cause").innerText(), "After you asked the crown");
     const crowned = chat.locator(".chat-crowned");
     assert.equal(await crowned.locator(".chat-crowned-body").textContent(), "Cookie path stays, the relay's crown says.");
     assert.equal(await chat.locator(".chat-prompt", { hasText: "Cookie path" }).count(), 0, "off the person's bubble");

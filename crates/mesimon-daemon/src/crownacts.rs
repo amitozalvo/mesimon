@@ -101,6 +101,7 @@ mod tests {
             ticket: ulid::Ulid(2),
             act: "moved".into(),
             detail: "REVIEW".into(),
+            previous_title: None,
             words: None,
             cause: None,
         }

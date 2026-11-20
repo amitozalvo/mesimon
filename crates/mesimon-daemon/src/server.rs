@@ -3113,6 +3113,7 @@ struct ActExtra {
     /// for a tag taken off, which the card lights as `tagged`).
     word: Option<&'static str>,
     detail: String,
+    previous_title: Option<String>,
     words: Option<u64>,
 }
 
@@ -9252,13 +9253,16 @@ impl Daemon {
                 if mesimon_core::board::shell_title(&title) {
                     return Response::Err { message: road::SHELL_TITLE_REFUSED.into() };
                 }
-                if let err @ Response::Err { .. } =
-                    self.with_ticket(target, |t| t.title = title.clone())
-                {
+                let mut extra = ActExtra::default();
+                if let err @ Response::Err { .. } = self.with_ticket(target, |t| {
+                    extra.previous_title = Some(std::mem::replace(&mut t.title, title.clone()));
+                }) {
                     return err;
                 }
                 self.feed.board(by.actor(), "rename_ticket", Some(target));
-                let seen = self.touched_seen(ticket, target, "renamed", write);
+                let seen = self
+                    .crown_touched_with(ticket, target, "renamed", write, extra)
+                    .unwrap_or_else(|| self.seen_token(target));
                 Response::AgentTicketUpdated {
                     key,
                     seen,
@@ -10786,7 +10790,7 @@ impl Daemon {
         if matches!(word, "sent" | "woke") {
             return;
         }
-        let ActExtra { word: told, detail, words } = extra;
+        let ActExtra { word: told, detail, previous_title, words } = extra;
         let word = told.unwrap_or(word);
         let detail = if detail.is_empty() { self.act_detail(target, word) } else { detail };
         let act = mesimon_core::crownact::CrownAct {
@@ -10794,11 +10798,16 @@ impl Daemon {
             crown,
             ticket: target,
             act: word.to_string(),
-            detail: mesimon_core::text::cap_bytes(
-                &mesimon_core::text::scrub_text(&detail),
-                mesimon_core::crownact::DETAIL_BYTES,
-            )
-            .into(),
+            detail: if previous_title.is_some() {
+                mesimon_core::crownact::title_detail(&detail)
+            } else {
+                mesimon_core::text::cap_bytes(
+                    &mesimon_core::text::scrub_text(&detail),
+                    mesimon_core::crownact::DETAIL_BYTES,
+                )
+                .into()
+            },
+            previous_title: previous_title.as_deref().map(mesimon_core::crownact::title_detail),
             words,
             cause: self.crown_cause.clone(),
         };

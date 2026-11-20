@@ -942,12 +942,15 @@ impl ActRow {
                 road: l.road,
                 prompt: l.words.is_some(),
                 words: l.words.map(|w| format!("{w:016x}")),
-                body: crate::text::cap_bytes(
-                    &crate::text::scrub_lines(&l.body),
-                    crate::crownact::DETAIL_BYTES,
-                )
-                .trim()
-                .to_string(),
+                body: {
+                    let clean = crate::text::scrub_lines(&l.body);
+                    if l.rename {
+                        crate::text::cap_bytes(&clean, crate::crownact::RENAME_BODY_BYTES)
+                    } else {
+                        crate::text::cap_bytes(&clean, crate::crownact::DETAIL_BYTES).trim()
+                    }
+                    .to_string()
+                },
                 cause: l.cause.as_deref().and_then(step_line),
             };
             bytes += serde_json::to_string(&row).map_or(usize::MAX, |s| s.len() + 1);
@@ -1527,6 +1530,7 @@ mod tests {
             head: head.into(),
             title: String::new(),
             alone: head.into(),
+            rename: false,
             road: false,
             body: String::new(),
             cause: None,
@@ -1540,7 +1544,15 @@ mod tests {
             words: Some(7),
             ..line(400, "crown answered this ticket's question")
         });
+        let body = format!(
+            "Before  {}\nAfter   {}",
+            "b".repeat(crate::crownact::DETAIL_BYTES),
+            "a".repeat(crate::crownact::DETAIL_BYTES)
+        );
+        lines[399] =
+            Line { body: body.clone(), rename: true, ..line(399, "crown renamed this ticket") };
         let rows = ActRow::page(&lines);
+        assert_eq!(rows[rows.len() - 2].body, body);
         let bytes = serde_json::to_string(&rows).unwrap().len();
         assert!(bytes <= TRANSCRIPT_ACTS_BYTES + 2, "{bytes}");
         assert!(rows.len() < lines.len() && rows.windows(2).all(|w| w[0].ms < w[1].ms));

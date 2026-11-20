@@ -2622,8 +2622,14 @@ fn conversation(
         let stamp = (size, width, flavor);
         if !cache.get(&(rec.id, m.key)).is_some_and(|e| e.stamp == stamp) {
             let clean = crate::peek::sanitize(text);
-            let body = crate::rich::render_all(&clean, width, theme, newline);
-            let found = app.page_links(rec.ticket, &clean);
+            let (body, found) = if t.is_rename(m) {
+                (rename_rows(&clean, width), Vec::new())
+            } else {
+                (
+                    crate::rich::render_all(&clean, width, theme, newline),
+                    app.page_links(rec.ticket, &clean),
+                )
+            };
             let link_rows = found.iter().map(|(_, link)| row_of(&body, &link.text)).collect();
             cache.insert(
                 (rec.id, m.key),
@@ -2686,6 +2692,15 @@ fn conversation(
         crate::app::Composed { stamp, width, flavor, selected, rows: Rc::clone(&rows), doc },
     );
     Some((key, rows))
+}
+
+/// Wrap both labeled titles as literal board text, preserving spaces and punctuation.
+pub(super) fn rename_rows(clean: &str, width: usize) -> Vec<Line<'static>> {
+    crate::text::AreaLayout::new(clean, width)
+        .rows
+        .into_iter()
+        .map(|row| Line::raw(clean[row].to_owned()))
+        .collect()
 }
 
 /// Who wrote a message, as its head says: a raised hand (T-1155) says

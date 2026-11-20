@@ -350,6 +350,19 @@ fn the_crown_lets_one_agent_edit_the_others() {
     assert_eq!(c.board().ticket(b).unwrap().title, "again");
     assert_eq!(c.crown_touches().iter().find(|t| t.ticket == b).unwrap().action, "renamed");
 
+    // Only successful cross-ticket renames enter the journal. The two calls
+    // above share a receipt, but each captures the title it actually replaced.
+    let acts = mesimon_daemon::crownacts::read(&h.paths.crown_acts_file());
+    let renames: Vec<_> = acts
+        .iter()
+        .filter(|act| act.act == "renamed")
+        .map(|act| (act.ticket, act.previous_title.as_deref(), act.detail.as_str()))
+        .collect();
+    assert_eq!(
+        renames,
+        [(b, Some("fix the thing"), "fix it properly"), (b, Some("fix it properly"), "again"),]
+    );
+
     // ---- a note and a tag on another ticket ---------------------------------
     let note = match c.send(
         Principal::Agent { session: sa },
@@ -671,8 +684,19 @@ fn the_crown_lets_one_agent_edit_the_others() {
     );
     assert!(started.pending_submit, "Shift+Enter's road: the title is submitted, not typed");
     assert_eq!(c.crown_touches().iter().find(|t| t.ticket == e1).unwrap().action, "started");
-    let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
-    assert!(sessions.contains("\"started_by\""), "persisted, so a restart keeps the count");
+    // The worktree start replied while still pending. Its later live snapshot
+    // can reach this reader before the ordered session saver (T-1335).
+    let session_id = started.id.to_string();
+    let crown_id = a.to_string();
+    wait_until(std::time::Duration::from_secs(15), "the new seat's crown to be durable", || {
+        let file = std::fs::read(h.paths.sessions_file()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&file).unwrap();
+        saved["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == session_id && s["started_by"] == crown_id)
+    });
     // T-908: the crown's own worker reaching for another ticket reads that
     // its raised hand wakes the crown as well as reaching the person.
     match c.send(

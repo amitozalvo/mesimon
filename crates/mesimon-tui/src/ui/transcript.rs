@@ -143,14 +143,18 @@ fn words(
     let prompt = super::ticket::persons(m);
     let newline = if m.kind == RowKind::Prompt { Newline::Break } else { Newline::Space };
     let key = crate::transcript::doc_key(m);
-    let rows = super::ticket::rendered_with_link(
-        app,
-        key,
-        width,
-        || crate::peek::sanitize(t.text(m)),
-        newline,
-        app.transcript_cursor_source(),
-    );
+    let rows = if t.is_rename(m) {
+        std::rc::Rc::new(super::ticket::rename_rows(&crate::peek::sanitize(t.text(m)), width))
+    } else {
+        super::ticket::rendered_with_link(
+            app,
+            key,
+            width,
+            || crate::peek::sanitize(t.text(m)),
+            newline,
+            app.transcript_cursor_source(),
+        )
+    };
     // What started the crown's turn, under its words (T-1162).
     let cause = super::ticket::cause_row(theme, m, width);
     let total = rows.len() + usize::from(cause.is_some());

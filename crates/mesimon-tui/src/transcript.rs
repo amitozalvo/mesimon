@@ -437,6 +437,10 @@ impl Transcript {
     }
 
     /// A message's words, whole up to `ROW_MAX`.
+    pub(crate) fn is_rename(&self, m: &Message) -> bool {
+        m.crown.as_ref().and_then(|c| c.act).is_some_and(|i| self.acts[i].rename)
+    }
+
     pub(crate) fn text(&self, m: &Message) -> &str {
         if let Some(i) = m.crown.as_ref().and_then(|c| c.act) {
             return self.acts.get(i).map_or("", |a| a.body.as_str());
@@ -585,6 +589,9 @@ impl Transcript {
 
     pub(crate) fn links(&self) -> Rc<Vec<mesimon_core::links::Link>> {
         let Some(m) = self.message() else { return Rc::new(Vec::new()) };
+        if self.is_rename(m) {
+            return Rc::new(Vec::new());
+        }
         let key = doc_key(m);
         let mut cache = self.links.borrow_mut();
         if let Some((held, links)) = cache.as_ref() {
@@ -793,6 +800,7 @@ pub(crate) mod tests {
             ticket: worker,
             act: "started".into(),
             detail: detail.into(),
+            previous_title: None,
             words: None,
             cause: None,
         };
@@ -806,6 +814,7 @@ pub(crate) mod tests {
                 ticket: worker,
                 act: "merged".into(),
                 detail: String::new(),
+                previous_title: None,
                 words: None,
                 cause: Some(Cause::Person),
             },
@@ -815,8 +824,16 @@ pub(crate) mod tests {
                 ticket: crown,
                 act: BOARD_REPLIED.into(),
                 detail: "relay".into(),
+                previous_title: None,
                 words: Some(words_key("cookie path stays")),
                 cause: None,
+            },
+            CrownAct {
+                act: "renamed".into(),
+                previous_title: Some("First title".into()),
+                detail: "Second title".into(),
+                cause: Some(Cause::Person),
+                ..started(7, "")
             },
             // Another crown's act on another ticket: neither page's.
             CrownAct {
@@ -825,6 +842,7 @@ pub(crate) mod tests {
                 ticket: ulid::Ulid(8),
                 act: "moved".into(),
                 detail: String::new(),
+                previous_title: None,
                 words: None,
                 cause: None,
             },
@@ -839,11 +857,16 @@ pub(crate) mod tests {
                 ("crown started T-14 “Fix login”'s agent", false, None),
                 ("crown merged T-14 “Fix login”'s branch", false, None),
                 ("the relay board's crown replied", true, None),
+                ("crown renamed T-14", false, None),
             ]
         );
         assert_eq!(own[3].words, Some(words_key("cookie path stays")));
         let theirs = acts_of(&board, &Book::new(&tiers, &board), &acts, worker);
-        assert_eq!(theirs.len(), 3);
+        assert_eq!(theirs.len(), 4);
+        assert_eq!(theirs[3].head, "crown renamed this ticket");
+        assert_eq!(theirs[3].body, "Before  First title\nAfter   Second title");
+        assert_eq!(own[4].body, theirs[3].body);
+        assert_eq!(theirs[3].cause.as_deref(), Some("after you asked the crown"));
         assert_eq!(theirs[0].head, "crown started this ticket's agent on Opus");
         assert_eq!(theirs[2].head, "crown merged this ticket's branch");
         assert_eq!(theirs[2].cause.as_deref(), Some("after you asked the crown"));
@@ -1020,6 +1043,7 @@ pub(crate) mod tests {
             ticket,
             act: act.into(),
             detail: detail.into(),
+            previous_title: None,
             words,
             cause,
         };
