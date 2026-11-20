@@ -12508,6 +12508,43 @@ fn golden_search_120() {
     golden("search_120x30", &render(&app, 120, 30));
 }
 
+#[test]
+fn pending_search_keeps_the_drawn_rows_and_enter_opens_the_new_top_hit() {
+    use std::time::{Duration, Instant};
+    let mut board = fixture_archived();
+    board.tickets[0].title = "prefix".into();
+    board.tickets.iter_mut().find(|t| t.id == ulid_n(7)).unwrap().title = "prefixes".into();
+    board.tickets.extend((10..80).map(|i| ticket(i, &format!("T-{i}"), "other", "todo", "z")));
+    let mut app = searching(app_graphite(board), "prefix");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(&app.mode, Mode::Search(s) if s.pending.is_some()) {
+        app.pump().unwrap();
+        assert!(Instant::now() < deadline, "first list never landed");
+        std::thread::yield_now();
+    }
+    let list = |app: &App| {
+        render(app, 80, 24)
+            .into_iter()
+            .filter(|l| l.contains("prefix") && (l.contains(" T-1 ") || l.contains(" T-7 ")))
+            .collect::<Vec<_>>()
+    };
+    let prior = list(&app);
+    assert_eq!(prior.len(), 2);
+    assert!(prior[0].contains(" T-1 "), "the live ticket leads the old list");
+
+    press(&mut app, 'e');
+    assert!(matches!(&app.mode, Mode::Search(s) if s.pending.is_some()));
+    assert_eq!(list(&app), prior, "both prior rows stay drawn while the query narrows");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(matches!(app.mode, Mode::Search(_)), "Enter waits for the new list");
+    while matches!(app.mode, Mode::Search(_)) {
+        app.pump().unwrap();
+        assert!(Instant::now() < deadline, "deferred Enter never landed");
+        std::thread::yield_now();
+    }
+    assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid_n(7)));
+}
+
 /// The same picker with nothing typed: the whole board, live cards in board
 /// order and the archived one last, which is what `/` opens on.
 #[test]

@@ -48098,3 +48098,8 @@ daemon request handler gave 57.1 ms as one writer turn before. Afterward the
 For the final key of `the` with bodies cached and PR rows excluded, the input
 handler went from 120.2 ms to 0.11 ms. The worker result was ready and polled
 at 115.0 ms, with the same 858 hits. These timings exclude terminal drawing.
+
+Review found that clearing the list on submission left the picker blank throughout
+a burst of typing. The picker keeps the last completed rows and their cursor until
+the new rank lands. Enter waits for that rank. A worker in flight uses the same
+8 ms poll interval as a fresh snapshot, including when the terminal is idle.

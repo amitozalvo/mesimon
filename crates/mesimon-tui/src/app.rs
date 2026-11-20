@@ -5069,11 +5069,11 @@ impl App {
     /// board landed up to 100 ms after it was in, on a ~15 ms round trip.
     /// Past `SNAPSHOT_SOON` the daemon is slow, and the idle pace waits.
     fn frame_wait(&self, moving: bool) -> Duration {
-        if self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON {
+        if self.ranking.active.is_some()
+            || (self.snapshot_rx.is_some() && self.snapshot_asked_at.elapsed() < SNAPSHOT_SOON)
+        {
             SNAPSHOT_FRAME
-        } else if moving || matches!(&self.mode, Mode::Search(s) if s.pending.is_some()) {
-            // A rank can finish while the terminal is idle. Poll within one
-            // frame so a ready result (or a waiting Enter) lands promptly.
+        } else if moving {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(100)
@@ -5780,6 +5780,10 @@ impl App {
     /// over a session somebody started elsewhere, which is not a stray
     /// click's to do.
     fn point_row(&mut self, to: usize) -> Result<bool> {
+        if matches!(&self.mode, Mode::Search(s) if s.pending.is_some()) {
+            // A click names a specific drawn row, which belongs to the previous pass.
+            return Ok(false);
+        }
         // A row of the Settings page beside the section list (T-717): the
         // list's Enter steps into the page first, as a person would.
         if matches!(self.mode, Mode::Sections) {
@@ -9122,7 +9126,7 @@ impl App {
             },
             can_nudge: self.can_nudge(),
             searching: search.is_some(),
-            search_hits: search.map_or(0, |s| s.hits.len().max(usize::from(s.pending.is_some()))),
+            search_hits: search.map_or(0, |s| if s.pending.is_some() { 1 } else { s.hits.len() }),
             search_archived: search.is_some_and(|s| s.archived),
             col_header: self.on_column_header(),
             col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
@@ -22804,7 +22808,7 @@ mod tests {
         press(&mut app, '/');
         typed(&mut app, "latest");
         let pending = search(&app).pending.expect("large board ranks on a worker");
-        assert!(app.frame_wait(false) <= Duration::from_millis(16));
+        assert_eq!(app.frame_wait(false), SNAPSHOT_FRAME);
 
         board.tickets[1].manual_merge = true;
         let mut pr = pr;

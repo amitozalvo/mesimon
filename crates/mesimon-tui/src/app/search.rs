@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc};
 #[derive(Default)]
 pub(super) struct Ranking {
     matcher: Option<Searcher>,
-    active: Option<mpsc::Receiver<(Searcher, Vec<Hit>)>>,
+    pub(super) active: Option<mpsc::Receiver<(Searcher, Vec<Hit>)>>,
     started: u64,
     wanted: u64,
 }
@@ -45,19 +45,18 @@ impl App {
             self.refresh_search_rows();
         }
         let Mode::Search(s) = &mut self.mode else { return };
-        if keep {
-            s.held = s.selected().map(|h| h.id).or(s.held);
-        } else {
+        if !keep {
             s.held = None;
             s.accept = false;
+        } else if s.pending.is_none() {
+            // While a query edit is pending, the visible cursor still belongs
+            // to the old query. A snapshot must preserve the edit's top pick.
+            s.held = s.selected().map(|h| h.id);
         }
         self.ranking.wanted += 1;
         s.pending = Some(self.ranking.wanted);
-        // A result for the previous query must never be selectable, even
-        // when Enter arrives before the next frame.
-        s.hits.clear();
-        s.idx = 0;
-        s.recent = false;
+        // Keep the last completed list and cursor on screen until land_ranking
+        // replaces them together. Enter waits on the pending generation.
         self.start_ranking();
     }
 
