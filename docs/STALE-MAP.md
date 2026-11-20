@@ -48385,6 +48385,7 @@ the scoped rerun passed with those permissions. The runner's ordinary Cargo
 lock also pruned stale build output during that initial check. The browser
 entry point now locks its screenshot directory. All 73 state and asset tests
 passed.
+
 ## A committed branch waiting on background tasks tells its worker (T-1362, 2026-11-20)
 
 At Claude's top-level Stop, a fresh off-writer Git sample checks that the branch is
@@ -48394,13 +48395,23 @@ reply does not send the fact again. A committed worker still parked after 30 min
 wakes the crown regardless of who started it. Without a crown, its card lights
 needs-you. A live suite holds the merge through both alerts, as T-599 requires.
 
+The person chose a configurable agent prompt over editing promise 3. Like the
+rebase ask, the notice is a visible message typed into the worker's composer.
+It appears as its own turn in the conversation. No text is injected through a
+hook or added to the system prompt. Settings › Agent prompts lets the person
+edit the task count and task list placeholders or switch off the message. The
+30-minute crown wake and needs-you mark work with the prompt switched off.
+
 Person-started tickets T-1284 and T-1309 waited 223 and 1,388 minutes respectively.
 In the fixed BT1 case on Sonnet 5.5, the recorded background stretch lasted 0.33 s.
 The worker got one fact, named the timer, and stopped it. These are incident and
-fixture measurements. The production count needs delivered branches after rollout.
+fixture measurements. On review BT1 ran once on the board's Claude worker tier,
+Opus 5.5 with high effort. It received exactly one configured prompt, named
+`sleep 3600` and left it running. Real main was
+`7cd6784c6adfe5c047d2d2c52c6f04d83793fb25` before and after. The rig restored
+its target and stopped. The production count needs delivered branches after rollout.
 
 A manual hold alone allowed an earlier rig crown to land BT1.txt. BT1 now starts
 uncrowned against a ticket-specific target with independent Git history, restores
 the prior target on exit, and keeps the worker off the train. The offline case tests
-that restoration on failure. The real main tip before and after the single fixed
-live run was 46b03bd61028816a475904f36cf407937c772f68.
+that restoration on failure. Real main also held its tip during the earlier Sonnet run.

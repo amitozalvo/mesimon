@@ -9536,6 +9536,8 @@ impl App {
             setup_ready: self.setup.as_ref().is_some_and(|s| s.ready()),
             board_worktree: self.board.workspace == Some(WorkspaceStrategy::Worktree),
             prompts: self.board.prompts.clone(),
+            background_task_prompt_selected: matches!(self.mode, Mode::Prompts { idx, editing: None }
+                if keymap::PROMPT_ITEMS.get(idx).is_some_and(|row| row.verb == Verb::PromptBackgroundTasks)),
             prompt_editing: matches!(self.mode, Mode::Prompts { editing: Some(_), .. }),
             // An identity the relay has not admitted is not signed in: the
             // row stays `Sign in`, with the failure in its detail.
@@ -10774,7 +10776,14 @@ impl App {
             // there now — theirs if they wrote one, mesimon's otherwise — so
             // a rewrite starts from the sentence being rewritten and not from
             // an empty box.
+            Verb::ToggleBackgroundTaskNotice => self.flip_board_switch(
+                |b| !b.prompts.background_task_notice_off,
+                |on| Command::SetBackgroundTaskNotice { on },
+                "background task notice on",
+                "background task notice off",
+            )?,
             Verb::PromptRebase
+            | Verb::PromptBackgroundTasks
             | Verb::PromptMerged
             | Verb::PromptNote
             | Verb::PromptCrownWake
@@ -18571,6 +18580,10 @@ pub(crate) mod test_support {
                 }
                 // The daemon's own rule, as small as the fake can hold it:
                 // sanitized in, and blank means mesimon's words back (T-353).
+                Command::SetBackgroundTaskNotice { on } => {
+                    self.board.prompts.background_task_notice_off = !on;
+                    Ok(Response::Ok)
+                }
                 Command::SetAgentPrompt { which, text } => {
                     let text = match text.as_deref().map(mesimon_core::prompts::sanitize_template) {
                         Some(Err(message)) => return Ok(Response::Err { message }),
@@ -23233,6 +23246,32 @@ mod tests {
         // The row relabels off the snapshot: whose words stand there now.
         let ctx = app.ctx();
         assert_eq!((keymap::prompt_items(&ctx)[0].label)(&ctx), "Rebase ask: your words");
+    }
+
+    #[test]
+    fn the_background_task_prompt_switch_keeps_its_edited_words() {
+        use mesimon_core::prompts::AgentPrompt;
+        let mut app = app_three_columns();
+        let which = AgentPrompt::BackgroundTaskNotice;
+        let idx = keymap::prompt_items(&app.ctx())
+            .iter()
+            .position(|row| keymap::prompt_of(row.verb) == Some(which))
+            .unwrap();
+        app.mode = Mode::Prompts { idx, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        for c in "{count} pending {tasks}".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for off in [true, false] {
+            press(&mut app, ' ');
+            assert_eq!(app.board.prompts.background_task_notice_off, off);
+            assert_eq!(app.board.prompts.text(which), "{count} pending {tasks}");
+            let ctx = app.ctx();
+            let label = (keymap::prompt_items(&ctx)[idx].label)(&ctx);
+            assert!(label.ends_with(if off { ": off" } else { ": your words" }), "{label}");
+        }
     }
 
     /// A template over the limit (T-896, only a hand-edited `columns.toml`

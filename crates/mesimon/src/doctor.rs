@@ -738,6 +738,11 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         let body = mesimon_core::prompts::AgentPrompt::ALL
             .iter()
             .map(|w| {
+                if *w == mesimon_core::prompts::AgentPrompt::BackgroundTaskNotice
+                    && prompts.background_task_notice_off
+                {
+                    return format!("{} (off)\n", w.label());
+                }
                 let whose = match prompts.over_limit(*w) {
                     Some(bytes) => format!(
                         "{}; the default is sent until it fits",
@@ -761,7 +766,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         records.push(
             rec(level, "agent prompts", summary)
                 .advice(format!(
-                    "Mesimon sends these into a live session: a rebase request, a merge notice, a note update, and the crown's wake when an agent it started finishes. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording. A template longer than {} KiB is not sent: shorten it in Settings, and the default stands in until then.\n\n{body}",
+                    "Settings > Agents > Agent prompts lists and edits the messages Mesimon types into a live session; an emptied field restores the default wording. A template longer than {} KiB is not sent: shorten it in Settings, and the default stands in until then.\n\n{body}",
                     mesimon_core::command::PROMPT_MAX_BYTES / 1024
                 )),
         );

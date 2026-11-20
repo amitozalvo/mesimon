@@ -788,6 +788,8 @@ pub enum Verb {
     /// Enter saves it, an emptied field puts mesimon's own words back.
     PromptRebase,
     PromptMerged,
+    PromptBackgroundTasks,
+    ToggleBackgroundTaskNotice,
     PromptNote,
     PromptCrownWake,
     /// The two sentences between boards (T-733): a linked board's crown's
@@ -1276,6 +1278,7 @@ pub struct Ctx {
     /// One of those templates is open as a text field right now, so its row's
     /// detail teaches the placeholders instead of showing the sentence.
     pub prompt_editing: bool,
+    pub background_task_prompt_selected: bool,
     pub agent_provider: AgentProvider,
     /// `Board::crown_budget` (T-412), for the Settings row's words.
     pub crown_budget: u8,
@@ -4634,6 +4637,17 @@ static SETTING_ROWS: &[Binding] = &[
 /// under Settings: Esc goes back to the Agents page.
 static SETTINGS: &[Binding] = &[
     Binding {
+        keys: &[Key::Space],
+        verb: Verb::ToggleBackgroundTaskNotice,
+        show: "space",
+        hint: |c| if c.prompts.background_task_notice_off { "turn on" } else { "turn off" },
+        avail: |c| c.background_task_prompt_selected,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 25,
+    },
+    Binding {
         keys: &[Key::Char('b')],
         verb: Verb::PrefScope,
         show: "b",
@@ -6173,6 +6187,13 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::PromptBackgroundTasks,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::BackgroundTaskNotice),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::BackgroundTaskNotice),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::PromptNote,
         label: |c| prompt_label(c, crate::prompts::AgentPrompt::NoteUpdated),
         detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::NoteUpdated),
@@ -6205,7 +6226,11 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
 /// `Rebase ask: mesimon's words` — the name, then whose text stands there;
 /// `over the limit` where the person's is too long to send (T-896).
 fn prompt_label(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
-    let whose = if ctx.prompts.over_limit(which).is_some() {
+    let whose = if which == crate::prompts::AgentPrompt::BackgroundTaskNotice
+        && ctx.prompts.background_task_notice_off
+    {
+        "off"
+    } else if ctx.prompts.over_limit(which).is_some() {
         "over the limit"
     } else if ctx.prompts.is_custom(which) {
         "your words"
@@ -6889,6 +6914,7 @@ pub fn prompt_of(verb: Verb) -> Option<crate::prompts::AgentPrompt> {
     match verb {
         Verb::PromptRebase => Some(AgentPrompt::Rebase),
         Verb::PromptMerged => Some(AgentPrompt::Merged),
+        Verb::PromptBackgroundTasks => Some(AgentPrompt::BackgroundTaskNotice),
         Verb::PromptNote => Some(AgentPrompt::NoteUpdated),
         Verb::PromptCrownWake => Some(AgentPrompt::CrownWake),
         Verb::PromptBoardAsk => Some(AgentPrompt::BoardAsk),
@@ -9329,11 +9355,11 @@ mod tests {
         // One rewritten: that row and the door both say so, and the other
         // two still stand on mesimon's words.
         ctx.prompts.set(AgentPrompt::Merged, Some("done, {branch} is in".into()));
-        assert_eq!(value(door.verb, &ctx), Some(Value::Door("1 of 6 yours".into())));
+        assert_eq!(value(door.verb, &ctx), Some(Value::Door("1 of 7 yours".into())));
         let rows = prompt_items(&ctx);
         assert_eq!((rows[1].label)(&ctx), "Merged notice: your words");
         assert!((rows[1].detail)(&ctx).ends_with("done, {branch} is in"));
-        assert_eq!((rows[2].label)(&ctx), "Note nudge: mesimon's words");
+        assert_eq!((rows[3].label)(&ctx), "Note nudge: mesimon's words");
 
         // Open as a field, the detail teaches the placeholders instead.
         ctx.prompt_editing = true;

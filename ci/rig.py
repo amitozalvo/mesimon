@@ -2228,6 +2228,15 @@ class Rig:
 
     def file_one(self, test, title):
         tid = self.wire.create_ticket(test.get("column", "TODO"), title)
+        if "worker_model" in test:
+            name = "rig-" + test["id"].lower()
+            existing = next((t for t in self.board()["tiers"] if t["name"] == name), None)
+            tier = {**self.tier, "id": existing["id"] if existing else ulid(), "name": name,
+                    "description": test["id"] + " worker", "model": test["worker_model"],
+                    "effort": test["worker_effort"]}
+            if tier != existing:
+                self.wire.save_tier("board", tier)
+            self.wire.request({"cmd": "set_ticket_tier", "id": tid, "tier": tier["id"]})
         if "{mcp_probe}" in test["brief"]:
             receipt = os.path.join(self.out, f"mcp-probe-{tid}.json")
             test["mcp_probe_receipt"] = receipt
@@ -4272,6 +4281,9 @@ Reply with the single word ready and end your turn."""
         rec = self.agent_of(board, test["ticket"])
         rows = transcript(rec) if rec else []
         mine = [l for l in lines if rec and of_session(l, rec["id"])]
+        if "worker_model" in test:
+            actual = model_of(rows)
+            results.append(("worker model", actual == test["worker_model"], actual or "unknown"))
         hooks = [l["event"] for l in mine if l.get("kind") == "hook"]
         words = self.card_words(test["key"])
         timing = self.timing(mine)

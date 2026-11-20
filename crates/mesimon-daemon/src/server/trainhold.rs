@@ -82,7 +82,8 @@ impl Daemon {
     pub(super) fn parked_for_task_fact(&self, ticket: ulid::Ulid) -> Option<(uuid::Uuid, u64)> {
         let seat = self.board.pane_target(ticket)?;
         let since = self.tasks_since.get(&seat.id).copied()?;
-        (seat.kind == SessionKind::Claude
+        (!self.board.prompts.background_task_notice_off
+            && seat.kind == SessionKind::Claude
             && seat.state.on_tasks()
             && !seat.observe_only()
             && seat.background_tasks.needs_report()
@@ -108,7 +109,11 @@ impl Daemon {
         if authorize(&by, &Action::Mutate, &Resource::Session { id: park.0 }).denied() {
             return false;
         }
-        let text = self.board.session(park.0).unwrap().background_tasks.merge_hold_fact();
+        let tasks = &self.board.session(park.0).unwrap().background_tasks;
+        let text = self.board.prompts.render(
+            mesimon_core::prompts::AgentPrompt::BackgroundTaskNotice,
+            &[("count", &tasks.count().to_string()), ("tasks", &tasks.task_list())],
+        );
         let ack = Ack { by: "automation", word: "background_task_notice" };
         if self.paste_to_ticket(ticket, &text, ack).is_err() {
             return false;
@@ -349,14 +354,17 @@ mod task_tests {
         assert!(!d.tell_parked_worker(b.worker, park), "no commits yet");
         d.wt_agg.insert(b.worker, worktree::Aggregate { ahead: 1, ..Default::default() });
         assert!(!d.tell_parked_worker(b.worker, (id, 99)), "late sample from another turn");
+        d.board.prompts.background_task_notice_off = true;
+        assert!(!d.tell_parked_worker(b.worker, park));
+        assert!(!d.owed.contains_key(&id), "an off switch sends no prompt");
+        d.board.prompts.background_task_notice_off = false;
+        d.board.prompts.set(
+            mesimon_core::prompts::AgentPrompt::BackgroundTaskNotice,
+            Some("{count} remaining. {tasks}".into()),
+        );
         assert!(d.tell_parked_worker(b.worker, park));
         let sent = d.owed.remove(&id).unwrap().sent.unwrap().text;
-        assert!(
-            sent.contains("1 background task is still running")
-                && sent.contains("cargo nextest run --workspace"),
-            "{sent}"
-        );
-        assert!(sent.contains("merge train waits"), "{sent}");
+        assert_eq!(sent, "1 remaining. - suite — cargo nextest run --workspace");
         // Claude names the running suite and stops again with the same task.
         d.board.sessions[0].background_tasks.record(
             "suite",
@@ -368,6 +376,7 @@ mod task_tests {
         assert!(!d.tell_parked_worker(b.worker, park), "the fact cannot start a loop");
         assert_eq!(seat(&d.board, b.worker, false), Seat::Busy);
         d.board.sessions[0].set_state(SessionState::Idle { stop_reason: StopReason::Monitoring });
+        d.board.prompts.background_task_notice_off = true;
         let due = 100 + crownwake::LINGER_MS;
         assert!(!d.route_lingering(due - 1, crownwake::LINGER_MS));
         assert!(d.route_lingering(due, crownwake::LINGER_MS));

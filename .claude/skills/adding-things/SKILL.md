@@ -33,6 +33,16 @@ here.**
 3. `cargo ut` runs the keymap validators. A hint that shows on the board changes the board
    goldens — remint, then review the diff by eye.
 
+**An agent prompt** (a message the board types into an agent's composer):
+1. Add the kind, default, fields, and settings order to `core/src/prompts.rs`. Carry the
+   optional template through the columns reader, writer, and doctor scalar reader in
+   `daemon/src/store.rs`. Render the person's words with `board.prompts.render` at delivery.
+2. Add its editor row to `keymap::PROMPT_ITEMS`, `prompt_of`, and the prompt editor in
+   `tui/src/app.rs`. Clearing the field restores the default. If delivery has a switch,
+   test that turning it off keeps the edited template and suppresses delivery.
+3. Review both Agent prompts goldens, the round trip in `tools/brief_offer_e2e.rs`, and the
+   rig case at the receiving agent's real tier.
+
 **A column setting:**
 1. The field on `core/src/board.rs::ColumnSettings` — `#[serde(default)]`,
    `skip_serializing_if` its default. It reaches disk inside the column's `[[columns]]` table

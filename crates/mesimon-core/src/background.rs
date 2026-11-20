@@ -122,14 +122,9 @@ impl Registry {
         }
     }
 
-    pub fn merge_hold_fact(&self) -> String {
-        let n = self.count();
-        let tasks = if n == 1 {
-            "1 background task is".into()
-        } else {
-            format!("{n} background tasks are")
-        };
-        let mut words = format!("Mesimon reports {tasks} still running. The merge train waits for background work to finish before merging this branch.");
+    /// The task list substituted into the board's background task notice.
+    pub fn task_list(&self) -> String {
+        let mut words = String::new();
         for (id, task) in &self.tasks {
             let id = crate::text::scrub_text(id);
             let row =
@@ -138,7 +133,10 @@ impl Registry {
                 words.push_str("\n…");
                 break;
             }
-            words.push_str("\n- ");
+            if !words.is_empty() {
+                words.push_str("\n");
+            }
+            words.push_str("- ");
             words.push_str(&row);
         }
         words

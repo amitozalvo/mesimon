@@ -835,6 +835,10 @@ pub enum Command {
         #[serde(default)]
         text: Option<String>,
     },
+    /// Whether a committed worker receives the board's background task prompt.
+    SetBackgroundTaskNotice {
+        on: bool,
+    },
     /// The column lifecycle (T-117). All local only: a tier that could add a
     /// column, rename the one it is in, or rewrite its own column's rules
     /// would be writing its own tier. A column's NAME is its identity —
@@ -1758,6 +1762,7 @@ impl Command {
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
             | SetAgentPrompt { .. }
+            | SetBackgroundTaskNotice { .. }
             | IgnoreBriefOffer
             // The column lifecycle (T-117): a person's gesture, and the feed
             // is where "who renamed TODO" gets answered.

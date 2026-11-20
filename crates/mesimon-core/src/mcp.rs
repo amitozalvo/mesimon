@@ -2123,6 +2123,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // starts its own next turn — the one thing this tier exists to keep
         // in the user's hands.
         | Command::SetAgentPrompt { .. }
+        | Command::SetBackgroundTaskNotice { .. }
         // The column lifecycle (T-117): a tier that could add a column,
         // rename its own, or rewrite its own column's `agent_tools` would be
         // writing its own tier.

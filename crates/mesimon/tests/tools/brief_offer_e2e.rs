@@ -152,6 +152,17 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
         Response::Ok
     ));
 
+    assert!(matches!(
+        c.request(Command::SetAgentPrompt {
+            which: AgentPrompt::BackgroundTaskNotice,
+            text: Some("{count} pending {tasks}".into()),
+        }),
+        Response::Ok
+    ));
+    assert!(matches!(c.request(Command::SetBackgroundTaskNotice { on: false }), Response::Ok));
+    let raw = std::fs::read_to_string(&cols).unwrap();
+    assert!(raw.contains("schema_version = 11"), "older writers must preserve the off switch");
+
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
 
@@ -172,6 +183,8 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
         Response::Hello { .. }
     ));
     let board = board_of(c.request(Command::Snapshot));
+    assert!(board.prompts.background_task_notice_off);
+    assert_eq!(board.prompts.text(AgentPrompt::BackgroundTaskNotice), "{count} pending {tasks}");
     assert!(!board.mcp_tools, "a consent flag may not be lost to a restart");
     assert!(board.system_prompt, "and neither may the brief's");
     assert!(board.claude_md_ignored, "nor 'never ask again'");
@@ -200,6 +213,7 @@ fn the_agent_tier_is_denied_all_three() {
     assert!(!agent_allows(&Command::SetSystemPrompt { on: false }));
     assert!(!agent_allows(&Command::IgnoreBriefOffer));
     // And not the sentence that would start its own next turn (T-353).
+    assert!(!agent_allows(&Command::SetBackgroundTaskNotice { on: true }));
     for which in mesimon_core::prompts::AgentPrompt::ALL {
         assert!(!agent_allows(&Command::SetAgentPrompt { which, text: None }));
         assert!(!agent_allows(&Command::SetAgentPrompt {

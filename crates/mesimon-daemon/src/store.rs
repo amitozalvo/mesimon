@@ -114,6 +114,9 @@ pub const SESSIONS_SCHEMA: u32 = 2;
 /// older build nothing. A counter's next bump goes past its number here and
 /// retires it.
 pub const COLUMNS_SCHEMA_AGY: u32 = 10;
+/// An older writer would drop the person's off switch and re-enable the
+/// prompt on upgrade. Only boards that turned it off need the newer stamp.
+pub const COLUMNS_SCHEMA_TASK_NOTICE_OFF: u32 = 11;
 /// [`COLUMNS_SCHEMA_AGY`], for `tiers.toml`.
 pub const MACHINE_TIERS_SCHEMA_AGY: u32 = 2;
 /// [`COLUMNS_SCHEMA_AGY`], for `sessions.json`.
@@ -297,6 +300,10 @@ struct ColumnsFile {
     prompt_rebase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_merged: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_background_task_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    background_task_notice_off: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_note_updated: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -690,9 +697,9 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
             Err(e) => Some(e.to_string()),
             Ok(v) => {
                 let found = v.get("schema_version").and_then(|s| s.as_integer()).unwrap_or(1);
-                match verdict(found as u32, COLUMNS_SCHEMA_AGY) {
+                match verdict(found as u32, COLUMNS_SCHEMA_TASK_NOTICE_OFF) {
                     Verdict::Newer(n) => {
-                        notices.push(future_notice(cols_path, n, COLUMNS_SCHEMA_AGY));
+                        notices.push(future_notice(cols_path, n, COLUMNS_SCHEMA_TASK_NOTICE_OFF));
                         return (defaults(), true, true, false);
                     }
                     Verdict::Load => match v.try_into::<ColumnsFile>() {
@@ -723,6 +730,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 prompts: PromptSet {
                                     rebase: cf.prompt_rebase,
                                     merged: cf.prompt_merged,
+                                    background_task_notice: cf.prompt_background_task_notice,
+                                    background_task_notice_off: cf.background_task_notice_off,
                                     note_updated: cf.prompt_note_updated,
                                     crown_wake: cf.prompt_crown_wake,
                                     board_ask: cf.prompt_board_ask,
@@ -994,6 +1003,8 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
     let prompts = PromptSet {
         rebase: cf.prompt_rebase,
         merged: cf.prompt_merged,
+        background_task_notice: cf.prompt_background_task_notice,
+        background_task_notice_off: cf.background_task_notice_off,
         note_updated: cf.prompt_note_updated,
         crown_wake: cf.prompt_crown_wake,
         board_ask: cf.prompt_board_ask,
@@ -1049,7 +1060,13 @@ fn columns_text(board: &Board) -> Result<String> {
         || tiers_name_agy(&board.tiers)
         || board.columns.iter().any(|c| !c.settings.agy_mode.is_inherit());
     let cf = ColumnsFile {
-        schema_version: if names_agy { COLUMNS_SCHEMA_AGY } else { COLUMNS_SCHEMA },
+        schema_version: if board.prompts.background_task_notice_off {
+            COLUMNS_SCHEMA_TASK_NOTICE_OFF
+        } else if names_agy {
+            COLUMNS_SCHEMA_AGY
+        } else {
+            COLUMNS_SCHEMA
+        },
         next_key: board.next_key,
         agent_provider: board.agent_provider,
         crown_budget: board.crown_budget,
@@ -1072,6 +1089,8 @@ fn columns_text(board: &Board) -> Result<String> {
         follow_up_mode: board.follow_up_mode,
         prompt_rebase: board.prompts.rebase.clone(),
         prompt_merged: board.prompts.merged.clone(),
+        prompt_background_task_notice: board.prompts.background_task_notice.clone(),
+        background_task_notice_off: board.prompts.background_task_notice_off,
         prompt_note_updated: board.prompts.note_updated.clone(),
         prompt_crown_wake: board.prompts.crown_wake.clone(),
         prompt_board_ask: board.prompts.board_ask.clone(),
@@ -2086,7 +2105,7 @@ pub(crate) mod tests {
         let columns = paths.board_dir.join("board/columns.toml");
         let column_text = format!(
             "schema_version = {}\nnext_key = 1\nagent_provider = \"future_agent\"\ncolumns = []\n",
-            COLUMNS_SCHEMA_AGY + 1
+            COLUMNS_SCHEMA_TASK_NOTICE_OFF + 1
         );
         let session_text = format!(
             "{{\"schema_version\":{},\"sessions\":[{{\"kind\":\"future_agent\"}}]}}",
@@ -2827,6 +2846,8 @@ order = "a0"
             follow_up_mode: mesimon_core::board::FollowUpMode::Queue,
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,
+            prompt_background_task_notice: None,
+            background_task_notice_off: false,
             prompt_note_updated: None,
             prompt_crown_wake: None,
             prompt_board_ask: None,

@@ -1,15 +1,8 @@
 //! The sentences mesimon itself types into an agent's box, and the user's
 //! right to rewrite them (T-353).
 //!
-//! Four of mesimon's own sentences reach a live agent: the rebase ask when
-//! the base branch moved past a ticket's branch, the notice after that branch
-//! was merged, the nudge when a note on the ticket changed, and the wake the
-//! crown gets when an agent it started finishes (T-414). Every one of
-//! them was a `format!` in the daemon until now, which meant the words that
-//! start somebody's turn were the binary's and not theirs — wrong in a tool
-//! whose third README promise is that mesimon adds no token of its own to a
-//! conversation. The exceptions stay exceptions; what changes here is
-//! WHOSE words they are.
+//! These are visible turns in the agent's composer. A board can rewrite
+//! each template under Settings › Agent prompts.
 //!
 //! The shape is deliberately the smallest one that works:
 //!
@@ -27,7 +20,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One of the four sentences mesimon writes for an agent.
+/// One of the sentences mesimon writes for an agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPrompt {
@@ -38,6 +31,8 @@ pub enum AgentPrompt {
     /// The branch was merged: `MergeToAgent { request: MergedNotice }`, sent
     /// by `m` and, while the notice switch is on, by the train.
     Merged,
+    /// A committed branch is waiting for live background tasks at Stop.
+    BackgroundTaskNotice,
     /// A note on the ticket changed under a working agent: `NoteToAgent`.
     NoteUpdated,
     /// A worker delivered, answered the crown's ask or raised its hand
@@ -61,9 +56,10 @@ impl AgentPrompt {
     /// The ring, in the order the Settings list shows them: the two halves of
     /// the merge flow in the order they happen, then the note nudge, then
     /// the crown's wake, then the two sentences between boards.
-    pub const ALL: [AgentPrompt; 6] = [
+    pub const ALL: [AgentPrompt; 7] = [
         AgentPrompt::Rebase,
         AgentPrompt::Merged,
+        AgentPrompt::BackgroundTaskNotice,
         AgentPrompt::NoteUpdated,
         AgentPrompt::CrownWake,
         AgentPrompt::BoardAsk,
@@ -75,6 +71,7 @@ impl AgentPrompt {
         match self {
             AgentPrompt::Rebase => "Rebase ask",
             AgentPrompt::Merged => "Merged notice",
+            AgentPrompt::BackgroundTaskNotice => "Background task notice",
             AgentPrompt::NoteUpdated => "Note nudge",
             AgentPrompt::CrownWake => "Crown wake",
             AgentPrompt::BoardAsk => "Board ask",
@@ -87,6 +84,9 @@ impl AgentPrompt {
         match self {
             AgentPrompt::Rebase => "when the base branch moved past this one",
             AgentPrompt::Merged => "after this ticket's branch was merged",
+            AgentPrompt::BackgroundTaskNotice => {
+                "when background tasks hold a committed branch at turn end"
+            }
             AgentPrompt::NoteUpdated => "when a note on the ticket changed",
             AgentPrompt::CrownWake => {
                 "when an agent the crown started delivers, is merged, answers or raises its hand"
@@ -103,6 +103,7 @@ impl AgentPrompt {
                 "Rebase your current branch {branch} onto {base} and resolve any conflicts before we merge."
             }
             AgentPrompt::Merged => "Your branch {branch} has been merged into {base}.",
+            AgentPrompt::BackgroundTaskNotice => "The merge train waits for this branch's background work to finish ({count} still running). {tasks}",
             AgentPrompt::NoteUpdated => {
                 "Note \"{note}\" on this ticket was just updated; read_note with id {id} \
                  returns the new text."
@@ -121,6 +122,7 @@ impl AgentPrompt {
     pub fn fields(self) -> &'static [&'static str] {
         match self {
             AgentPrompt::Rebase | AgentPrompt::Merged => &["branch", "base"],
+            AgentPrompt::BackgroundTaskNotice => &["count", "tasks"],
             AgentPrompt::NoteUpdated => &["note", "id"],
             AgentPrompt::CrownWake => &["events", "keys"],
             AgentPrompt::BoardAsk => &["board", "key", "title", "text"],
@@ -138,6 +140,7 @@ impl AgentPrompt {
         match self {
             AgentPrompt::Rebase => "rebase",
             AgentPrompt::Merged => "merged",
+            AgentPrompt::BackgroundTaskNotice => "background_task_notice",
             AgentPrompt::NoteUpdated => "note_updated",
             AgentPrompt::CrownWake => "crown_wake",
             AgentPrompt::BoardAsk => "board_ask",
@@ -146,18 +149,22 @@ impl AgentPrompt {
     }
 }
 
-/// The board's four templates: `None` is mesimon's own words.
+/// The board's templates: `None` is mesimon's own words.
 ///
-/// Four `Option<String>`s and not a map, for one reason that is about disk:
+/// Separate `Option<String>`s and not a map, for one reason that is about disk:
 /// these ride `columns.toml` as SCALARS beside `system_prompt` and
 /// `default_column`, and a map would serialize as a TOML table, which may not
-/// be followed by any scalar. The enum above is what keeps the four honest.
+/// be followed by any scalar. The enum above is what keeps their names consistent.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rebase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_task_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background_task_notice_off: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_updated: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +181,7 @@ impl PromptSet {
         match which {
             AgentPrompt::Rebase => self.rebase.as_deref(),
             AgentPrompt::Merged => self.merged.as_deref(),
+            AgentPrompt::BackgroundTaskNotice => self.background_task_notice.as_deref(),
             AgentPrompt::NoteUpdated => self.note_updated.as_deref(),
             AgentPrompt::CrownWake => self.crown_wake.as_deref(),
             AgentPrompt::BoardAsk => self.board_ask.as_deref(),
@@ -202,7 +210,7 @@ impl PromptSet {
         self.custom(which).is_some()
     }
 
-    /// How many of the four are the user's — the door row's label.
+    /// How many templates are the user's — the door row's label.
     pub fn custom_count(&self) -> usize {
         AgentPrompt::ALL.iter().filter(|w| self.is_custom(**w)).count()
     }
@@ -212,6 +220,7 @@ impl PromptSet {
         let slot = match which {
             AgentPrompt::Rebase => &mut self.rebase,
             AgentPrompt::Merged => &mut self.merged,
+            AgentPrompt::BackgroundTaskNotice => &mut self.background_task_notice,
             AgentPrompt::NoteUpdated => &mut self.note_updated,
             AgentPrompt::CrownWake => &mut self.crown_wake,
             AgentPrompt::BoardAsk => &mut self.board_ask,

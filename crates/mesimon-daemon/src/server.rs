@@ -4171,6 +4171,9 @@ impl Daemon {
                     Response::Ok
                 }
             }
+            Command::SetBackgroundTaskNotice { on } => {
+                self.set_board_switch(|b| &mut b.prompts.background_task_notice_off, !on, |_| {})
+            }
             Command::SetAgentPrompt { which, text } => self.set_agent_prompt(which, text),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::TeamSignIn { relay, display_name, code } => {
