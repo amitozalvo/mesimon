@@ -48993,3 +48993,18 @@ leaves the words out: they are the agent's to read. The frame alone
 and not done: a new row kind with the crown's mark, which would change the
 phone's wire for one line; the notice already draws as an activity on both
 clients. Checks: a unit case on the real record shape, `cargo ut` green.
+
+## The Linux cross-build names rust-lld's libLLVM itself (T-1384, 2026-11-20)
+
+Release prep for v0.1.0-beta.22.unstable.1 stopped at the x86_64 musl link:
+`rust-lld` aborted with `Library not loaded: @rpath/libLLVM.dylib`, and the gate
+was stopped with it. The toolchain (1.98.0, installed 2026-08-29) keeps
+`libLLVM.dylib` in `<sysroot>/lib`, but `rust-lld`'s rpath is `@loader_path/../lib`,
+so it depends on dyld's fallback path, which rustup sets for cargo. On this run
+the variable reached rustc when a wrapper sat between cargo and rustc and did not
+reach the linker when cargo ran rustc directly; the same build linked in the main
+checkout at 15:37 UTC the same day, so what drops it was not established.
+`ci/build-linux.sh` now links through `ci/rust-lld.sh`, which sets
+`DYLD_FALLBACK_LIBRARY_PATH` to the sysroot's lib and execs `rust-lld`. A variable
+set inside the `/bin/sh` script survives the exec, since `rust-lld` is not a
+protected binary. Both musl targets linked with it, and both binaries are static.

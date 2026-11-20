@@ -75,7 +75,10 @@ for t in $targets; do
   # Per-target so the host build is untouched; `link-self-contained=yes` is
   # what makes rust-lld use the bundled crt objects rather than look for a
   # Linux sysroot this machine does not have.
-  env "CARGO_TARGET_${upper}_LINKER=$lld" \
+  # The linker is reached through ci/rust-lld.sh, which hands rust-lld the
+  # toolchain's lib for libLLVM.dylib.
+  env "CARGO_TARGET_${upper}_LINKER=$PWD/ci/rust-lld.sh" \
+      "MESIMON_RUST_SYSROOT=$sysroot" "MESIMON_RUST_LLD=$lld" \
       "CARGO_TARGET_${upper}_RUSTFLAGS=-C link-self-contained=yes" \
       cargo build --release --locked --target "$t"
   bin="target/$t/release/mesimon"
