@@ -804,7 +804,7 @@ class RustcSlotTests(unittest.TestCase):
 class WorktreeInitTests(unittest.TestCase):
     """.mesimon-worktree-init.sh over a throwaway checkout and state directory."""
 
-    def run_init(self, root, worktree):
+    def checkout(self, root):
         checkout = root / "checkout"
         if not checkout.exists():
             (checkout / "ci").mkdir(parents=True)
@@ -812,10 +812,51 @@ class WorktreeInitTests(unittest.TestCase):
             git = ["git", "-C", str(checkout), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
             subprocess.run([*git, "init", "-q", "-b", "main"], check=True)
             subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "first"], check=True)
+        return checkout
+
+    def run_init(self, root, worktree, *, from_agent=False):
+        checkout = self.checkout(root)
         worktree.mkdir(parents=True, exist_ok=True)
-        return subprocess.run(["sh", str(HERE.parent / ".mesimon-worktree-init.sh")], cwd=worktree, timeout=60,
-                              env={**os.environ, "MESIMON_CHECKOUT": str(checkout), "MESIMON_WORKTREE": str(worktree)},
+        env = {**os.environ, "MESIMON_TICKET": "T-1", "MESIMON_WORKTREE_BRANCH": f"msmn/{worktree.name}"}
+        if from_agent:
+            for name in ("MESIMON_CHECKOUT", "MESIMON_WORKTREE"):
+                env.pop(name, None)
+        else:
+            env.update(MESIMON_CHECKOUT=str(checkout), MESIMON_WORKTREE=str(worktree))
+        return subprocess.run(["sh", str(HERE.parent / ".mesimon-worktree-init.sh")], cwd=worktree, timeout=60, env=env,
                               capture_output=True, text=True)
+
+    def test_read_only_tickets_seed_web_then_get_a_warm_rust_cache_on_go(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            shared = root / "state/mesimon/abc123/worktrees"
+            checkout = self.checkout(root)
+            web = Path("web/mesophon/node_modules")
+            (checkout / web).mkdir(parents=True)
+            (checkout / web / "module").write_text("from checkout")
+            (checkout / "target").mkdir()
+            (checkout / "target/artifact").write_text("warm")
+            ticket = checkout / ".mesimon/board/tickets/T-1/ticket.toml"
+            ticket.parent.mkdir(parents=True)
+            for tag in ("RESEARCH", "READY"):
+                with self.subTest(tag=tag):
+                    worktree = shared / f"T-1-{tag}"
+                    subprocess.run(["git", "-C", str(checkout), "worktree", "add", "-qb",
+                                    f"msmn/{worktree.name}", str(worktree)], check=True)
+                    (worktree / web.parent).mkdir(parents=True)
+                    ticket.write_text(f'[[tags]]\nname = "{tag}"\ngroup = 2\n')
+                    out = self.run_init(root, worktree)
+                    self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                    self.assertFalse((worktree / "target").exists())
+                    self.assertEqual((worktree / web / "module").read_text(), "from checkout")
+                    (worktree / web / "module").write_text("local")
+
+                    # A tag in another group or a note with this name does not defer a build.
+                    ticket.write_text('[[tags]]\nname = "READY"\ngroup = 3\n[[notes]]\nname = "RESEARCH"\n')
+                    out = self.run_init(root, worktree, from_agent=True)
+                    self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                    self.assertEqual((worktree / "target/artifact").read_text(), "warm")
+                    self.assertEqual((worktree / web / "module").read_text(), "local")
 
     def test_the_worktrees_shared_cargo_config_is_written_with_its_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -836,12 +877,34 @@ class WorktreeInitTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertFalse((root / "elsewhere/.cargo").exists())
 
+    def test_missing_rust_cache_still_seeds_web_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            checkout = self.checkout(root)
+            worktree = root / "worktree"
+            web = Path("web/mesophon")
+            modules = checkout / web / "node_modules"
+            modules.mkdir(parents=True)
+            (modules / "cli").write_text("playwright")
+            (modules / ".bin").mkdir()
+            (modules / ".bin/playwright").symlink_to("../cli")
+            (worktree / web).mkdir(parents=True)
+            out = self.run_init(root, worktree)
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertFalse((worktree / "target").exists())
+            self.assertEqual((worktree / web / "node_modules/.bin/playwright").read_text(), "playwright")
+
     def test_an_idle_cache_of_a_landed_worktree_is_reclaimed_and_a_fresh_one_kept(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             shared = root / "state/mesimon/abc123/worktrees"
-            self.run_init(root, shared / "T-1-first")
-            checkout = root / "checkout"
+            checkout = self.checkout(root)
+            clock = root / "date"
+            clock.write_text('#!/bin/sh\necho 2026112008\n')
+            clock.chmod(0o755)
+            with patch.dict(os.environ, PATH=f"{root}:{os.environ['PATH']}"):
+                out = self.run_init(root, shared / "T-1-first")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
             caches = {}
             for name, age in (("T-2-idle", 7200), ("T-3-building", 0)):
                 subprocess.run(["git", "-C", str(checkout), "worktree", "add", "-q", "-b", name, str(shared / name)], check=True)
@@ -849,7 +912,12 @@ class WorktreeInitTests(unittest.TestCase):
                 (caches[name] / "core-1").mkdir(parents=True)
                 for path in (caches[name] / "core-1", caches[name]):
                     os.utime(path, (time.time() - age, time.time() - age))
-            out = self.run_init(root, shared / "T-4-new")
+            with patch.dict(os.environ, PATH=f"{root}:{os.environ['PATH']}"):
+                out = self.run_init(root, shared / "T-4-new")
+                self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                self.assertTrue(caches["T-2-idle"].exists())
+                clock.write_text('#!/bin/sh\necho 2026112009\n')
+                out = self.run_init(root, shared / "T-5-new")
             self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertIn("reclaimed the idle incremental cache of T-2-idle", out.stdout)
             self.assertFalse(caches["T-2-idle"].exists())
