@@ -48031,3 +48031,44 @@ passed. The same eight end-to-end files passed 173 of 174 on the first run.
 `crown_e2e::the_crown_lets_one_agent_edit_the_others` saw the Claude worker's
 `started_by` in memory before its assertion found it in `sessions.json`. It
 passed on its isolated rerun.
+
+## The forge minute reads unchanged worktree reflogs from memory (T-1343, 2026-11-20)
+
+The baseline cleared the 20% threshold. On a disposable fixture, git took
+50.40 s of a 65.79 s pass (77%). Each of the 182 ticket bindings had a real
+linked worktree in each of 11 local repositories. Even the initial worktree
+reflog entry qualified every leg for a remote-ref read.
+
+The measurement ran the daemon's `forge::sample` with 2,002 materialized
+legs and one remote-tracking ref per repository. A stub GitLab CLI served
+one account list and 27 named-MR reads, sleeping 0.5 s per call. Git trace
+counted the child commands. The local time runs from entry into the pass
+to the first stub invocation. All tickets stayed active for both versions
+so archive pruning contributed none of the measured saving. These are
+fixture timings. The live board's mix of materialized legs and its actual
+forge latency were outside the measurement.
+
+| Pass | Time before first forge call | Whole pass | Git forks |
+| --- | ---: | ---: | ---: |
+| Before | 50.40 s | 65.79 s | 4,004 |
+| After, empty cache | 27.67 s | 43.10 s | 2,013 |
+| After, unchanged worktrees | 0.22 s | 15.79 s | 11 |
+
+Each pass now lists remote-tracking refs once per local checkout and matches
+them to each leg's own HEAD history. Keeping refs across passes would miss
+a push made with an unchanged HEAD. The minute, burst and turn-end workers
+share each leg's parsed reflog. They validate the file's device, inode, mtime
+and size, including through a linked worktree's gitfile. A missing stamp or
+a failed git read leaves the next pass free to retry. No cache goes to disk.
+
+An archived ticket with a known, fully settled PR set keeps that set on its
+archive card. Open or draft siblings, a missing first reading and explicitly
+owed reads still get sampled. Restoring the ticket resumes periodic reads.
+
+The worker tests cover a push with an unchanged HEAD, one ref snapshot
+within a pass, and reuse and invalidation of a linked worktree's reflog.
+The query test covers an archive with an open sibling, its last PR settling,
+an explicitly owed read, and restoration. After preserving the original
+worktree-first query ordering, both checks passed again. `cargo ut` passed
+3,335 tests with 13 ignored. All 43 `forge_e2e` tests passed and the fixture
+audit was clean. The workspace suite is due after merge for `server.rs`.

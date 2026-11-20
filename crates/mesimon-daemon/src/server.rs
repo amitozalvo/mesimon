@@ -20625,7 +20625,14 @@ impl Daemon {
         if !self.through_prs() || self.forge.burst_inflight {
             return;
         }
-        let busy = self.forge.busy(now_ms());
+        let mut busy = self.forge.busy(now_ms());
+        // A settled archive keeps its last pipeline, even if it was running.
+        busy.retain(|t| {
+            !self
+                .board
+                .ticket(*t)
+                .is_some_and(|t| t.is_archived() && self.forge.archive_settled(t.id))
+        });
         if busy.is_empty() {
             return;
         }
@@ -20754,13 +20761,15 @@ impl Daemon {
 
     /// The legs of a ticket a forge may read (T-761): each leg whose
     /// repository has a remote, by that remote's path and the worktree.
-    fn forge_legs(&self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
+    fn forge_legs(&mut self, legs: &[worktree::Leg]) -> Vec<crate::forge::LegQuery> {
         let mut out = Vec::new();
         for leg in legs {
             let Some(remote) = self.forge.remotes.get(&leg.repo).and_then(Option::as_ref) else {
                 continue;
             };
             out.push(crate::forge::LegQuery {
+                repo: leg.repo.clone(),
+                reflog: self.forge.reflogs.entry(leg.path.clone()).or_default().clone(),
                 repo_path: remote.path.clone(),
                 repo_paths: self.forge.repo_paths(&leg.repo),
                 dir: leg.path.clone(),
@@ -20820,10 +20829,19 @@ impl Daemon {
         if !self.forge_remotes_ready() {
             return None;
         }
+        let settled_archives: std::collections::HashSet<_> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| only.is_none_or(|ids| ids.contains(&t.id)))
+            .filter(|t| t.is_archived() && self.forge.archive_settled(t.id))
+            .map(|t| t.id)
+            .collect();
         // Each ticket with what it names (T-859), read once for the pass.
         let mut tickets: Vec<(ulid::Ulid, String, Vec<worktree::Leg>, NamedPrs)> = Vec::new();
         for (t, b) in &self.worktrees {
             if b.branch.is_empty()
+                || settled_archives.contains(t)
                 || self.tearing_down.contains(t)
                 || only.is_some_and(|o| !o.contains(t))
             {
@@ -20841,6 +20859,7 @@ impl Daemon {
         let rest: Vec<ulid::Ulid> = self.board.tickets.iter().map(|t| t.id).collect();
         for t in rest {
             if asked.contains(&t)
+                || settled_archives.contains(&t)
                 || self.tearing_down.contains(&t)
                 || only.is_some_and(|o| !o.contains(&t))
             {
@@ -20850,6 +20869,13 @@ impl Daemon {
             if !named.is_empty() {
                 tickets.push((t, String::new(), Vec::new(), named));
             }
+        }
+        if only.is_none() {
+            // A reclaimed worktree or settled archive releases its reflogs.
+            // A burst covers only a subset and leaves the other legs warm.
+            let dirs: std::collections::HashSet<_> =
+                tickets.iter().flat_map(|(_, _, legs, _)| legs.iter().map(|l| &l.path)).collect();
+            self.forge.reflogs.retain(|dir, _| dirs.contains(dir));
         }
         if tickets.is_empty() {
             // Every binding still provisioning (no branch yet): asked again

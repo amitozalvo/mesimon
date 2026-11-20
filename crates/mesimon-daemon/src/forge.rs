@@ -24,7 +24,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use mesimon_core::command::Notice;
 use mesimon_core::forge::{self, Facts, Forge, Pipeline, Pr, PrState, Remote, Review};
@@ -244,6 +245,9 @@ impl RepoQuery {
 /// the remote's path, and where it stands.
 #[derive(Debug, Clone)]
 pub struct LegQuery {
+    /// Local checkout sharing this leg's remote-tracking refs.
+    pub repo: PathBuf,
+    pub reflog: ReflogCache,
     pub repo_path: String,
     /// Every path a PR of this repository may name (`State::repo_paths`,
     /// T-800): a commit made here binds a PR opened against the fork's
@@ -755,18 +759,18 @@ pub struct Local {
     pub tail_opened: Option<bool>,
 }
 
-/// What a ticket's legs have pushed (T-761): every remote-tracking ref that
-/// points at a commit in a leg's HEAD reflog, as `<repo> <ref> <oid>`,
-/// sorted, `logs[i]` being `legs[i]`'s reflog. A push from the worktree
-/// moves one of them; a commit nobody pushed moves none. `None` when git
-/// could not list a leg's refs.
-pub fn pushed(legs: &[LegQuery], logs: &[Vec<Moved>]) -> Option<Vec<String>> {
-    let mut out = Vec::new();
-    for (leg, log) in legs.iter().zip(logs) {
-        if log.is_empty() {
-            continue;
-        }
-        let o = crate::git::git(&leg.dir)
+/// One snapshot of each local repository's remote-tracking refs per pass.
+/// Separate clones of the same remote can have different refs.
+#[derive(Default)]
+struct RemoteRefs {
+    repos: HashMap<PathBuf, Option<RefsByOid>>,
+}
+
+type RefsByOid = HashMap<String, Vec<String>>;
+
+impl RemoteRefs {
+    fn read(repo: &Path) -> Option<RefsByOid> {
+        let output = crate::git::git(repo)
             .args([
                 "--no-optional-locks",
                 "for-each-ref",
@@ -776,19 +780,44 @@ pub fn pushed(legs: &[LegQuery], logs: &[Vec<Moved>]) -> Option<Vec<String>> {
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
-            .ok()
-            .filter(|o| o.status.success())?;
-        let log: std::collections::HashSet<&str> = log.iter().map(|m| m.oid.as_str()).collect();
-        for line in String::from_utf8_lossy(&o.stdout).lines() {
-            let Some((oid, name)) = line.trim().split_once(' ') else { continue };
-            if log.contains(oid) {
-                out.push(format!("{} {name} {oid}", leg.repo_path));
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let mut refs = RefsByOid::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some((oid, name)) = line.trim().split_once(' ') {
+                refs.entry(oid.to_owned()).or_default().push(name.to_owned());
             }
         }
+        Some(refs)
     }
-    out.sort();
-    out.dedup();
-    Some(out)
+
+    /// Every remote-tracking ref at a commit in the leg's HEAD reflog,
+    /// including pushes made since the last pass with an unchanged HEAD.
+    fn pushed(&mut self, legs: &[LegQuery], logs: &[Arc<[Moved]>]) -> Option<Vec<String>> {
+        let mut out = Vec::new();
+        for (leg, log) in legs.iter().zip(logs) {
+            if log.is_empty() {
+                continue;
+            }
+            let refs = self.repos.entry(leg.repo.clone()).or_insert_with(|| Self::read(&leg.repo));
+            let refs = refs.as_ref()?;
+            let oids: HashSet<&str> = log.iter().map(|m| m.oid.as_str()).collect();
+            for oid in oids {
+                if let Some(names) = refs.get(oid) {
+                    out.extend(names.iter().map(|name| format!("{} {name} {oid}", leg.repo_path)));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        Some(out)
+    }
+}
+
+fn leg_logs(legs: &[LegQuery]) -> Vec<Arc<[Moved]>> {
+    legs.iter().map(|l| l.reflog.read(&l.dir)).collect()
 }
 
 /// The look's half (T-761), on a worker: the legs' pushes and the tails.
@@ -797,8 +826,11 @@ pub fn look(
     tails: &[(String, std::sync::Arc<crate::cost::Cursor>)],
     at_ms: u64,
 ) -> Local {
-    let logs: Vec<Vec<Moved>> = legs.iter().map(|l| reflog(&l.dir)).collect();
-    Local { at_ms, pushed: pushed(legs, &logs), tail_opened: crate::cost::opened_in_tails(tails) }
+    Local {
+        at_ms,
+        pushed: RemoteRefs::default().pushed(legs, &leg_logs(legs)),
+        tail_opened: crate::cost::opened_in_tails(tails),
+    }
 }
 
 /// The pass, on a worker thread.
@@ -812,12 +844,13 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
     list_probed(&mut q, &out.probes);
     // What each ticket had pushed, read before any list (T-761): a push
     // after this read is one the lists may miss, so it must move the basis.
-    let mut logs: Vec<Vec<Vec<Moved>>> = Vec::new();
+    let mut logs = Vec::new();
+    let mut refs = RemoteRefs::default();
     for t in &q.tickets {
         out.repos_of.insert(t.ticket, t.repos.clone());
-        let legs: Vec<Vec<Moved>> = t.legs.iter().map(|l| reflog(&l.dir)).collect();
+        let legs = leg_logs(&t.legs);
         let opened = t.named().map(|(u, _)| u.clone()).collect();
-        out.basis.insert(t.ticket, Basis { pushed: pushed(&t.legs, &legs), opened });
+        out.basis.insert(t.ticket, Basis { pushed: refs.pushed(&t.legs, &legs), opened });
         logs.push(legs);
     }
     let mut prs: Vec<Pr> = Vec::new();
@@ -877,7 +910,7 @@ pub fn sample(mut q: Query, now_ms: u64) -> Sample {
                 .iter()
                 .zip(logs)
                 .map(|(l, log)| {
-                    let wrote = log.into_iter().filter(|m| m.wrote).map(|m| m.oid).collect();
+                    let wrote = log.iter().filter(|m| m.wrote).map(|m| m.oid.clone()).collect();
                     (l.repo_paths.clone(), wrote)
                 })
                 .collect(),
@@ -1668,12 +1701,71 @@ pub struct Moved {
     pub wrote: bool,
 }
 
-/// Every commit a worktree's HEAD pointed at, newest first; empty where
-/// there is no reflog (a reclaimed worktree, a directory that is gone).
-pub fn reflog(dir: &Path) -> Vec<Moved> {
-    if !dir.is_dir() {
-        return Vec::new();
+/// The identity and version of a files-backend HEAD reflog. A replacement
+/// (e.g. reflog expiry) can have the same size as the file it replaces.
+#[derive(Debug, PartialEq, Eq)]
+struct LogStamp {
+    dev: u64,
+    ino: u64,
+    modified: SystemTime,
+    len: u64,
+}
+
+impl LogStamp {
+    fn of(dir: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let dot = dir.join(".git");
+        let gitdir = if dot.is_file() {
+            let pointer = std::fs::read_to_string(&dot).ok()?;
+            dir.join(pointer.trim_end_matches(['\r', '\n']).strip_prefix("gitdir: ")?)
+        } else {
+            dot
+        };
+        let file = std::fs::metadata(gitdir.join("logs/HEAD")).ok()?;
+        Some(Self {
+            dev: file.dev(),
+            ino: file.ino(),
+            modified: file.modified().ok()?,
+            len: file.len(),
+        })
     }
+}
+
+#[derive(Debug)]
+struct SavedReflog {
+    stamp: LogStamp,
+    moves: Arc<[Moved]>,
+}
+
+/// One leg's in-memory cache. Workers hold the lock only to copy or replace
+/// a completed read, so a busy pass never waits for the minute's git call.
+#[derive(Debug, Clone, Default)]
+pub struct ReflogCache(Arc<Mutex<Option<SavedReflog>>>);
+
+impl ReflogCache {
+    fn read(&self, dir: &Path) -> Arc<[Moved]> {
+        let saved = || self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !dir.is_dir() {
+            saved().take();
+            return Arc::default();
+        }
+        // Stamp before running git. A concurrent append invalidates this
+        // entry on the next read. Missing stamps and failed reads retry.
+        let stamp = LogStamp::of(dir);
+        if let Some(hit) = saved().as_ref().filter(|r| Some(&r.stamp) == stamp.as_ref()) {
+            return Arc::clone(&hit.moves);
+        }
+        let Some(moves) = read_reflog(dir) else { return Arc::default() };
+        let moves = Arc::from(moves);
+        if let Some(stamp) = stamp {
+            *saved() = Some(SavedReflog { stamp, moves: Arc::clone(&moves) });
+        }
+        moves
+    }
+}
+
+/// Every commit a worktree's HEAD pointed at, newest first.
+fn read_reflog(dir: &Path) -> Option<Vec<Moved>> {
     let out = crate::git::git(dir)
         .args([
             "--no-optional-locks",
@@ -1686,9 +1778,10 @@ pub fn reflog(dir: &Path) -> Vec<Moved> {
         ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| {
                 let (oid, subject) = l.split_once(' ').unwrap_or((l, ""));
@@ -1696,9 +1789,8 @@ pub fn reflog(dir: &Path) -> Vec<Moved> {
                 (!oid.is_empty())
                     .then(|| Moved { oid: oid.to_string(), wrote: forge::wrote_commit(subject) })
             })
-            .collect(),
-        _ => Vec::new(),
-    }
+            .collect()
+    })
 }
 
 /// The remote a repository's base branch is judged against, parsed: the
@@ -1902,6 +1994,8 @@ fn run_for(
 /// The daemon's standing knowledge of the forge road.
 #[derive(Debug, Default)]
 pub struct State {
+    /// Worker-owned cached reads, shared by minute, burst and turn-end looks.
+    pub reflogs: HashMap<PathBuf, ReflogCache>,
     /// Per host: which CLI reads it, and the signed-in account.
     pub probes: HashMap<String, HostProbe>,
     /// Per repository directory: its remote, parsed once.
@@ -1993,6 +2087,17 @@ pub struct State {
 }
 
 impl State {
+    /// Explicitly owed reads (such as a newly named PR) still run. An
+    /// empty set from a partial or missing first read proves nothing.
+    pub fn archive_settled(&self, ticket: ulid::Ulid) -> bool {
+        !self.owed.contains_key(&ticket)
+            && self.sets.get(&ticket).is_some_and(|set| {
+                let known = self.at_ms.contains_key(&ticket)
+                    || (!set.is_empty() && self.restored.contains(&ticket));
+                known && set.iter().all(settled)
+            })
+    }
+
     /// Whether `set` holds an open PR its ticket's reads never held
     /// (T-767), remembering every PR of it.
     pub fn opens(&mut self, t: ulid::Ulid, set: &[Pr]) -> bool {
@@ -4474,22 +4579,27 @@ mod tests {
         git(&["add", "."]);
         git(&["commit", "-qm", "one"]);
         let legs = vec![LegQuery {
+            repo: dir.clone(),
+            reflog: Default::default(),
             repo_path: "o/r".into(),
             repo_paths: vec!["o/r".into()],
             dir: dir.clone(),
             base_oid: String::new(),
         }];
-        let now = |legs: &[LegQuery]| {
-            let logs: Vec<Vec<Moved>> = legs.iter().map(|l| reflog(&l.dir)).collect();
-            pushed(legs, &logs)
-        };
+        let now = |legs: &[LegQuery]| RemoteRefs::default().pushed(legs, &leg_logs(legs));
         assert_eq!(now(&legs), Some(Vec::new()), "nothing pushed");
         std::fs::write(dir.join("a"), "b").unwrap();
         git(&["commit", "-qam", "two"]);
-        assert_eq!(now(&legs), Some(Vec::new()), "a commit is not a push");
+        let mut pass = RemoteRefs::default();
+        assert_eq!(
+            pass.pushed(&legs, &leg_logs(&legs)),
+            Some(Vec::new()),
+            "a commit is not a push"
+        );
         // A push updates the remote-tracking ref to the pushed commit.
         let tip = git(&["rev-parse", "HEAD"]);
         git(&["update-ref", "refs/remotes/origin/msmn/T-1", &tip]);
+        assert_eq!(pass.pushed(&legs, &leg_logs(&legs)), Some(vec![]), "one ref snapshot per pass");
         assert_eq!(now(&legs), Some(vec![format!("o/r refs/remotes/origin/msmn/T-1 {tip}")]));
         // A ref at a commit this worktree never held is someone else's.
         git(&["commit", "-q", "--allow-empty", "-m", "three"]);
@@ -4790,6 +4900,8 @@ mod tests {
             ticket: ulid::Ulid(9),
             branch: branch.into(),
             legs: vec![LegQuery {
+                repo: dir.clone(),
+                reflog: Default::default(),
                 repo_path: "o/r".into(),
                 repo_paths: vec!["o/r".into()],
                 dir: dir.clone(),
@@ -4922,10 +5034,10 @@ mod tests {
         git(&["commit", "-qm", "one"]);
         std::fs::write(dir.join("a"), "b").unwrap();
         git(&["commit", "-qam", "two"]);
-        let log = reflog(&dir);
+        let log = read_reflog(&dir).unwrap();
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(log.iter().all(|m| m.oid.len() == 40 && m.wrote));
-        assert!(reflog(&dir.join("nope")).is_empty());
+        assert!(ReflogCache::default().read(&dir.join("nope")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4960,10 +5072,16 @@ mod tests {
         git(&repo, &["commit", "-q", "--allow-empty", "-m", "their merged MR"]);
         let cut = git(&repo, &["rev-parse", "HEAD"]);
         git(&repo, &["worktree", "add", "-q", "-b", "msmn/T-1-x", wt.to_str().unwrap(), &cut]);
+        let cache = ReflogCache::default();
         let written = |dir: &Path| -> Vec<String> {
-            reflog(dir).into_iter().filter(|m| m.wrote).map(|m| m.oid).collect()
+            cache.read(dir).iter().filter(|m| m.wrote).map(|m| m.oid.clone()).collect()
         };
-        assert!(!reflog(&wt).is_empty(), "the cut is in the reflog");
+        let cut_log = cache.read(&wt);
+        assert!(!cut_log.is_empty(), "the cut is in the reflog");
+        assert!(
+            Arc::ptr_eq(&cut_log, &cache.read(&wt)),
+            "an unchanged linked worktree reuses its log"
+        );
         assert_eq!(written(&wt), Vec::<String>::new(), "a fresh worktree wrote nothing");
         git(&wt, &["commit", "-q", "--allow-empty", "-m", "mine"]);
         let mine = git(&wt, &["rev-parse", "HEAD"]);

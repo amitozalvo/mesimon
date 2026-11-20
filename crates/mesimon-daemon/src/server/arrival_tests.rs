@@ -68,6 +68,53 @@ fn forge_bed(name: &str, tip: &str) -> Bed {
     b
 }
 
+/// An archive keeps the last settled PRs for its card. An unfinished
+/// sibling still gets the full read, as does the ticket after restoration.
+#[test]
+fn the_forge_skips_only_settled_archives() {
+    use crate::forge::{Cli, HostProbe};
+    use crate::worktree::{Binding, BindingStatus};
+    use mesimon_core::board::Archived;
+    let mut b = forge_bed("archive-query", "head");
+    let w = b.worker;
+    let dir = b.d.paths.repo_root.join("worktree");
+    b.d.worktrees.insert(
+        w,
+        Binding::new(
+            dir.clone(),
+            "msmn/T-2".into(),
+            "base".into(),
+            "head".into(),
+            BindingStatus::Attached,
+        ),
+    );
+    b.d.forge.probes.insert(
+        "github.com".into(),
+        HostProbe {
+            cli: Some(Cli { forge: Forge::GitHub, bin: "gh".into() }),
+            at: std::time::Instant::now(),
+            viewer: None,
+            lost: None,
+        },
+    );
+    b.d.board.ticket_mut(w).unwrap().archived =
+        Some(Archived { at: "@0".into(), by: "local".into(), until: None, needs_you: false });
+    assert!(b.d.forge_query(None).is_some(), "unread archive");
+    let merged = pr(1, PrState::Merged, "h1", &[]);
+    b.d.forge.sets.insert(w, vec![merged.clone(), pr(2, PrState::Open, "h2", &[])]);
+    b.d.forge.at_ms.insert(w, 1);
+    assert!(b.d.forge_query(None).is_some(), "one PR is still open");
+    b.d.forge.sets.insert(w, vec![merged.clone()]);
+    assert!(b.d.forge_query(None).is_none());
+    assert!(!b.d.forge.reflogs.contains_key(&dir));
+    assert_eq!(b.d.forge.sets[&w], [merged], "the archive still shows its PR");
+    b.d.forge.owed.insert(w, 2);
+    assert!(b.d.forge_query(None).is_some(), "an explicit read is still owed");
+    b.d.forge.owed.clear();
+    b.d.board.ticket_mut(w).unwrap().archived = None;
+    assert!(b.d.forge_query(None).is_some(), "restored ticket");
+}
+
 fn column(b: &Bed) -> String {
     b.d.board.ticket(b.worker).unwrap().column.clone()
 }
