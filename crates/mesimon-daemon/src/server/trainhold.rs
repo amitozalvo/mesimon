@@ -109,7 +109,9 @@ impl Daemon {
         if authorize(&by, &Action::Mutate, &Resource::Session { id: park.0 }).denied() {
             return false;
         }
-        let tasks = &self.board.session(park.0).unwrap().background_tasks;
+        let Some(tasks) = self.board.session(park.0).map(|s| &s.background_tasks) else {
+            return false;
+        };
         let text = self.board.prompts.render(
             mesimon_core::prompts::AgentPrompt::BackgroundTaskNotice,
             &[("count", &tasks.count().to_string()), ("tasks", &tasks.task_list())],

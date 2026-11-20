@@ -134,7 +134,7 @@ impl Registry {
                 break;
             }
             if !words.is_empty() {
-                words.push_str("\n");
+                words.push('\n');
             }
             words.push_str("- ");
             words.push_str(&row);

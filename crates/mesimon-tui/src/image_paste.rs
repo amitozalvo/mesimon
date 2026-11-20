@@ -393,6 +393,90 @@ pub fn check_draft(images: &[DraftImage], bytes: usize) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn upload(
+    body: &str,
+    draft: &[DraftImage],
+    limit: usize,
+    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
+) -> Result<(String, Vec<DraftImage>, Vec<Ulid>)> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use mesimon_core::command::{Command, Response};
+    let mut images: Vec<_> = draft
+        .iter()
+        .filter(|i| {
+            body.match_indices(&marker(i)).any(|(at, m)| !body[at + m.len()..].starts_with('('))
+        })
+        .cloned()
+        .collect();
+    anyhow::ensure!(
+        pack(body, &images).len() <= limit,
+        "text including image references exceeds {} KiB",
+        limit / 1024
+    );
+    let mut uploads = Vec::new();
+    for image in &mut images {
+        let Some(png) = &image.bytes else { continue };
+        let mut upload = None;
+        for index in 0..png.len().div_ceil(attachment::CHUNK_BYTES).max(1) {
+            let offset = index * attachment::CHUNK_BYTES;
+            let bytes = &png[offset..(offset + attachment::CHUNK_BYTES).min(png.len())];
+            match request(Command::UploadAttachment {
+                file: image.file.as_ref().map(|(f, _)| f.clone()),
+                upload,
+                offset,
+                data: STANDARD.encode(bytes),
+                complete: offset + bytes.len() == png.len(),
+            })? {
+                Response::AttachmentUploaded { upload: id } => {
+                    if upload.is_none() {
+                        uploads.push(id);
+                    }
+                    upload = Some(id);
+                }
+                response => {
+                    let _ = request(Command::DiscardAttachmentUploads { uploads });
+                    let message = match response {
+                        Response::Err { message } => message,
+                        _ => "daemon did not accept the attachment".into(),
+                    };
+                    anyhow::bail!(message);
+                }
+            }
+        }
+        image.id = upload.ok_or_else(|| anyhow::anyhow!("empty upload"))?;
+        image.bytes = None;
+    }
+    Ok((pack(body, &images), images, uploads))
+}
+
+pub(crate) fn send_prompt(
+    mut command: mesimon_core::command::Command,
+    draft: &[DraftImage],
+    history: mpsc::Sender<String>,
+    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
+) -> Result<mesimon_core::command::Response> {
+    use mesimon_core::command::{Command, Response, PROMPT_MAX_BYTES};
+    let Command::PromptSession { text, uploads, .. } = &mut command else {
+        anyhow::bail!("attachments require a ticket prompt");
+    };
+    let (linked, _, ids) = match upload(text, draft, PROMPT_MAX_BYTES, &mut request) {
+        Ok(upload) => upload,
+        Err(error) => {
+            return Ok(Response::Err { message: format!("attachment upload failed: {error}") })
+        }
+    };
+    *text = linked.clone();
+    *uploads = ids.clone();
+    let result = request(command);
+    if !ids.is_empty() {
+        let _ = request(Command::DiscardAttachmentUploads { uploads: ids });
+    }
+    if matches!(&result, Ok(r) if !matches!(r, Response::Err { .. })) {
+        let _ = history.send(linked);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,88 +603,4 @@ mod tests {
         .is_err());
         assert!(check_draft(&[], MAX_BYTES + 1).is_err());
     }
-}
-
-pub(crate) fn upload(
-    body: &str,
-    draft: &[DraftImage],
-    limit: usize,
-    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
-) -> Result<(String, Vec<DraftImage>, Vec<Ulid>)> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    use mesimon_core::command::{Command, Response};
-    let mut images: Vec<_> = draft
-        .iter()
-        .filter(|i| {
-            body.match_indices(&marker(i)).any(|(at, m)| !body[at + m.len()..].starts_with('('))
-        })
-        .cloned()
-        .collect();
-    anyhow::ensure!(
-        pack(body, &images).len() <= limit,
-        "text including image references exceeds {} KiB",
-        limit / 1024
-    );
-    let mut uploads = Vec::new();
-    for image in &mut images {
-        let Some(png) = &image.bytes else { continue };
-        let mut upload = None;
-        for index in 0..png.len().div_ceil(attachment::CHUNK_BYTES).max(1) {
-            let offset = index * attachment::CHUNK_BYTES;
-            let bytes = &png[offset..(offset + attachment::CHUNK_BYTES).min(png.len())];
-            match request(Command::UploadAttachment {
-                file: image.file.as_ref().map(|(f, _)| f.clone()),
-                upload,
-                offset,
-                data: STANDARD.encode(bytes),
-                complete: offset + bytes.len() == png.len(),
-            })? {
-                Response::AttachmentUploaded { upload: id } => {
-                    if upload.is_none() {
-                        uploads.push(id);
-                    }
-                    upload = Some(id);
-                }
-                response => {
-                    let _ = request(Command::DiscardAttachmentUploads { uploads });
-                    let message = match response {
-                        Response::Err { message } => message,
-                        _ => "daemon did not accept the attachment".into(),
-                    };
-                    anyhow::bail!(message);
-                }
-            }
-        }
-        image.id = upload.ok_or_else(|| anyhow::anyhow!("empty upload"))?;
-        image.bytes = None;
-    }
-    Ok((pack(body, &images), images, uploads))
-}
-
-pub(crate) fn send_prompt(
-    mut command: mesimon_core::command::Command,
-    draft: &[DraftImage],
-    history: mpsc::Sender<String>,
-    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
-) -> Result<mesimon_core::command::Response> {
-    use mesimon_core::command::{Command, Response, PROMPT_MAX_BYTES};
-    let Command::PromptSession { text, uploads, .. } = &mut command else {
-        anyhow::bail!("attachments require a ticket prompt");
-    };
-    let (linked, _, ids) = match upload(text, draft, PROMPT_MAX_BYTES, &mut request) {
-        Ok(upload) => upload,
-        Err(error) => {
-            return Ok(Response::Err { message: format!("attachment upload failed: {error}") })
-        }
-    };
-    *text = linked.clone();
-    *uploads = ids.clone();
-    let result = request(command);
-    if !ids.is_empty() {
-        let _ = request(Command::DiscardAttachmentUploads { uploads: ids });
-    }
-    if matches!(&result, Ok(r) if !matches!(r, Response::Err { .. })) {
-        let _ = history.send(linked);
-    }
-    result
 }
