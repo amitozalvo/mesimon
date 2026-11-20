@@ -36,7 +36,8 @@ how this repository works, not something mesimon the product does.
 - **A go** (the person's "go", or any plain consent to build): remove the group-2 tag
   (`tag_ticket` READY with `remove`), retitle the ticket for what will be built with
   `rename_ticket` (its own key and `get_ticket`'s seen stamp; a question title becomes the
-  change), then work normally with no read-only limit.
+  change), then work normally with no read-only limit. A worktree cut while the ticket was
+  read-only has no `target/`, so run `./.mesimon-worktree-init.sh` there to seed it before the first build.
 
 Example: "Redesign titlebar" [IMPROVEMENT][RESEARCH] → proposal Artifact, [IMPROVEMENT][READY] →
 the person says go → [IMPROVEMENT], retitled, built and committed.
