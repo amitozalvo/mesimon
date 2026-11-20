@@ -48358,3 +48358,30 @@ The two live cases use a fixture without the union attribute to exercise conflic
 assertion and passed on its one isolated rerun. Nextest marked the passing
 `crown_e2e::a_codex_expectation_outlives_a_restart_by_its_turn_id` leaky.
 Both fixture audits were clean.
+
+## Remote Control browser suite timing (T-1363, 2026-11-20)
+
+The offline flow drops every request to its fixture server. Giving each
+engine/viewport its own server, browser and screenshot directory lets all six
+cells run concurrently, including offline on both engines. The 102 flow cases
+remain. Navigation checks chalk everywhere and all fifteen themes in the first
+selected cell. A change to style.css or themes.js expands the sweep to every
+selected navigation cell. Direct and npm runs use ci/test-run.py for the disk
+reserve, deadline and cleanup. The source-to-flow map is in web/mesophon/CLAUDE.md.
+
+Back-to-back on 6a09f32f (web tree 54613717, unchanged by rebase), measured
+with `/usr/bin/time -p env MESOPHON_UX_JOBS=N node web/mesophon/ux.test.js`:
+
+| Jobs | Wall time | Passed | Starting uptime load averages (1, 5, 15 min) |
+| --- | --- | --- | --- |
+| 1 | 1,307.01 s | 102/102 | 6.51, 9.26, 14.54 |
+| 6 | 226.66 s | 102/102 | 13.82, 17.87, 20.00 |
+
+Both runs passed their cleanup audit on the first attempt. The serial schedule
+cost 18 minutes more on this machine. A Chromium phone notes edit needed one
+28.8 s flow and reported 101 skipped. Its first launch was blocked by the
+sandbox before any browser case started (loopback and process inspection);
+the scoped rerun passed with those permissions. The runner's ordinary Cargo
+lock also pruned stale build output during that initial check. The browser
+entry point now locks its screenshot directory. All 73 state and asset tests
+passed.
