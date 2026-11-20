@@ -100,13 +100,10 @@ for (const [name, engine] of [
         const card = page.locator(".ticket.card", { hasText: "private-ticket-canary" });
         await card.waitFor();
         await card.click();
-        // The conversation is the ticket page's first view (T-626); this
-        // pass reads the pane's screen through the sealed road, so it turns
-        // on the switch Settings keeps (T-701) and then to the raw view,
-        // which the page then remembers.
+        // The ticket opens in Chat (T-626). The Terminal tab reads the pane's
+        // screen through the sealed road, and the page remembers the choice.
         await page.locator("#chat").waitFor();
-        await page.evaluate(() => document.querySelector("#raw-switch").click());
-        await page.locator("#output-view").click();
+        await page.locator("#tab-terminal").click();
         await page.waitForFunction(() =>
           document
             .querySelector("#preview")

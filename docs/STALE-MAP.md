@@ -48534,3 +48534,11 @@ across 38 Claude Stops from 16:04 to 17:20 UTC after the two apps' hooks were
 removed, against 314 across 389 Stops in the preceding six days. The feed
 records child counts only. Those measurements rule out attributing every
 hold to the removed hooks.
+
+## The relay browser test opens the Terminal tab (T-1257, 2026-11-20)
+
+The preview step found in the tenth simplify pass now waits for Chat, clicks
+`#tab-terminal`, and checks the pane's canary and the absence of script elements.
+The tab remembers the choice directly. The Settings switch from T-701 is gone.
+The Chromium phone `chat` and `terminal` flows passed against the UX fixture.
+The real-relay browser pass was not run because no local relay fixture was available.
