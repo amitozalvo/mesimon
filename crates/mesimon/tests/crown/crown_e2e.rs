@@ -9566,9 +9566,16 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
         r#"{{"session_id":"x","transcript_path":"{}","cwd":"/tmp"}}"#,
         transcript.display()
     );
-    settle_for(500);
+    let keys = h.dir.join(format!("keys-{kw}"));
+    let enters = || std::fs::read_to_string(&keys).unwrap_or_default().matches("\\r").count();
+    wait_until(std::time::Duration::from_secs(10), "W's composer drawn", || {
+        pane(&mut c, ws).contains("? for shortcuts")
+    });
     hook_send_with(&hook_sock, &ws.to_string(), "SessionStart", Some("startup"), &session_start);
     c.await_state(ws, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    // Both stand-ins submit the launch with Enter. Acknowledge that key
+    // before opening the plan, which could otherwise consume it as an answer.
+    wait_until(std::time::Duration::from_secs(10), "W received its launch Enter", || enters() > 0);
     start(&mut c, ws);
 
     // W stops on `tool` with `input`: drawn in its pane, written to its
@@ -9609,6 +9616,8 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     assert_eq!(needs.request.as_deref(), Some("toolu_r1"), "the transcript's call id");
     assert_eq!(needs.plan.as_deref(), Some(PLAN), "the markdown, lines kept");
     let accepted = h.dir.join(format!("accepted-{kw}"));
+    assert!(!accepted.exists(), "the restored plan still awaits the crown's Enter");
+    let before = enters();
     let v = c.agent_read(sa, &kw).unwrap();
     let cmd =
         Command::AgentAcceptPlan { key: kw.clone(), seen: v.seen, request: "toolu_r1".into() };
@@ -9619,6 +9628,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     wait_until(std::time::Duration::from_secs(10), "the plan accepted in W's pane", || {
         accepted.exists()
     });
+    assert_eq!(enters(), before + 1, "the crown pressed Enter on the restored plan");
     append(&[result("toolu_r1")]);
     hook_send(
         &hook_sock,
@@ -9642,6 +9652,7 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     assert_eq!(needs.reason, "question");
     assert_eq!(needs.request.as_deref(), Some("toolu_r2"));
     assert_eq!(needs.questions[0].text, "Which auth provider?");
+    let before = enters();
     let v = c.agent_read(sa, &kw).unwrap();
     let cmd = Command::AgentAnswerTicket {
         key: kw.clone(),
@@ -9658,12 +9669,16 @@ fn a_worker_s_dialog_outlives_a_daemon_restart() {
     let answered = h.dir.join(format!("answered-{kw}.json"));
     wait_until(std::time::Duration::from_secs(10), "the answer in W's pane", || answered.exists());
     append(&[result("toolu_r2")]);
-    hook_send(
-        &hook_sock,
-        &ws.to_string(),
-        "PostToolUse",
-        &edge("AskUserQuestion", "toolu_r2", &questions),
-    );
+    // A pane answer fires PostToolUse. If the bridge has reconnected and
+    // answered directly, its ModAnswer already supplies the answer edge.
+    if enters() > before {
+        hook_send(
+            &hook_sock,
+            &ws.to_string(),
+            "PostToolUse",
+            &edge("AskUserQuestion", "toolu_r2", &questions),
+        );
+    }
     match receipt.join().unwrap() {
         Response::AgentAnswered { outcome, answer, .. } => {
             assert_eq!((outcome.as_str(), answer.as_str()), ("answered", "Okta"))

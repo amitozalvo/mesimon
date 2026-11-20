@@ -49025,3 +49025,39 @@ Word and Excel packages share ZIP's signature, so the detector checks the
 central directory for the Office manifest and main document or workbook
 part. Rollback keeps each prepared record so it can remove its payload
 even if writing the sidecar failed.
+
+## The restart dialog fixture waits for the worker's launch Enter (T-1386, 2026-11-21)
+
+In both T-1384 release failures the worker's composer still held its launch
+title after the first plan closed. The mod stand-in pastes the title, waits
+50 ms, then sends Enter. The fixture could announce a running turn and draw
+the plan between those two operations. Its acceptance marker then belonged
+to the launch Enter. Real mod submits go through `$.prompt.submit`. The daemon
+sends a crown Enter and records its success in the same writer dispatch, before
+another hook can settle the receipt.
+
+Six concurrent unmodified mod runs reproduced the release receipt twice
+(B02, B04). B06 missed the short-lived dialog altogether. In F01 the stand-in
+held its launch submit until the plan was drawn. The plan's acceptance marker
+existed before the crown's call, which returned `unknown / a_person_answered`.
+The fixture ordering dates to T-933 (`417f8b78`, October 24), and the mod
+stand-in's split paste and Enter to T-575. The November 20 merges were not
+needed to produce that order.
+
+The fixture now observes the composer's first Enter before it reports the
+worker's turn. Across restart it checks that the plan still awaits acceptance
+and that exactly one new Enter reached the pane before sending the plan result.
+Stress on the intermediate fix also exposed a duplicate question answer
+(S09, S18). Only a pane answer needs a synthetic `PostToolUse`. The reconnected
+mod bridge supplies its own `ModAnswer`.
+
+| Verification run | Result |
+| --- | --- |
+| Baseline crown binary, mod, six threads | The sandbox blocked fixture cleanup via `ps`. After cleanup, the host-enabled run passed 139/139. |
+| B01–B06, unmodified mod stress | B01, B03 and B05 passed. B02 and B04 returned `a_person_answered`. B06 timed out waiting for the plan to be drawn. |
+| F01, forced late launch Enter | Reproduced `a_person_answered` before the fix. |
+| H01 and S01–S20, intermediate fix | H01 timed out because the hooks stub can submit an empty composer line. Mod passed 18/20. S09 and S18 received the duplicate question edge described above. |
+| H02 and V01–V20, final fixture | H02 passed on hooks. Mod passed 19/20 alongside the unit build and crown suites. V11 passed both receipts, then timed out waiting for a replacement daemon socket. |
+| Final `crown_e2e`, six threads | Mod passed 123/123. Hooks passed 122/123 including the restart case. The unrelated `a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words` counted ten lines instead of nine and passed on its isolated hooks rerun. |
+| R01–R20, final mod stress | All 20 passed with six concurrent fixtures after the other suites finished. |
+| `cargo ut` | 3,367 passed, 13 ignored. |
