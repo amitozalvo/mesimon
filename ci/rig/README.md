@@ -1,5 +1,34 @@
 # Real agent verification
 
+## Checking a Claude case before launch
+
+Run `python3 -B ci/rig.py --check` for the whole TOML suite, or add
+`--only SE2,SP1` to check selected cases. Live runs apply the same check before
+building or touching the board. Once connected, the runner checks upcoming
+worker branch names, including a declared `start_title` for a ticket the crown
+renames before launch. A collision reports the case and branch before filing.
+
+- A scripted `call start_agent for {key}` produces a worker. For a start
+  expressed in the person's words, or multiple starts in one step, list the
+  targets in `starts`, using `key`, `key2`, etc., or `filed` for a new child.
+  An omitted `until` waits for an idle worker on the primary ticket. Use
+  `until = { crown_only = true }` for a crown read that starts nobody.
+- Use `background_at_stop = true` when a worker should still have a task at
+  Stop. The board reads that state as `working`. The checker also recognizes
+  the measured foreground Bash sleep refusal in a crown prompt. Other shell
+  permissions and model decisions are observed on the live run.
+- For an exact count, declare `wake_counts = "delivered"` for `wake_count`
+  (words in the crown's transcript) or `"owed"` for `woke_once` (causes in
+  the board feed).
+- Worktree starts declare `merge_guard = "train_off"` or `"fixture"`. The first
+  requires the board's train to be off. The second selects a ticket-specific
+  merge branch with independent history and a checkout for the train's blocker.
+  The uncrowned and rebase fixtures already own their merge targets.
+
+These fields describe the fixture to the runner. Only the existing prompt,
+brief and verdict fields reach the model. The real-tier live run still measures
+changes to agent behavior.
+
 ## Linked crowns
 
 `python3 -B ci/rig.py --only X` selects the Claude crown communication cases.

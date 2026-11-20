@@ -48460,3 +48460,17 @@ when they use those artifacts. The browser matrix now allocates screenshots per
 invocation, including inside an enclosing runner. On macOS a ticket worktree's
 own Cargo output only needs the closing prune above 50,000 deps entries, the
 existing threshold for a costly directory scan.
+
+## Check a Claude rig case before launching its agents (T-1372, 2026-11-20)
+
+The Claude runner checks selected cases before setup. An offline pass over all
+119 took 0.31 s including Python startup. SE2's default worker wait, BG1's
+idle wait at a background Stop, SP1's foreground shell sleep and its count of
+owed wakes for a delivered-wake verdict all fail offline. CR2's description
+boxes also count toward the card. The case and its failing step or check are
+in the refusal. The real-tier run still measures the model.
+
+A manual hold allowed the crown to land the original BT1. Worktree starts now
+need a fixture target or the train off. Train fixtures keep the blocker in
+their own checkout on independent history. Before filing, the rig checks the
+upcoming worker branch names, including CR1's rename, and reports collisions.

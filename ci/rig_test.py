@@ -1,6 +1,8 @@
 """Offline checks of the Claude rig's readiness predicates (A3, T-945),
 ST2's acceptance (T-974) and the trace fixture's cut (T-1014)."""
 import copy
+from contextlib import redirect_stdout
+import io
 import importlib.util
 import json
 import os
@@ -9,7 +11,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("claude_rig", Path(__file__).parent / "rig.py")
 rig = importlib.util.module_from_spec(SPEC)
@@ -94,6 +96,142 @@ class SuiteTests(unittest.TestCase):
         self.assertNotIn("ask_board", brief)
         self.assertNotIn(test["expect"], subject.test_card(test))
         self.assertNotIn("ask_board", subject.test_card(test))
+
+
+class PreflightTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.suite = {t["id"]: t for t in rig.load_tests(Path(rig.HERE) / "rig/tests.toml")}
+
+    def case(self, name):
+        return copy.deepcopy(self.suite[name])
+
+    def refused(self, case, message):
+        # Take the normal live entry point. Even constructing Rig creates
+        # output on disk, so it too must be downstream of the refusal.
+        out = io.StringIO()
+        with patch.object(rig.sys, "argv", ["rig.py"]), patch.object(rig, "Rig") as launch, \
+                patch.object(rig, "load_tests", return_value=[case]), redirect_stdout(out):
+            with self.assertRaises(SystemExit) as failed:
+                rig.main()
+            self.assertEqual(failed.exception.code, 1)
+            launch.assert_not_called()
+        self.assertIn(message, out.getvalue())
+
+    def test_every_shipped_case_and_a_crown_only_read_pass(self):
+        for case in self.suite.values():
+            with self.subTest(case=case["id"]):
+                rig.validate_case(case)
+        rig.validate_case(self.case("SE2"))
+
+    def test_worker_wait_on_a_crown_only_rename(self):
+        case = self.case("SE2")
+        del case["steps"][0]["until"]
+        self.refused(case, "SE2 step 1: wait needs a worker on key")
+
+    def test_background_stop_waiting_for_idle(self):
+        case = self.case("BG1")
+        del case["steps"][1]["until"]["state"]
+        del case["steps"][1]["background_at_stop"]
+        self.refused(case, "BG1 step 2: a worker with a background task at Stop reads working")
+
+    def test_provider_denied_foreground_sleep(self):
+        case = self.case("SP1")
+        step = case["steps"][2]
+        step["crown"] = step["crown"].replace("python3 -c 'import time; time.sleep(90)'", "sleep 90")
+        self.refused(case, "SP1 step 3: Claude denies the crown's standalone foreground sleep")
+
+    def test_owed_feed_count_used_for_delivered_words(self):
+        case = self.case("SP1")
+        case["checks"][4] = "woke_once:finished"
+        self.refused(case, "SP1 check 5 (woke_once:finished): woke_once counts owed wakes")
+
+    def test_commit_on_the_real_base(self):
+        case = self.case("BT1")
+        del case["uncrowned"]
+        self.refused(case, "BT1 step 1: a worker commit could reach the real base")
+
+    def test_train_guard_is_ordered_and_a_shared_checkout_bypasses_the_target(self):
+        case = self.case("HT1")
+        case["merge_guard"] = "train_off"
+        self.refused(case, "HT1 step 1: train_on could land on the real base")
+        case["merge_guard"] = "fixture"
+        case["workspace"] = "shared_checkout"
+        self.refused(case, "HT1 setup: a commit on a shared checkout")
+
+    def test_a_filed_child_and_a_later_sibling_cannot_produce_the_primary_wait(self):
+        case = self.case("SF1")
+        del case["steps"][0]["until"]["filed"]
+        self.refused(case, "SF1 step 1: wait needs a worker on key")
+        case = self.case("SB1")
+        case["steps"][0]["until"]["on"] = "key2"
+        self.refused(case, "SB1 step 1: wait needs a worker on key2")
+
+    def test_a_verdict_requiring_a_worker_or_a_different_owner(self):
+        case = self.case("SE2")
+        case["checks"] = ["road:mod"]
+        self.refused(case, "SE2 check 1 (road:mod): needs an agent record")
+        case = self.case("W1")
+        case["checks"] = ["started_by_crown"]
+        self.refused(case, "W1 check 1 (started_by_crown): key was started by the person")
+
+    def test_description_boxes_double_the_workers_checklist(self):
+        case = self.case("CR2")
+        case["brief"] += "\n# Summary\n- [x] found\n- [x] fixed\n- [ ] merge"
+        self.refused(case, "CR2 check 3 (summary:2/3): the description adds Summary boxes")
+
+    def test_train_off_is_checked_against_the_board_before_setup(self):
+        subject = object.__new__(rig.Rig)
+        subject.repo = "."
+        subject.snapshot = lambda: {"board": {"next_key": 0}, "automation": {"merge_train": True}}
+        with patch.object(rig, "git", return_value=""), redirect_stdout(io.StringIO()) as out, \
+                self.assertRaises(SystemExit):
+            case = self.case("M1")
+            case["start_keys"] = rig.validate_case(case)
+            subject.preflight_board([case])
+        self.assertIn("M1 require", out.getvalue())
+
+    def test_renamed_ticket_branch_is_named_before_board_setup(self):
+        from rebase import git
+        with tempfile.TemporaryDirectory() as repo:
+            git(repo, "init", "-b", "main")
+            git(repo, "commit", "--allow-empty", "-m", "base")
+            git(repo, "branch", "msmn/T-3-cr1-receipt-check")
+            subject = object.__new__(rig.Rig)
+            subject.repo, subject.branch = repo, "msmn/T-123-ticket"
+            subject.snapshot = lambda: {"board": {"next_key": 2}, "automation": {"merge_train": False}}
+            cases = [self.case("CR1")]
+            cases[0]["start_keys"] = rig.validate_case(cases[0])
+            subject.prepare_titles(cases)
+            with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+                subject.preflight_board(cases)
+            self.assertIn("CR1: msmn/T-3-cr1-receipt-check", out.getvalue())
+            self.assertEqual(git(repo, "rev-parse", "msmn/T-3-cr1-receipt-check"), git(repo, "rev-parse", "main"))
+
+    def test_train_target_contains_the_blocker_and_restores_after_an_exception(self):
+        from rebase import git, train_fixture
+        with tempfile.TemporaryDirectory() as repo:
+            git(repo, "init", "-b", "main")
+            git(repo, "commit", "--allow-empty", "-m", "real base")
+            real_tip = git(repo, "rev-parse", "main")
+            subject = object.__new__(rig.Rig)
+            subject.repo, subject.wire = repo, Mock()
+            subject.board = lambda: {"merge_into": "pull_requests"}
+            case = {**self.case("HT1"), "ticket": "fixture", "key": "T-3"}
+            with self.assertRaisesRegex(RuntimeError, "interrupted case"):
+                with train_fixture(subject, case):
+                    checkout = case["fixture_checkout"]
+                    target = git(checkout, "symbolic-ref", "--short", "HEAD")
+                    subject.wire.set_merge_into.assert_called_with("branch:" + target)
+                    self.assertIsNone(rig.git(repo, "merge-base", target, "main"))
+                    subject.log = Mock()
+                    subject.rig_step(case, "train_on", {}, case["steps"][0])
+                    self.assertTrue((checkout / "HT1.txt").exists())
+                    self.assertFalse((Path(repo) / "HT1.txt").exists())
+                    raise RuntimeError("interrupted case")
+            subject.wire.set_merge_into.assert_called_with("pull_requests")
+            self.assertEqual(git(repo, "branch", "--format=%(refname:short)"), "main")
+            self.assertEqual(git(repo, "rev-parse", "main"), real_tip)
 
 
 class BoardExchangeTests(unittest.TestCase):

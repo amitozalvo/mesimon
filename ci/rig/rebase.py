@@ -1,4 +1,5 @@
 """A real merge-flow ask on a tiny integration branch owned by the rig ticket."""
+from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 import tempfile
@@ -34,6 +35,42 @@ def git(repo, *args):
     if result.returncode:
         raise RuntimeError(f"git {args[0]}: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+@contextmanager
+def train_fixture(rig, test):
+    """A local merge destination for a crowned case, including its train blocker."""
+    target = "rig-train-" + test["ticket"].lower()
+    previous = rig.board().get("merge_into", "main")
+    # Same files and instructions, independent history. Even a wake after
+    # restoration cannot fast-forward a fixture commit onto the real base.
+    tip = git(rig.repo, "commit-tree", "HEAD^{tree}", "-m", "Rig merge fixture")
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp) / "base"
+        git(rig.repo, "worktree", "add", "-b", target, str(checkout), tip)
+        restored = False
+        try:
+            test["fixture_checkout"] = checkout
+            test["fixture_target"] = "branch:" + target
+            rig.wire.set_merge_into(test["fixture_target"])
+            try:
+                yield
+            finally:
+                # A step exception can bypass the normal train_off. Disarm
+                # this connection and hold the ticket before restoring base.
+                rig.wire.request({"cmd": "set_automation", "merge_train": False, "merge_notice": False})
+                rig.wire.set_manual_merge(test["ticket"], True)
+                rig.wire.set_merge_into(previous)
+                restored = True
+        finally:
+            test.pop("fixture_checkout", None)
+            test.pop("fixture_target", None)
+            final_tip = git(checkout, "rev-parse", "HEAD")
+            git(rig.repo, "worktree", "remove", "--force", str(checkout))
+            if restored:
+                git(rig.repo, "update-ref", "-d", "refs/heads/" + target, final_tip)
+            else:
+                rig.log(f"kept {target}: could not confirm restoration of {previous}")
 
 
 def append(repo, path, text):

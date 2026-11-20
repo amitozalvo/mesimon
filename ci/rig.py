@@ -5,6 +5,7 @@ bounded native Codex cases with --provider codex, or agy's with --provider agy
 
     python3 -B ci/rig.py            build, start or find the rig's daemon, lay
                                     the board, file the tests, run them all
+    python3 -B ci/rig.py --check    validate selected Claude cases offline
     python3 -B ci/rig.py --lay      the same up to the crown filed and crowned;
                                     nothing starts, nothing costs
     python3 -B ci/rig.py --only R3  run the named tests (a comma list); a
@@ -73,6 +74,7 @@ from typing import NamedTuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "rig"))
+from topology import AGENTLESS_CHECKS, summary_rows, validate_case  # noqa: E402
 from wire import Subscription, Wire, WireError, board_paths, feed_all, read_feed, ulid  # noqa: E402
 
 TIER_NAME = "rig"
@@ -385,40 +387,6 @@ def filler(size=10_000):
                    f"an apostrophe's turn, a `backtick`, $HOME written as text, and the "
                    f"number {n} so no two lines read alike.")
     return "\n\n".join(out)
-
-
-def summary_rows(body):
-    """The rows of a note's `Summary` sections as `core/src/summary.rs`
-    reads them: (ticked | None for a plain row, text), plus the headings
-    the note used, for the verdict of a note that put its list elsewhere."""
-    rows, headings, open_level, fenced = [], [], None, False
-    for line in body.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-            continue
-        if fenced:
-            continue
-        m = re.match(r" {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*[ \t]*$", line)
-        if m:
-            level, text = len(m.group(1)), (m.group(2) or "").strip()
-            headings.append(text)
-            if open_level is not None and level <= open_level:
-                open_level = None
-            if open_level is None and text.lower() == "summary":
-                open_level = level
-            continue
-        if open_level is None or not line.strip():
-            continue
-        item = re.match(r"\s*(?:[-*+]|\d{1,9}[.)]) (.*)$", line)
-        if item:
-            box = re.match(r"\[( |x|X)\](?: (.*))?$", item.group(1))
-            if box:
-                rows.append((box.group(1) != " ", (box.group(2) or "").strip()))
-                continue
-            rows.append((None, item.group(1).strip()))
-        else:
-            rows.append((None, line.strip()))
-    return rows, headings
 
 
 def once(rows):
@@ -2179,7 +2147,7 @@ class Rig:
                 except WireError:
                     pass
 
-    def file(self, tests):
+    def prepare_titles(self, tests):
         # Every rig board files into the same repository, whose branches
         # every worktree shares, and each board counts its keys from T-1: two
         # boards' `T-9 · R1` would cut the same `msmn/T-9-r1-…` branch, and
@@ -2194,6 +2162,37 @@ class Rig:
             if owner and not test["title"].startswith(owner.group(1)):
                 test["title"] = f"{owner.group(1)} {test['title']}"
                 test["siblings"] = [f"{owner.group(1)} {t}" for t in test.get("siblings", [])]
+
+    def preflight_board(self, tests):
+        snapshot = self.snapshot()
+        key = snapshot["board"]["next_key"]
+        candidates = {}
+        for test in tests:
+            titles = [test["title"], *test.get("siblings", [])]
+            for i, title in enumerate(titles, 1):
+                key += 1
+                target = "key" if i == 1 else f"key{i}"
+                if test["workspace"] == "worktree" and target in test["start_keys"]:
+                    for name in (title, test.get("start_title", title)):
+                        candidates[f"msmn/T-{key}-{slug(name)}"] = test["id"]
+        branches = git(self.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/msmn",
+                       "refs/heads/rig-train-*", "refs/heads/rig-rebase-*", "refs/heads/rig-background-*")
+        if branches is None:
+            die("cannot check existing rig branches")
+        refs = branches.splitlines()
+        fixtures = [b for b in refs if b.startswith("rig-")]
+        if fixtures:
+            say("existing rig fixture branches: " + ", ".join(fixtures))
+        blocked = [f"{candidates[b]}: {b}" for b in refs if b in candidates]
+        if blocked:
+            die("existing branches block worker setup:\n  " + "\n  ".join(blocked))
+        if snapshot["automation"]["merge_train"]:
+            guarded = [t["id"] for t in tests if t.get("merge_guard") == "train_off"]
+            if guarded:
+                die(f"{', '.join(guarded)} require the rig board's merge train off")
+
+    def file(self, tests):
+        for test in tests:
             if test.get("long_brief"):
                 # `true` is P1's 10 KB; a number is that many bytes (B1), and
                 # `tail` is the paragraph that ends it (T-896: the one fact a
@@ -3373,18 +3372,10 @@ Reply with the single word ready and end your turn."""
             self.log(f"{'held' if what == 'hold_branch' else 'freed'} {branch}")
             return True
         if what in ("train_on", "train_off"):
-            # HT1 (T-919): the merge train armed on this connection, and the
-            # test ticket off the person's hold every test is filed under,
-            # so the crown's own hold is the only one; off disarms it and
-            # puts the person's hold back. The rig's base is this ticket
-            # worktree's own branch, which no test may land a commit on, so
-            # `block` is an untracked file at the checkout's root where the
-            # worker writes the same path: git will not overwrite it, and
-            # the train's fast-forward is refused (`merge_train_refused`),
-            # which is the train taking the ticket and landing nothing.
-            # `hold = true` (FA1, T-1183) arms the train and leaves the
-            # person's hold on the test ticket: a ticket the armed train
-            # does not take, whose merge is the crown's.
+            # The fixture checkout is the train's destination. The worker
+            # writes the same path as its untracked blocker, so the train
+            # attempts the merge and Git refuses it. FA1 keeps the manual
+            # hold instead and tests who owns the merge.
             on = what == "train_on"
             block = step.get("block")
             try:
@@ -3394,9 +3385,9 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append(f"{what}: {error}")
                 return False
             if block:
-                path = os.path.join(self.repo, block)
+                path = os.path.join(test["fixture_checkout"], block)
                 if on:
-                    with open(path, "w") as f:
+                    with open(path, "x") as f:
                         f.write("the rig's blocker: no train merge lands here\n")
                 elif os.path.exists(path):
                     os.remove(path)
@@ -4051,8 +4042,8 @@ Reply with the single word ready and end your turn."""
             return True
         if what == "forge_off":
             # The board's own Claude Code and PATH back: the stub is gone,
-            # and the board merges into main again (T-810).
-            self.wire.set_merge_into("main")
+            # and local merges use this case's target again (T-810).
+            self.wire.set_merge_into(test.get("fixture_target", "main"))
             d = self.forge_stub()
             for name in ("prs.json", "checks.json"):
                 try:
@@ -4324,12 +4315,7 @@ Reply with the single word ready and end your turn."""
             name, _, arg = c.partition(":")
             # A start that made no agent (U1) is judged on the board's and
             # the crown's side alone.
-            if rec is None and name not in ("woke", "woke_once", "no_wake_after", "crown_hand", "crown_reply", "crown_line", "crown_obstacle",
-                                            "crown", "crown_board", "peer_fed", "board_exchange", "filed",
-                                            "crown_wrote_nothing", "title_words", "title_never",
-                                            "title_is", "title_match", "described", "create_start",
-                                            "hand_said", "hand_unread", "refusal_named", "wake_said",
-                                            "wake_count"):
+            if rec is None and name not in AGENTLESS_CHECKS:
                 check(c, False, "no agent record on the ticket")
             elif name == "road":
                 check(c, rec.get("road", "hooks") == arg, f"road {rec.get('road', 'hooks')}")
@@ -4962,7 +4948,7 @@ Reply with the single word ready and end your turn."""
                 branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
                                if w["ticket"] == tid), None)
                 landed = bool(branch) and subprocess.run(
-                    ["git", "-C", self.repo, "merge-base", "--is-ancestor", branch, "HEAD"],
+                    ["git", "-C", test.get("fixture_checkout", self.repo), "merge-base", "--is-ancestor", branch, "HEAD"],
                     capture_output=True).returncode == 0
                 check(c, branch and not landed, f"{branch} landed on the base" if landed
                       else f"{branch} not on the base" if branch else "no branch")
@@ -5383,7 +5369,8 @@ Reply with the single word ready and end your turn."""
             tip = fixture_git(base, "rev-parse", "HEAD")
             fixture_git(self.repo, "fetch", "--no-tags", "--no-write-fetch-head", base, "fixture:" + ref)
         try:
-            self.wire.set_merge_into("branch:" + target)
+            test["fixture_target"] = "branch:" + target
+            self.wire.set_merge_into(test["fixture_target"])
             self.wire.request({"cmd": "uncrown"})
             try:
                 return self.run_test(test)
@@ -5392,6 +5379,7 @@ Reply with the single word ready and end your turn."""
                 self.wire.crown(self.crown)
         finally:
             self.wire.set_merge_into(previous)
+            test.pop("fixture_target", None)
             # Compare-and-delete only our own unchanged fixture ref.
             fixture_git(self.repo, "update-ref", "-d", ref, tip)
 
@@ -5408,6 +5396,8 @@ Reply with the single word ready and end your turn."""
         self.close_out, self.closing = [], []
         self.t0 = time.time()
         say("\n▶ laying the board")
+        self.prepare_titles(tests)
+        self.preflight_board(tests)
         self.lay()
         self.clear_previous()
         self.file(tests)
@@ -5421,7 +5411,13 @@ Reply with the single word ready and end your turn."""
         for test in tests:
             if test.get("uncrowned"):
                 self.run_uncrowned_fixture(test)
+            elif test.get("merge_guard") == "fixture":
+                from rebase import train_fixture
+                with train_fixture(self, test):
+                    self.run_test(test)
             else:
+                if test.get("merge_guard") == "train_off" and self.snapshot()["automation"]["merge_train"]:
+                    die(f"{test['id']} requires the rig board's merge train off")
                 self.run_test(test)
             # The peer board a test laid (T-733) goes with the test, and the
             # link with it: the next test lays its own.
@@ -5460,12 +5456,40 @@ Reply with the single word ready and end your turn."""
                 else f"  tmux kill-server: {out.stderr.strip() or 'no server'}")
 
 
+def selected_cases(repo, args):
+    try:
+        tests = load_tests(os.path.join(HERE, "rig", "tests.toml"))
+    except ValueError as e:
+        die(str(e))
+    if args.only:
+        want = [x.strip() for x in args.only.split(",")]
+        tests = [t for t in tests if t["id"] in want or t["id"][0] in want]
+        if not tests:
+            die(f"no test named {args.only}")
+    if args.failed:
+        failed = last_failed(os.path.join(repo, "target/rig/verdicts.md"))
+        if failed is None:
+            die("no target/rig/verdicts.md to read the failures from")
+        tests = [t for t in tests if t["id"] in failed]
+        if not tests:
+            die("the last run's verdicts list no FAIL")
+        say(f"  --failed: {', '.join(t['id'] for t in tests)}")
+
+    try:
+        for case in tests:
+            case["start_keys"] = validate_case(case)
+    except ValueError as error:
+        die(str(error))
+    return tests
+
+
 def main():
     global LOG
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--provider", choices=("claude", "codex", "agy"), default="claude")
     from codex import add_arguments, run as run_codex
     add_arguments(ap)
+    ap.add_argument("--check", action="store_true", help="check selected Claude cases offline")
     ap.add_argument("--lay", action="store_true", help="lay the Claude board or list Codex cases; start nothing")
     ap.add_argument("--only", help="test ids: Claude R1,R3 (or a group letter); Codex mcp,sleep-resume")
     ap.add_argument("--failed", action="store_true",
@@ -5493,17 +5517,24 @@ def main():
     # Codex creates a disposable repository and home per case. The branch
     # restriction belongs to Claude's persistent board and cleanup sweep,
     # neither of which the Codex adapter uses.
+    if args.check and (args.provider != "claude" or args.stale or args.reset or args.lay):
+        ap.error("--check is an offline Claude case check")
     if args.provider == "codex":
         sys.exit(run_codex(repo, args, ap))
     # agy (T-1232) owns a disposable board per case too.
     if args.provider == "agy":
         from agy import run as run_agy
         sys.exit(run_agy(repo, args, ap))
-    if branch == "main" or not branch.startswith("msmn/"):
-        die(f"the Claude rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
     if args.live or args.suite != "smoke" or any(value is not None for value in
             (args.model, args.effort, args.max_turns, args.max_tokens, args.case_timeout, args.binary)):
         ap.error("model, budget, --live and --suite options are for the Codex rig")
+    if not args.stale and not args.reset:
+        tests = selected_cases(repo, args)
+        if args.check:
+            say(f"{len(tests)} Claude cases passed preflight")
+            return
+    if not branch.startswith("msmn/"):
+        die(f"the Claude rig runs only in a ticket worktree (a msmn/… branch); this checkout is on {branch!r}")
     rig = Rig(repo, args)
     rig.branch = branch
     os.makedirs(rig.out, exist_ok=True)
@@ -5522,24 +5553,6 @@ def main():
     if args.reset:
         rig.reset()
         return
-
-    try:
-        tests = load_tests(os.path.join(HERE, "rig", "tests.toml"))
-    except ValueError as e:
-        die(str(e))
-    if args.only:
-        want = [x.strip() for x in args.only.split(",")]
-        tests = [t for t in tests if t["id"] in want or t["id"][0] in want]
-        if not tests:
-            die(f"no test named {args.only}")
-    if args.failed:
-        failed = last_failed(os.path.join(rig.out, "verdicts.md"))
-        if failed is None:
-            die("no target/rig/verdicts.md to read the failures from")
-        tests = [t for t in tests if t["id"] in failed]
-        if not tests:
-            die("the last run's verdicts list no FAIL")
-        say(f"  --failed: {', '.join(t['id'] for t in tests)}")
 
     if not args.no_build:
         say("▶ cargo build -p mesimon")
