@@ -76,52 +76,65 @@ impl ProcessIdentity {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn process_identity(pid: libc::pid_t) -> Result<Option<ProcessIdentity>> {
+    #[cfg(test)]
+    let result =
+        tests::identity_fault(pid).map_or_else(|| read_identity(pid), |err| Err(err.into()));
+    #[cfg(not(test))]
+    let result = read_identity(pid);
+    match result {
+        Err(err)
+            if err
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| matches!(e.raw_os_error(), Some(libc::ESRCH | libc::ENOENT))) =>
+        {
+            Ok(None)
+        }
+        result => result.map(Some).with_context(|| format!("cannot identify process {pid}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_identity(pid: libc::pid_t) -> Result<ProcessIdentity> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     let read = unsafe {
         libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size)
     };
+    if read <= 0 {
+        return Err(io::Error::last_os_error().into());
+    }
     if read != size {
-        let error = std::io::Error::last_os_error();
-        if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::ENOENT)) {
-            return Ok(None);
-        }
-        return Err(anyhow!("cannot identify process {pid}: {error}"));
+        bail!("incomplete process identity ({read} of {size} bytes)");
     }
     let info = unsafe { info.assume_init() };
-    Ok(Some(ProcessIdentity {
+    Ok(ProcessIdentity {
         pid,
         parent: info.pbi_ppid as i32,
         group: info.pbi_pgid as i32,
         started: (info.pbi_start_tvsec, info.pbi_start_tvusec),
         zombie: info.pbi_status == libc::SZOMB,
         stopped: info.pbi_status == libc::SSTOP,
-    }))
+    })
 }
 
 #[cfg(target_os = "linux")]
-fn process_identity(pid: libc::pid_t) -> Result<Option<ProcessIdentity>> {
-    let text = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
+fn read_identity(pid: libc::pid_t) -> Result<ProcessIdentity> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
     // comm is parenthesized and may itself contain spaces/parentheses.
     let tail = text.rsplit_once(')').context("malformed process stat")?.1;
     let fields: Vec<_> = tail.split_whitespace().collect();
     if fields.len() < 20 {
         bail!("truncated process stat");
     }
-    Ok(Some(ProcessIdentity {
+    Ok(ProcessIdentity {
         pid,
         parent: fields[1].parse()?,
         group: fields[2].parse()?,
         started: (fields[19].parse()?, 0),
         zombie: fields[0] == "Z",
         stopped: matches!(fields[0], "T" | "t"),
-    }))
+    })
 }
 
 fn process_table() -> Result<BTreeMap<libc::pid_t, ProcessIdentity>> {
@@ -174,18 +187,50 @@ fn process_table() -> Result<BTreeMap<libc::pid_t, ProcessIdentity>> {
 #[derive(Default)]
 struct ProcessTree {
     known: BTreeMap<libc::pid_t, ProcessIdentity>,
+    // Last verified identities only. These cannot seed ancestry or receive a
+    // signal until a fresh read matches the saved start time.
+    unverified: BTreeMap<libc::pid_t, ProcessIdentity>,
+    log: Option<File>,
     server: Option<ProcessIdentity>,
     uncertain: bool,
     next_sample: Option<Instant>,
 }
 impl ProcessTree {
+    fn inspect(&mut self, pid: libc::pid_t) -> Result<Option<ProcessIdentity>> {
+        match process_identity(pid) {
+            Err(error)
+                if error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|e| e.kind() == ErrorKind::PermissionDenied) =>
+            {
+                // A hidden process could fork and reparent a tool between
+                // samples. Even a later identity match cannot close that gap.
+                self.uncertain = true;
+                if !self.unverified.contains_key(&pid) {
+                    if let Some(log) = &mut self.log {
+                        let _ = writeln!(log, "Codex runtime ownership check: {error:#}");
+                    }
+                }
+                if let Some(before) = self.known.remove(&pid) {
+                    self.unverified.insert(pid, before);
+                }
+                Ok(None)
+            }
+            Ok(None) => {
+                self.unverified.remove(&pid);
+                Ok(None)
+            }
+            result => result,
+        }
+    }
+
     fn root(&mut self, pid: u32, server: bool) -> Result<()> {
-        let identity = process_identity(pid as i32).inspect_err(|_| {
+        let Some(identity) = self.inspect(pid as i32).inspect_err(|_| self.uncertain = true)?
+        else {
+            // Child::try_wait still watches the direct child. Without a
+            // starting identity it cannot establish ownership of descendants.
             self.uncertain = true;
-        })?;
-        let Some(identity) = identity else {
-            self.uncertain = true;
-            bail!("owned process vanished before identification");
+            return Ok(());
         };
         if server {
             self.server = Some(identity.clone());
@@ -210,7 +255,7 @@ impl ProcessTree {
             if children.is_empty() {
                 break;
             }
-            if self.known.len() + children.len() > 4096 {
+            if self.known.len() + self.unverified.len() + children.len() > 4096 {
                 self.uncertain = true;
                 bail!("owned descendant bound exceeded");
             }
@@ -221,14 +266,25 @@ impl ProcessTree {
 
     fn refresh(&mut self, closing: bool) -> Result<()> {
         let mut table = process_table()?;
-        for identity in self.known.values() {
-            // Table omission could be a permission failure, not an exit.
-            if let std::collections::btree_map::Entry::Vacant(entry) = table.entry(identity.pid) {
-                if let Some(current) = process_identity(identity.pid)? {
-                    entry.insert(current);
-                }
+        let missing: Vec<_> = self
+            .known
+            .keys()
+            .chain(self.unverified.keys())
+            .filter(|pid| !table.contains_key(pid))
+            .copied()
+            .collect();
+        for pid in missing {
+            if let Some(current) = self.inspect(pid)? {
+                table.insert(pid, current);
             }
         }
+        self.unverified.retain(|pid, before| {
+            let Some(current) = table.get(pid) else { return true };
+            if before.same(current) && !current.zombie {
+                self.known.insert(*pid, before.clone());
+            }
+            false
+        });
         if !closing
             && self.server.as_ref().is_some_and(|server| {
                 !table
@@ -240,14 +296,14 @@ impl ProcessTree {
             // before a sample. Never claim a complete cleanup audit in that gap.
             self.uncertain = true;
         }
-        self.known.retain(|pid, identity| {
-            table.get(pid).is_some_and(|current| identity.same(current) && !current.zombie)
-        });
-        for (pid, before) in &mut self.known {
-            if let Some(current) = table.get(pid) {
-                *before = current.clone();
+        self.known.retain(|pid, before| {
+            let Some(current) = table.get(pid) else { return false };
+            if !before.same(current) || current.zombie {
+                return false;
             }
-        }
+            *before = current.clone();
+            true
+        });
         self.extend(&table)?;
         Ok(())
     }
@@ -276,12 +332,16 @@ impl ProcessTree {
         }
     }
 
-    fn signal(&self, signal: libc::c_int) -> Result<()> {
-        for before in self.known.values() {
-            if let Some(current) = process_identity(before.pid)? {
-                if before.same(&current) && !current.zombie {
-                    signal_owned(before.pid, signal)?;
-                }
+    fn signal(&mut self, signal: libc::c_int) -> Result<()> {
+        let targets: Vec<_> = self.known.keys().copied().collect();
+        for pid in targets {
+            if self
+                .inspect(pid)?
+                .is_some_and(|current| self.known[&pid].same(&current) && !current.zombie)
+            {
+                signal_owned(pid, signal)?;
+            } else {
+                self.known.remove(&pid);
             }
         }
         Ok(())
@@ -396,18 +456,6 @@ impl Drop for Owned {
     }
 }
 
-fn process_exists(target: libc::pid_t) -> Result<bool> {
-    if unsafe { libc::kill(target, 0) } == 0 {
-        return Ok(true);
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(false)
-    } else {
-        Err(error.into())
-    }
-}
-
 fn signal_owned(target: libc::pid_t, signal: libc::c_int) -> Result<()> {
     if unsafe { libc::kill(target, signal) } == 0 {
         return Ok(());
@@ -430,7 +478,10 @@ fn stop(child: &mut Child) -> Result<()> {
     for (signal, grace) in
         [(libc::SIGTERM, Duration::from_secs(2)), (libc::SIGKILL, Duration::from_secs(2))]
     {
-        if signal == libc::SIGKILL && process_exists(target)? {
+        if signal == libc::SIGKILL {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
             eprintln!("Codex runtime: force-stopping owned child {target}");
             signal_owned(target, signal)?;
         }
@@ -590,6 +641,7 @@ fn relay(
     }
     let log_path = config.snapshot_path.with_extension("app-server.log");
     let log = OpenOptions::new().create(true).append(true).mode(0o600).open(&log_path)?;
+    owned.tree.log = Some(log.try_clone()?);
     let mut server = Command::new(&config.executable);
     server
         .args(&config.config_flags)
@@ -660,6 +712,17 @@ fn relay(
             .map_err(|e| anyhow!("Codex app-server handshake: {e}"))?;
     native.get_mut().upgraded = true;
     upstream.get_mut().upgraded = true;
+    relay_connected(config, observation, owned, signals, native, upstream)
+}
+
+fn relay_connected(
+    config: &RuntimeConfig,
+    observation: &mut Observation,
+    owned: &mut Owned,
+    signals: &mut Signals,
+    mut native: WebSocket<RelayStream>,
+    mut upstream: WebSocket<RelayStream>,
+) -> Result<()> {
     let fds = [
         native.get_ref().socket.as_raw_fd(),
         upstream.get_ref().socket.as_raw_fd(),
@@ -1522,6 +1585,17 @@ mod tests {
     use super::super::AskKind;
     use super::*;
 
+    thread_local! {
+        static IDENTITY_FAULT: std::cell::Cell<Option<(i32, i32)>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn identity_fault(pid: i32) -> Option<io::Error> {
+        IDENTITY_FAULT
+            .get()
+            .filter(|(target, _)| *target == pid)
+            .map(|(_, errno)| io::Error::from_raw_os_error(errno))
+    }
+
     fn config() -> RuntimeConfig {
         RuntimeConfig {
             session: uuid::Uuid::nil(),
@@ -2116,6 +2190,110 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r["method"].as_str(), Some("thread/resume" | "turn/start"))));
         }
+    }
+
+    fn working_relay_loses_a_descendant(errno: i32) {
+        use std::io::{BufRead, BufReader};
+        use tungstenite::protocol::Role;
+
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let mut config = config();
+        config.snapshot_path = dir.path().join("snapshot");
+        config.preview_path = dir.path().join("preview");
+        config.upstream_socket = dir.path().join("upstream");
+        let _listener = UnixListener::bind(&config.upstream_socket).unwrap();
+
+        // The server waits for its tool. Closing stdin also ends the tool on
+        // an assertion failure, independently of the ownership sampler.
+        let mut owned = Owned::default();
+        let log = config.snapshot_path.with_extension("app-server.log");
+        owned.tree.log = Some(File::create(&log).unwrap());
+        let mut server = Command::new("sh")
+            .args(["-c", "exec 3<&0; cat <&3 >/dev/null & echo $!; wait"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(server.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let tool: i32 = line.trim().parse().unwrap();
+        owned.tree.root(server.id(), true).unwrap();
+        owned.server = Some(server);
+        owned.tree.refresh(false).unwrap();
+        assert!(owned.tree.known.contains_key(&tool));
+
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"working"}}));
+        observer.publish(&config).unwrap();
+        let heartbeat = observer.snapshot.heartbeat_ms;
+        let (native, relay_in) = UnixStream::pair().unwrap();
+        let (relay_out, _server_peer) = UnixStream::pair().unwrap();
+        let socket = |stream, role| {
+            let mut stream = RelayStream::new(stream).unwrap();
+            stream.upgraded = true;
+            WebSocket::from_raw_socket(stream, role, Some(socket_config()))
+        };
+        let path = config.snapshot_path.clone();
+        let quit = std::thread::spawn(move || {
+            let mut native = WebSocket::from_raw_socket(native, Role::Client, None);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                let snapshot: Snapshot =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if snapshot.heartbeat_ms > heartbeat {
+                    assert_eq!(snapshot.state, SessionState::Running);
+                    assert_eq!(snapshot.turn_id.as_deref(), Some("working"));
+                    native.close(None).unwrap();
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        });
+        let mut signals = Signals::install().unwrap();
+        IDENTITY_FAULT.set(Some((tool, errno)));
+        let result = relay_connected(
+            &config,
+            &mut observer,
+            &mut owned,
+            &mut signals,
+            socket(relay_in, Role::Server),
+            socket(relay_out, Role::Client),
+        );
+        let continued = quit.join().unwrap();
+        result.unwrap();
+        assert!(continued, "no working heartbeat after the identity check");
+        assert!(!owned.tree.known.contains_key(&tool));
+        assert_eq!(owned.tree.uncertain, errno == libc::EPERM);
+        owned.tree.refresh(false).unwrap();
+        assert!(owned.tree.known.contains_key(&(owned.server.as_ref().unwrap().id() as i32)));
+        assert_eq!(owned.tree.unverified.contains_key(&tool), errno == libc::EPERM);
+        let logged = std::fs::read_to_string(log).unwrap();
+        if errno == libc::EPERM {
+            assert_eq!(logged.lines().count(), 1, "{logged}");
+            assert!(logged.contains(&format!("cannot identify process {tool}")), "{logged}");
+        } else {
+            assert!(logged.is_empty());
+        }
+        IDENTITY_FAULT.set(None);
+        owned.tree.refresh(false).unwrap();
+        assert!(owned.tree.known.contains_key(&tool));
+        // A denial between the cleanup scan and its signal has the same rule.
+        IDENTITY_FAULT.set(Some((tool, errno)));
+        owned.tree.signal(libc::SIGCONT).unwrap();
+        assert!(!owned.tree.known.contains_key(&tool));
+        IDENTITY_FAULT.set(None);
+        owned.server.as_mut().unwrap().stdin.take();
+    }
+
+    #[test]
+    fn working_relay_survives_descendant_eperm() {
+        working_relay_loses_a_descendant(libc::EPERM);
+    }
+
+    #[test]
+    fn working_relay_survives_descendant_esrch() {
+        working_relay_loses_a_descendant(libc::ESRCH);
     }
 
     #[test]

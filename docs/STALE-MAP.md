@@ -48667,3 +48667,37 @@ The daemon now passes the tag name and removal word into the call that records
 that act. An own-ticket tag returns with its details scoped to that call. The
 test reads `crown-acts.jsonl` and expects exactly the two moves, each with its
 destination column.
+
+## A denied descendant identity check leaves a working Codex turn running (T-1379, 2026-11-20)
+
+T-1370 lost its turn after macOS denied a second identity read for PID 46887.
+The regression starts a real shell with a live child, samples its ancestry,
+and injects an errno for that child's identity read during a foreground turn
+on the connected WebSocket relay. Before the fix, EPERM for PID 54001 returned
+from the relay before the next working heartbeat. The ESRCH case already
+passed. After the fix both cases published a later Running heartbeat for the
+same turn and forwarded the native peer's close. Both dropped the PID from the
+verified descendants. The two cases together took 1.03 s on macOS.
+
+On EPERM or EACCES the runtime logs the first denial for the PID during that
+gap and saves its last verified identity separately. Other descendants still
+get sampled. Cleanup excludes the unreadable PID from signals and ancestry.
+A later read can recover a detached tool by matching its PID and start time.
+ESRCH or ENOENT drops the saved identity. A changed start time invalidates it.
+An initial denial for a direct child leaves its child handle available for
+exit detection and reaping. The final direct-child check now uses that handle.
+
+The cost is cleanup certainty. A tool could have forked and reparented another
+process while inspection was denied, so even recovery of the original identity
+leaves the cleanup acknowledgement withheld. An unreadable tool may survive.
+
+The history refutes a sampling-rate increase as the explanation for T-1370.
+Before T-1341 the relay already sampled at one-second intervals from its
+250 ms heartbeat. Commit bf7ab0d9 briefly sampled only at cleanup. Commit
+a3b38fd3 restored the one-second live scan with an independent poll deadline.
+
+The first regression run stopped at the sandbox's Unix-socket restriction.
+The guarded rerun outside the sandbox reproduced the EPERM failure. The
+post-fix regression, `cargo ut` (3,354 passed, 13 ignored), and all 42 tests
+in the Codex startup recovery, provider, external provider and trust modules
+passed with clean fixture audits.
