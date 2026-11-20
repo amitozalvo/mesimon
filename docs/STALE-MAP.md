@@ -48798,3 +48798,26 @@ losing the live archive capability or seeing the agent wake clears the choice.
 The Chromium phone fixture counted zero edits on the first tap and one archive
 on confirmation from each surface. An unmerged worktree survives archiving,
 so the phone uses the existing daemon gates and wire request.
+## A background task's report keeps an ordinary tool approval standing (T-1288, 2026-11-20)
+
+A Claude task notification arrives as UserPromptSubmit. Its submit can start
+a turn, but it supplies no decision about a Bash approval. The daemon keeps
+the open permission stream. In the attention machine the report has no target
+while permission is held, so an answer already settling keeps its deadline.
+
+T-1287's November 13 example was a question. Its subagent report queued
+while the question stood, but the lead transcript recorded the person's
+answer 12 ms before the notification's submit. No lost approval was confirmed
+there. The unpaired hook e2e reproduced the visible failure on the pre-fix
+code: the card showed `!`, the submit scheduled a leave for +1,500 ms, and
+the tick committed Running at +1,632 ms. The card's mark was gone at the
+two-second check. After the fix the same check still read `!`, and a genuine
+prompt then cleared it. On both Claude roads the deterministic paired case drives the real
+hook handler, the crown's ticket view and a one-shot phone answer over the
+original request socket.
+
+A held Stop has a different job. Four of 439 saved Stops in the November
+14–20 feed were superseded by task notifications. Claude resumed in all four
+and replied without calling a tool in two. The held-Stop e2e follows that
+order through the later Stop and delivery. The person kept the crown's
+told-hand wording outside this change.

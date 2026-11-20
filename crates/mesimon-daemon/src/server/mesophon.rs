@@ -10542,19 +10542,8 @@ mod keys_resume_tests {
         assert_eq!(refusal(d.control_keys(&phone(), &ticket, &session, None, line)), went);
     }
 
-    /// T-1227: a Codex approval the board cannot bind exactly is no card,
-    /// so the Terminal tab's keys answer it; one it can is a card, and the
-    /// keys wait for it; a card whose walk is refused on a screen it cannot
-    /// bind ends at once, its receipt saying why, and the keys go in.
-    #[test]
-    fn an_unbindable_codex_approval_is_no_card_and_a_refused_walk_ends_one() {
-        use crate::agents::codex::{Ask, AskKind};
+    fn pair_phone(d: &mut Daemon) -> (BoardId, DeviceId) {
         use crate::team::device::DeviceFile;
-        use mesimon_core::board::Reason;
-        let (_dir, mut d, _rx, t, id) = bed(true);
-        let (ticket, session) = (t.to_string(), id.to_string());
-        d.board.sessions[0].kind = SessionKind::Codex;
-        d.board.sessions[0].set_state(SessionState::RequiresAction { reason: Reason::Permission });
         // A phone paired to this board, online.
         let keys = mesimon_team::crypto::DeviceKeys::generate();
         let (grant, device) = (BoardId::random(), keys.id());
@@ -10565,16 +10554,93 @@ mod keys_resume_tests {
             credential: Some(credential),
             ..DeviceFile::fresh("host".into(), relay)
         });
+        let host = mesimon_team::crypto::DeviceKeys::generate();
         d.control.stored = Some(Stored {
             schema: 1,
             board: BoardId::random(),
-            host: keys.id(),
+            host: host.id(),
             grants: vec![Grant { id: grant, device, public: keys.public(), name: "p".into() }],
             filed: Vec::new(),
             noted: Vec::new(),
             shelf_off: false,
         });
         d.control.online = true;
+        d.control.keys = Some(host);
+        d.control_peer("p".into(), device, "p".into(), keys.public(), None, ObjectId::random());
+        (grant, device)
+    }
+
+    #[test]
+    fn a_task_notification_keeps_the_tool_approval_until_the_phone_answers() {
+        use crate::server::queued_person_push_tests::prompt_frame;
+        for road in [Road::Hooks, Road::Mod] {
+            let (_dir, mut d, _rx, ticket, id) = bed(true);
+            d.board.sessions[0].road = road;
+            let (grant, device) = pair_phone(&mut d);
+            let by = Principal::Paired { device: device.to_hex(), grant: grant.to_hex() };
+            let frame = HookFrame {
+                event: "PermissionRequest".into(),
+                payload: serde_json::json!({"hook_event_name":"PermissionRequest", "session_id":id,
+                    "tool_name":"Bash", "tool_input":{"command":"ls"}}),
+                ..prompt_frame(id, road, "")
+            };
+            d.on_hook(frame.clone());
+            let (host, mut hook) = UnixStream::pair().unwrap();
+            d.control_permission_wait(frame.clone(), host);
+            let request = d.control_permission_of(id).unwrap().request.clone();
+            let notice =
+                prompt_frame(id, road, "<task-notification>build finished</task-notification>");
+            d.on_hook(notice.clone());
+            let at = now_ms() + attention::SETTLE_MS + 1;
+            if let Some(change) = d.machines.get_mut(&id).unwrap().tick(at) {
+                d.apply_change(id, &change, None, None);
+            }
+            let view = d.agent_ticket_view(ticket).unwrap();
+            assert_eq!(view.state.unwrap().state, "needs-you", "{road:?} after settle");
+            assert_eq!(view.needs_you.unwrap().reason, "permission");
+            assert_eq!(d.control_permission_of(id).unwrap().request, request);
+            let answer = |d: &mut Daemon, command| {
+                d.control_permission_answer(
+                    &by,
+                    "p",
+                    command,
+                    &ticket.to_string(),
+                    &id.to_string(),
+                    &request,
+                    api::PermissionDecision::Allow,
+                )
+            };
+            assert!(
+                matches!(answer(&mut d, 1), Reply::Delivery { status, .. } if status == "decision_sent")
+            );
+            assert!(matches!(answer(&mut d, 2), Reply::Rejected { .. }));
+            let decision: api::PermissionDecision = serde_json::from_reader(&mut hook).unwrap();
+            assert_eq!(decision, api::PermissionDecision::Allow);
+
+            d.on_hook(HookFrame { event: "PostToolUse".into(), ..frame });
+            let pending = d.machines[&id].view().pending.unwrap();
+            d.on_hook(notice);
+            assert_eq!(d.machines[&id].view().pending.as_ref(), Some(&pending));
+            assert_eq!(
+                d.machines.get_mut(&id).unwrap().tick(pending.deadline).unwrap().to,
+                SessionState::Running
+            );
+        }
+    }
+
+    /// T-1227: a Codex approval the board cannot bind exactly is no card,
+    /// so the Terminal tab's keys answer it; one it can is a card, and the
+    /// keys wait for it; a card whose walk is refused on a screen it cannot
+    /// bind ends at once, its receipt saying why, and the keys go in.
+    #[test]
+    fn an_unbindable_codex_approval_is_no_card_and_a_refused_walk_ends_one() {
+        use crate::agents::codex::{Ask, AskKind};
+        use mesimon_core::board::Reason;
+        let (_dir, mut d, _rx, t, id) = bed(true);
+        let (ticket, session) = (t.to_string(), id.to_string());
+        d.board.sessions[0].kind = SessionKind::Codex;
+        d.board.sessions[0].set_state(SessionState::RequiresAction { reason: Reason::Permission });
+        let (grant, device) = pair_phone(&mut d);
         let ask = |n: &str, command: &str| Ask {
             id: n.into(),
             kind: AskKind::Approval {

@@ -6443,7 +6443,11 @@ impl Daemon {
                 return;
             }
         }
-        self.control_release_permission(id, &frame);
+        let notified =
+            self.frame_words.as_deref().is_some_and(mesimon_core::adopt::is_task_notification);
+        if !notified {
+            self.control_release_permission(id, &frame);
+        }
         self.control_observe_dialog(id, &frame);
         let answered = self.dialog_answered(id, &frame);
         // An answer read against the held call (T-988): a sibling still to be
@@ -6498,11 +6502,6 @@ impl Daemon {
             // that stands for a person counts it: no queued or parked ask
             // dropped, no paste acked, no hand lowered, no drag guard cleared,
             // no dialog spoken past.
-            let notified = matches!(sig, Signal::UserPromptSubmit)
-                && self
-                    .frame_words
-                    .as_deref()
-                    .is_some_and(mesimon_core::adopt::is_task_notification);
             if notified {
                 if let Some(t) = self.board.session(id).map(|s| s.ticket) {
                     self.crown_notified(t, id);
@@ -6553,7 +6552,8 @@ impl Daemon {
                 .machines
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
-            let (change, decision) = machine.apply_explained(&sig, now);
+            let attention_signal = if notified { &Signal::TaskNotification } else { &sig };
+            let (change, decision) = machine.apply_explained(attention_signal, now);
             self.feed.state_decision(id, &frame.event, &decision);
             let crashed = SessionState::Exited { reason: ExitReason::Crashed };
             let crashed_now = change.as_ref().is_some_and(|c| c.to == crashed && c.from != c.to);

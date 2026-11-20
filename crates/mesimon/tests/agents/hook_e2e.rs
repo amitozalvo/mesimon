@@ -149,6 +149,32 @@ fn m2_attention_headless() {
     // Automove: requires_action is not "working" — the ticket stays in TODO.
     assert_eq!(board.ticket(ticket).unwrap().column, "TODO");
 
+    // An unpaired board still owes the person the permission mark. Wait for the
+    // submit decision before timing its settle, so a delayed hook cannot pass.
+    let card_mark = mesimon_tui::test_support::session_card_mark;
+    assert_eq!(card_mark(rec), Some('!'));
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "UserPromptSubmit",
+        None,
+        r#"{"prompt":"<task-notification>build finished</task-notification>"}"#,
+    );
+    wait_until(Duration::from_secs(5), "notification ingested", || {
+        std::fs::read_to_string(paths.activity_log()).unwrap_or_default().lines().any(|line| {
+            line.contains(r#""source":"UserPromptSubmit""#) && line.contains(&sid.to_string())
+        })
+    });
+    std::thread::sleep(Duration::from_millis(mesimon_core::attention::SETTLE_MS + 500));
+    let snapshot = board_of(c.request(Command::Snapshot)).0;
+    let rec = snapshot.session(sid).unwrap();
+    assert_eq!(
+        card_mark(rec),
+        Some('!'),
+        "permission card after notification and settle: {:?}",
+        rec.state
+    );
+
     // The human-deny path: nothing fires but the next prompt; settle clears.
     watcher.drain_events();
     hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);

@@ -239,6 +239,30 @@ fn a_findings_turn_reaches_the_board_before_the_train_or_the_crown() {
     assert!(!t.feed().contains("async_hook_unobserved"), "{}", t.feed());
 }
 
+/// A background result can start a whole reply with no tool calls between
+/// its submit and its Stop. Only that later Stop can deliver the work.
+#[test]
+fn a_task_notification_over_a_held_stop_delivers_after_its_own_stop() {
+    let Some(mut t) = Case::boot("async-notified", "600000") else { return };
+    t.child();
+    t.send("Stop");
+    t.held();
+    t.send_with(
+        "UserPromptSubmit",
+        r#"{"prompt":"<task-notification>tests passed</task-notification>"}"#,
+    );
+    wait_until(Duration::from_secs(5), "notification resumed the worker", || {
+        t.c.board().live_agent(t.worker).unwrap().state_word() == "working"
+    });
+    t.release();
+    assert_eq!(t.wakes(), 0);
+    t.send("Stop");
+    t.c.await_state(t.sid, "notification reply ended", |s| {
+        *s == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
+    wait_until(Duration::from_secs(10), "delivery after the reply", || t.wakes() == 1);
+}
+
 #[test]
 fn a_never_ending_child_releases_at_the_named_cap_and_records_it() {
     let Some(mut t) = Case::boot("async-cap", "4000") else { return };

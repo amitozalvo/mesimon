@@ -268,6 +268,8 @@ pub enum Signal {
         kind: EndKind,
     },
     UserPromptSubmit,
+    /// A background task reported back through a submit hook.
+    TaskNotification,
     /// A stopped lead with live agent tasks is working; watch-only work is
     /// monitoring. Teammates are weighed against their explicit idle notices.
     Stop {
@@ -827,6 +829,7 @@ impl Machine {
                 }
             }
             Signal::UserPromptSubmit
+            | Signal::TaskNotification
             | Signal::TurnStarted
             | Signal::TurnEnded { .. }
             | Signal::Ready
@@ -1083,7 +1086,14 @@ impl Machine {
             // as PaneDied.
             Signal::SessionEnd { kind: EndKind::Resume | EndKind::Clear } => None,
             Signal::SessionEnd { kind } => t(S::Exited { reason: kind.exit_reason() }),
-            Signal::UserPromptSubmit => t(S::Running),
+            // A background report can start a turn, but says nothing about a
+            // standing approval. Leave any independently settling answer alone.
+            Signal::TaskNotification
+                if self.state == (S::RequiresAction { reason: Reason::Permission }) =>
+            {
+                None
+            }
+            Signal::TaskNotification | Signal::UserPromptSubmit => t(S::Running),
             // stop_hook_active describes a PREVIOUS continuation. It does not
             // say this stop is blocked (real 2.1.266 stop-continuation capture).
             Signal::Stop { has_agent_id: true, .. } => None, // nested, never top-level

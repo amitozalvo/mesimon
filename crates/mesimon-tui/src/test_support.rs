@@ -6,6 +6,11 @@ use anyhow::{bail, Context, Result};
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
+/// The glyph the board draws for a ticket with this one session.
+pub fn session_card_mark(rec: &mesimon_core::board::SessionRecord) -> Option<char> {
+    crate::glyphs::card_glyph(&[rec], false, crate::glyphs::Tier::Unicode, 0).map(|(mark, _)| mark)
+}
+
 /// Exercise the real preview reader and asynchronous Enter road without
 /// taking the test runner's terminal. The resulting argv is the same one
 /// the outer event loop hands to tmux.
