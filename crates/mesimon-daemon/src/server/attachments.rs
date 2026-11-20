@@ -70,16 +70,12 @@ impl Daemon {
             Ok(prepared) => prepared,
             Err(e) => return Err(format!("could not keep the pictures: {e:#}")),
         };
-        for (meta, bytes) in images {
-            if let Err(e) = attachments::save(&self.paths, &key, &meta, &bytes) {
-                let _ = attachments::discard_files(&self.paths, &key, uploads);
-                return Err(format!("could not keep a picture: {e:#}"));
-            }
-        }
+        let records = attachments::save_uploads(&self.paths, &key, images)
+            .map_err(|e| format!("could not keep a picture: {e:#}"))?;
         let before = self.checking_steer(ticket);
         let response = send(self, text);
         if refused(&response) {
-            let _ = attachments::discard_files(&self.paths, &key, uploads);
+            let _ = attachments::discard_files(&self.paths, &key, &records);
         } else if self.checking_steer(ticket).is_some_and(|id| Some(id) != before) {
             self.uploads.hold(uploads, true);
             let uploads = uploads.to_vec();
@@ -87,7 +83,7 @@ impl Daemon {
                 if pasted {
                     d.uploads.committed(&uploads);
                 } else {
-                    let _ = attachments::discard_files(&d.paths, &key, &uploads);
+                    let _ = attachments::discard_files(&d.paths, &key, &records);
                     d.uploads.hold(&uploads, false);
                 }
             });
@@ -121,19 +117,14 @@ impl Daemon {
             Ok(prepared) => prepared,
             Err(e) => return Response::Err { message: format!("could not save pictures: {e:#}") },
         };
-        let mut response = Response::Ok;
-        for (meta, bytes) in images {
-            if let Err(e) = attachments::save(&self.paths, &key, &meta, &bytes) {
-                response = Response::Err { message: format!("could not save picture: {e:#}") };
-                break;
-            }
-        }
-        if matches!(response, Response::Ok) {
-            response = self.write_note(ticket, note, text, None, by);
-        }
+        let records = match attachments::save_uploads(&self.paths, &key, images) {
+            Ok(records) => records,
+            Err(e) => return Response::Err { message: format!("could not save picture: {e:#}") },
+        };
+        let mut response = self.write_note(ticket, note, text, None, by);
         if matches!(response, Response::NoteWritten { .. }) {
             self.uploads.committed(&uploads);
-        } else if let Err(cleanup) = attachments::discard_files(&self.paths, &key, &uploads) {
+        } else if let Err(cleanup) = attachments::discard_files(&self.paths, &key, &records) {
             if let Response::Err { message } = &mut response {
                 message.push_str(&format!("; picture cleanup failed: {cleanup:#}"));
             }

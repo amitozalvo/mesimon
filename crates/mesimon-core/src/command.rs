@@ -2351,14 +2351,16 @@ pub enum Response {
     Notes {
         notes: Vec<NoteBody>,
     },
-    /// Receipt for one accepted upload chunk, including the first minted ID.
     FileAttachment {
         name: String,
+        #[serde(default)]
+        mime_type: crate::attachment::FileType,
         bytes: usize,
         path: std::path::PathBuf,
         #[serde(skip_serializing_if = "Option::is_none")]
         part: Option<crate::attachment::FilePart>,
     },
+    /// Receipt for one accepted upload chunk, including the first minted ID.
     AttachmentUploaded {
         upload: ulid::Ulid,
     },

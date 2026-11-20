@@ -49008,3 +49008,20 @@ checkout at 15:37 UTC the same day, so what drops it was not established.
 `DYLD_FALLBACK_LIBRARY_PATH` to the sysroot's lib and execs `rust-lld`. A variable
 set inside the `/bin/sh` script survives the exec, since `rust-lld` is not a
 protected binary. Both musl targets linked with it, and both binaries are static.
+
+## File attachments carry a content-derived type (T-1387, 2026-11-21)
+
+An extensionless PDF on T-1273 exposed a gap in T-1375. Its bytes survived,
+but its generated `.bin` path made a PDF reader require a renamed copy.
+The daemon now detects the type when the last upload chunk arrives. The
+file kind in the sidecar carries `mime_type`, which supplies both the
+payload suffix and the media type in `read_attachment`. Old file records
+without that field resolve to their existing `.bin` as
+`application/octet-stream`. The original basename remains display data.
+
+The signature table is built in. The clipboard stack's transitive
+`tree_magic_mini` needs a host MIME database in its current configuration.
+Word and Excel packages share ZIP's signature, so the detector checks the
+central directory for the Office manifest and main document or workbook
+part. Rollback keeps each prepared record so it can remove its payload
+even if writing the sidecar failed.

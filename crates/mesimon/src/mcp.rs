@@ -518,10 +518,9 @@ fn render(resp: Response) -> Value {
         Response::Note { text: body, .. } => {
             json!({ "content": [{ "type": "text", "text": body }], "isError": false })
         }
-        Response::FileAttachment { name, bytes, path, part } => {
-            let result = json!({ "name": name, "bytes": bytes, "path": path, "part": part });
-            json!({ "content": [{ "type": "text", "text": result.to_string() }], "isError": false })
-        }
+        Response::FileAttachment { name, mime_type, bytes, path, part } => text(
+            &json!({ "name": name, "mime_type": mime_type, "bytes": bytes, "path": path, "part": part }),
+        ),
         Response::Attachment { data, .. } => json!({
             "content": [{ "type": "image", "mimeType": "image/png", "data": data }],
             "isError": false

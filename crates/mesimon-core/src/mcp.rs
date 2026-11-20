@@ -698,7 +698,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "read_attachment",
-            "description": "Reads a mesimon-attachment link from a prompt or note on this ticket, or with key another ticket's (crown only). Pictures return image content. Files return their local path, name and byte count. An offset or limit also returns a byte range as UTF-8 or base64.",
+            "description": "Reads a mesimon-attachment link from a prompt or note on this ticket, or with key another ticket's (crown only). Pictures return image content. Files return their local path, name, media type and byte count. An offset or limit also returns a byte range as UTF-8 or base64.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

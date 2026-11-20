@@ -1,4 +1,7 @@
 //! Ticket-local pictures. Pure limits, metadata and Markdown references.
+mod file_type;
+pub use file_type::FileType;
+
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -42,6 +45,8 @@ pub enum Kind {
     Png,
     File {
         name: String,
+        #[serde(default)]
+        mime_type: FileType,
     },
 }
 

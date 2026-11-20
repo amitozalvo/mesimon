@@ -8,6 +8,16 @@ use std::time::Duration;
 
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
+// A one-page PDF with a blank page and its cross-reference table.
+const PDF: &str = concat!(
+    "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9i",
+    "ago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1szIDAgUl0+PgplbmRvYmoKMyAwIG9iago8PC9UeXBl",
+    "L1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA3MiA3Ml0+PgplbmRvYmoKeHJlZgowIDQKMDAw",
+    "MDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTQgMDAwMDAgbiAKMDAw",
+    "MDAwMDEwNSAwMDAwMCBuIAp0cmFpbGVyCjw8L1NpemUgNC9Sb290IDEgMCBSPj4Kc3RhcnR4cmVmCjE2",
+    "OAolJUVPRgo=",
+);
+
 fn upload(c: &mut TestClient) -> ulid::Ulid {
     match c.request(Command::UploadAttachment {
         file: None,
@@ -357,8 +367,8 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
     wait_until(Duration::from_secs(15), "worker", || c.board().live_agent(ticket).is_some());
     let sid = c.board().live_agent(ticket).unwrap().id;
     h.prompt_turn(&mut c, sid);
-    let mut upload = |data: &str| match c.request(Command::UploadAttachment {
-        file: Some(FileUpload { ticket, name: "sample.dat".into() }),
+    let mut upload = |name: &str, data: &str| match c.request(Command::UploadAttachment {
+        file: Some(FileUpload { ticket, name: name.into() }),
         upload: None,
         offset: 0,
         data: data.into(),
@@ -367,13 +377,40 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
         Response::AttachmentUploaded { upload } => upload,
         r => panic!("{r:?}"),
     };
-    let first = upload("YWJj/w==");
-    let empty = upload("");
-    let ask = Command::PromptSession { ticket, text: format!("Compare [sample.dat](mesimon-attachment:{first}) [sample.dat #2](mesimon-attachment:{empty})"), queued: true, immediately: false, accept_plan: false, plan: false, tier: None, resend: false, uploads: vec![first,empty] };
+    let typed = [
+        ("Shares", PDF, "pdf", "application/pdf"),
+        ("Snapshot", PNG, "png", "image/png"),
+        ("Notes", "csOpc3Vtw6k=", "txt", "text/plain"),
+    ]
+    .map(|(name, data, ext, mime)| (upload(name, data), name, ext, mime));
+    let first = upload("sample.dat", "YWJj/w==");
+    let empty = upload("sample.dat", "");
+    let mut links = format!("Compare [sample.dat](mesimon-attachment:{first}) [sample.dat #2](mesimon-attachment:{empty})");
+    let mut uploads = Vec::new();
+    for (id, name, _, _) in typed {
+        links.push_str(&format!(" [{name}](mesimon-attachment:{id})"));
+        uploads.push(id);
+    }
+    uploads.extend([first, empty]);
+    let ask = Command::PromptSession {
+        ticket,
+        text: links,
+        queued: true,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads,
+    };
     let key = c.board().ticket(ticket).unwrap().short_key.clone();
     let dir = mesimon_daemon::attachments::directory(&h.paths, &key);
     std::fs::create_dir_all(dir.join(format!("{empty}.json"))).unwrap();
     err_containing(c.request(ask.clone()), "could not keep");
+    for (id, _, ext, _) in typed {
+        assert!(!dir.join(format!("{id}.{ext}")).exists());
+        assert!(!dir.join(format!("{id}.json")).exists());
+    }
     assert!(!dir.join(format!("{first}.bin")).exists());
     assert!(!dir.join(format!("{empty}.bin")).exists());
     std::fs::remove_dir(dir.join(format!("{empty}.json"))).unwrap();
@@ -387,6 +424,12 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
             .is_some_and(|s| s.contains(&first.to_string()) && s.contains(&empty.to_string()))),
         "the accepted follow-up carries both links"
     );
+    // A file committed by the previous version has a .bin payload and no MIME field.
+    let sidecar = dir.join(format!("{first}.json"));
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+    legacy["kind"].as_object_mut().unwrap().remove("mime_type").unwrap();
+    std::fs::write(sidecar, legacy.to_string()).unwrap();
     drop(c);
     h.restart();
     let mut c = h.client("after restart");
@@ -397,7 +440,17 @@ fn queued_files_survive_restart_and_ticket_lifecycle_with_a_clean_worktree() {
         serde_json::from_str::<serde_json::Value>(result["content"][0]["text"].as_str().unwrap())
             .unwrap()
     };
+    for (id, name, ext, mime) in typed {
+        let meta = read(&mut shim, json!({"attachment":id}));
+        let payload = dir.join(format!("{id}.{ext}"));
+        assert_eq!(meta["name"], name);
+        assert_eq!(meta["mime_type"], mime);
+        assert_eq!(meta["path"], json!(payload));
+        assert_eq!(meta["bytes"], std::fs::metadata(payload).unwrap().len());
+    }
     let meta = read(&mut shim, json!({"attachment":first}));
+    assert_eq!(meta["path"], json!(dir.join(format!("{first}.bin"))));
+    assert_eq!(meta["mime_type"], "application/octet-stream");
     assert_eq!(meta["name"], "sample.dat");
     assert_eq!(meta["bytes"], 4);
     assert_eq!(std::fs::read(meta["path"].as_str().unwrap()).unwrap(), b"abc\xff");

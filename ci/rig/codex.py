@@ -1264,9 +1264,10 @@ def adapter(base):
                 word = "FILE_" + uuid.uuid4().hex[:10]
                 self.reserve_turn()
                 self.calls += 1
-                file_prompt(self.request, session["ticket"], word)
-                self.completed(sid, word)
-                self.mark(assertion="reply contains the word held only in the attached file", passed=True)
+                file_prompt(self.request, session["ticket"], word,
+                            "Read {link}. Reply with its reported MIME type and the word inside, separated by a space.")
+                self.completed(sid, "text/plain " + word)
+                self.mark(assertion="reply contains the MIME type and the word held only in the attached file", passed=True)
                 return
             if self.args.case == "read-other":
                 return self.read_other()

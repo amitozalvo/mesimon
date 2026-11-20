@@ -33,10 +33,10 @@ def file_prompt(request, ticket, word, prompt="What word is inside {link}? Reply
     """Put the proof word only in the bytes and commit on the same connection."""
     import base64
     data = base64.b64encode(word.encode()).decode("ascii")
-    upload = request("upload_attachment", upload=None, file={"ticket": ticket, "name": "sample.bin"},
+    upload = request("upload_attachment", upload=None, file={"ticket": ticket, "name": "sample"},
                      offset=0, data=data, complete=True)["upload"]
     return request("prompt_session", ticket=ticket, queued=False, uploads=[upload],
-                   text=prompt.replace("{link}", f"[sample.bin](mesimon-attachment:{upload})"))
+                   text=prompt.replace("{link}", f"[sample](mesimon-attachment:{upload})"))
 
 
 class WireError(Exception):

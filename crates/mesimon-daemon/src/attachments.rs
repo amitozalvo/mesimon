@@ -10,7 +10,7 @@ use crate::{store, Paths};
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use mesimon_core::attachment::{
-    Attachment, FileUpload, Kind, CHUNK_BYTES, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS,
+    Attachment, FileType, FileUpload, Kind, CHUNK_BYTES, DRAFT_MAX_BYTES, MAX_BYTES, MAX_PIXELS,
 };
 use ulid::Ulid;
 
@@ -154,7 +154,10 @@ impl Uploads {
             let metadata = match &u.file {
                 Some(f) => Ok(Attachment {
                     id,
-                    kind: Kind::File { name: f.name.clone() },
+                    kind: Kind::File {
+                        name: f.name.clone(),
+                        mime_type: FileType::detect(&u.bytes),
+                    },
                     bytes: u.bytes.len(),
                     width: 0,
                     height: 0,
@@ -288,7 +291,7 @@ fn check_dir(dir: &Path) -> Result<()> {
 pub fn payload_path(dir: &Path, meta: &Attachment) -> PathBuf {
     let extension = match meta.kind {
         Kind::Png => "png",
-        Kind::File { .. } => "bin",
+        Kind::File { mime_type, .. } => mime_type.extension(),
     };
     dir.join(format!("{}.{extension}", meta.id))
 }
@@ -305,17 +308,37 @@ pub fn save(paths: &Paths, key: &str, meta: &Attachment, bytes: &[u8]) -> Result
     store::write_atomic(&dir.join(format!("{}.json", meta.id)), &serde_json::to_string(meta)?, mode)
 }
 
-/// Roll back only IDs from a validated, still-owned upload batch. These IDs
-/// cannot belong to a previously committed attachment.
-pub(crate) fn discard_files(paths: &Paths, key: &str, ids: &[Ulid]) -> Result<()> {
+/// Commit a prepared upload batch, keeping the exact records for rollback if delivery fails.
+pub(crate) fn save_uploads(
+    paths: &Paths,
+    key: &str,
+    uploads: Vec<(Attachment, Vec<u8>)>,
+) -> Result<Vec<Attachment>> {
+    let mut records = Vec::new();
+    for (meta, bytes) in uploads {
+        let result = save(paths, key, &meta, &bytes);
+        records.push(meta);
+        if let Err(e) = result {
+            discard_files(paths, key, &records)
+                .context(format!("save failed ({e:#}); rollback failed"))?;
+            return Err(e);
+        }
+    }
+    Ok(records)
+}
+
+/// Only newly minted records from this owned batch may be rolled back.
+pub(crate) fn discard_files(paths: &Paths, key: &str, records: &[Attachment]) -> Result<()> {
     let dir = directory(paths, key);
     if !dir.exists() {
         return Ok(());
     }
     check_dir(&dir)?;
-    for id in ids {
-        for extension in ["png", "bin", "json", "tmp"] {
-            match std::fs::remove_file(dir.join(format!("{id}.{extension}"))) {
+    for meta in records {
+        let payload = payload_path(&dir, meta);
+        for path in [payload.clone(), payload.with_extension("tmp"), payload.with_extension("json")]
+        {
+            match std::fs::remove_file(path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
@@ -366,7 +389,7 @@ pub(crate) fn read_for_agent(
         stat.is_file() && meta.bytes <= MAX_BYTES && stat.len() == meta.bytes as u64,
         "invalid attachment payload"
     );
-    let Kind::File { name } = meta.kind.clone() else {
+    let Kind::File { name, mime_type } = meta.kind.clone() else {
         anyhow::ensure!(offset.is_none() && limit.is_none(), "ranges apply to file attachments");
         let mut bytes = Vec::new();
         file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
@@ -395,7 +418,7 @@ pub(crate) fn read_for_agent(
     } else {
         None
     };
-    Ok(Response::FileAttachment { name, bytes: meta.bytes, path, part })
+    Ok(Response::FileAttachment { name, mime_type, bytes: meta.bytes, path, part })
 }
 
 pub fn collect(paths: &Paths, key: &str) -> Result<Vec<(Attachment, Vec<u8>)>> {
