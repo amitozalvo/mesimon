@@ -48257,3 +48257,27 @@ the bump found two lints from the range, both fixed on the release branch: a nee
 the `owed` closure in `server.rs` and a `type_complexity` on `PeekCache::displayed` (now the
 `Displayed` alias). No state file's format changed (the new `#[serde(default)]` fields are wire
 responses).
+
+## Codex submits shell lines and Remote Control can press Enter from the terminal preview (T-1352, 2026-11-20)
+
+On Codex 0.169.0 a pasted short command changed the composer marker from `›` to
+`!`. Mesimon waited for `›` before sending Enter, and Remote Control refused
+keys while that delivery was pending. A long paste behaved differently. Codex
+drew `› [Pasted Content 1780 chars]` and submitted the expanded text to the
+model when pressed. Seeing the expected character count in the ordinary
+composer was insufficient evidence of shell mode.
+
+For an explicit shell command Mesimon now types the bang, then bracket-pastes
+the body in the same tmux command queue. Only the delayed Enter for that line
+uses the shell composer. Its cursor and command (or the body's paste chip)
+are checked before Enter. A new paste still needs the ordinary composer. An
+idle delivery whose pasted command can no longer be confirmed releases the
+pane after the existing composer wait. Remote Control can also send bare Enter
+with the terminal preview focused, leaving its local line draft in place.
+Its existing button sends Enter alone when the field is empty.
+
+The Codex rig's `shell` case ran short, wrapped and long commands on
+GPT-6.2-Astra high, including a send during an active turn. It checks for
+shell output and the idle seat's pending-input release. The provider regression
+covers a changed draft, and the Chromium phone fixture checks focused Enter
+with an unsent draft and while a line is in flight.

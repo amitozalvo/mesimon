@@ -82,18 +82,54 @@ pub fn preview_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
 pub fn input_ready(screen: &mesimon_backend_tmux::InputScreen) -> bool {
     let Some((x, y)) = screen.cursor else { return false };
     let Some(above) = screen.lines.get(..=y) else { return false };
-    let Some(prompt) = prompt_row(above) else { return false };
+    let Some(prompt) = prompt_row(above, '›') else { return false };
     // Wrapped/multiline input keeps the composer's two-column indentation.
     // Nothing below the cursor (including any status line) participates.
     x >= 2 && above[prompt + 1..].iter().all(|line| line.is_empty() || line.starts_with("  "))
 }
 
-/// The last composer prompt row (`›` alone or before a space) in `above`,
+/// The last composer row with this marker (alone or before a space) in `above`,
 /// the screen's rows down to the cursor's.
-fn prompt_row(above: &[String]) -> Option<usize> {
+fn prompt_row(above: &[String], marker: char) -> Option<usize> {
     above.iter().rposition(|line| {
-        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
+        line.strip_prefix(marker).is_some_and(|text| text.is_empty() || text.starts_with(' '))
     })
+}
+
+/// After a bang paste Codex draws the bang as the prompt marker. Only the
+/// Enter for that shell line may use this box. It is never ready for a
+/// new paste, which could append model input to a command.
+pub fn shell_box_shows(screen: &mesimon_backend_tmux::InputScreen, words: &str) -> bool {
+    let Some(mut rest) = words.strip_prefix('!') else { return false };
+    let Some((x, y)) = screen.cursor else { return false };
+    let Some(above) = screen.lines.get(..=y) else { return false };
+    let Some(row) = prompt_row(above, '!') else { return false };
+    if x < 2 || screen.lines.get(y + 1).is_some_and(|next| next.starts_with("  ")) {
+        return false;
+    }
+    // A long body is a chip, but only inside the shell composer. A chip
+    // in the normal composer would submit the command to the model.
+    if y == row && above[row].starts_with("! [Pasted Content ") {
+        return above[row] == format!("! [Pasted Content {} chars]", rest.chars().count());
+    }
+    let head = above[row].strip_prefix("! ").unwrap_or("");
+    let Some(tail) = rest.strip_prefix(head) else { return false };
+    rest = tail;
+    for line in &above[row + 1..] {
+        let Some(content) = line.strip_prefix("  ").or_else(|| line.is_empty().then_some(""))
+        else {
+            return false;
+        };
+        // Codex can break mid-word or leave the separating blank at the
+        // trimmed end of the preceding tmux row.
+        let Some(tail) =
+            rest.strip_prefix(content).or_else(|| rest.trim_start().strip_prefix(content))
+        else {
+            return false;
+        };
+        rest = tail;
+    }
+    rest.is_empty()
 }
 
 /// An `input_ready` composer whose cursor has left the start of its prompt
@@ -115,7 +151,7 @@ pub fn composer_text(screen: &mesimon_backend_tmux::InputScreen) -> Option<Strin
     }
     let (_, y) = screen.cursor?;
     let above = screen.lines.get(..=y)?;
-    let prompt = prompt_row(above)?;
+    let prompt = prompt_row(above, '›')?;
     let rows = above[prompt..].iter().enumerate().map(|(i, line)| {
         if i == 0 {
             line.strip_prefix('›').unwrap_or(line)
@@ -195,16 +231,26 @@ pub fn steer_sight<E>(
     Ok(SteerSight::Unseen)
 }
 
+/// A steer's Enter requires a populated composer. Shell mode is specific
+/// to the command we pasted, for both the sampled and at-key reads.
+pub fn steer_holds(screen: &mesimon_backend_tmux::InputScreen, shell: Option<&str>) -> bool {
+    match shell {
+        Some(words) => shell_box_shows(screen, words),
+        None => composer_holds_text(screen),
+    }
+}
+
 /// Whether a steer's due Enter goes (T-872): the pane read at the key must
 /// show the words still standing — never a dialog a running turn raised
 /// since — and `live` is read only when the sampler's screen from after the
 /// paste does too, or when none has landed, as on a machine whose samples
 /// run slow: a missing sample never costs the Enter.
 pub fn steer_presses(
+    shell: Option<&str>,
     sampled: Option<&mesimon_backend_tmux::InputScreen>,
     live: impl FnOnce() -> Option<mesimon_backend_tmux::InputScreen>,
 ) -> bool {
-    sampled.is_none_or(composer_holds_text) && live().is_some_and(|s| composer_holds_text(&s))
+    sampled.is_none_or(|s| steer_holds(s, shell)) && live().is_some_and(|s| steer_holds(&s, shell))
 }
 
 /// The composer's footer names Plan mode (T-847): Codex 0.163 writes it at
@@ -922,6 +968,22 @@ mod input_tests {
         assert!(!composer_shows(&empty, wake));
     }
 
+    #[test]
+    fn only_the_pasted_shell_line_can_press_enter_in_shell_mode() {
+        let shell = screen("› history\n\n! printf 'a  b'\n  && pwd\n\n  Shell mode", Some((8, 3)));
+        assert!(shell_box_shows(&shell, "!printf 'a  b' && pwd"));
+        assert!(!input_ready(&shell));
+        assert!(!steer_holds(&shell, None));
+        assert!(!shell_box_shows(&shell, "!printf 'a b' && pwd"));
+        assert!(!shell_box_shows(&screen("! pwd", None), "!pwd"));
+        assert!(!shell_box_shows(&screen("! pwd\nSearch sessions", Some((4, 1))), "!pwd"));
+        let chip = screen("! [Pasted Content 1779 chars]", Some((29, 0)));
+        assert!(shell_box_shows(&chip, &format!("!{}", "x".repeat(1779))));
+        assert!(!shell_box_shows(&chip, "!pwd"));
+        assert!(!shell_box_shows(&screen("! pwd\n  && date", Some((5, 0))), "!pwd"));
+        assert!(!shell_box_shows(&screen("› [Pasted Content 4 chars]", Some((26, 0))), "!pwd"));
+    }
+
     /// A steer's Enter (T-872): the live read decides, the sampler's screen
     /// only spares it. No sample after the paste (a slow sampler) still
     /// presses into a box holding the words; a sample showing the box empty
@@ -939,13 +1001,16 @@ mod input_tests {
                 Some(s)
             }
         };
-        assert!(steer_presses(None, live(held())), "no sample landed: the live box decides");
-        assert!(steer_presses(Some(&held()), live(held())));
-        assert!(!steer_presses(None, live(dialog())), "a dialog raised since is never answered");
-        assert!(!steer_presses(Some(&held()), live(dialog())));
-        assert!(!steer_presses(None, || None), "a pane that cannot be read is not pressed");
+        assert!(steer_presses(None, None, live(held())), "no sample landed: the live box decides");
+        assert!(steer_presses(None, Some(&held()), live(held())));
+        assert!(
+            !steer_presses(None, None, live(dialog())),
+            "a dialog raised since is never answered"
+        );
+        assert!(!steer_presses(None, Some(&held()), live(dialog())));
+        assert!(!steer_presses(None, None, || None), "a pane that cannot be read is not pressed");
         assert_eq!(reads.get(), 4);
-        assert!(!steer_presses(Some(&empty()), live(held())), "the words went");
+        assert!(!steer_presses(None, Some(&empty()), live(held())), "the words went");
         assert_eq!(reads.get(), 4, "a fresh sample of an empty box forks nothing");
     }
 

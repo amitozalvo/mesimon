@@ -1138,6 +1138,30 @@ fn steer(c: &mut TestClient, ticket: ulid::Ulid, text: &str) -> Response {
     })
 }
 
+#[test]
+fn an_edited_codex_shell_line_releases_terminal_input_without_an_enter() {
+    let Some(h) = Fixture::boot_configured(
+        "provider-edited-shell",
+        false,
+        &[("MESIMON_COMPOSER_WAIT_MS", "1200")],
+    ) else {
+        return;
+    };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "shell input", None);
+    let id = c.spawn_claude(ticket);
+    h.codex_ready(&mut c, id);
+    assert!(matches!(steer(&mut c, ticket, "!"), Response::Err { .. }));
+    assert!(matches!(steer(&mut c, ticket, "!pwd"), Response::Ok));
+    wait_until(Duration::from_secs(10), "command pasted", || input(&h, id).contains("pwd"));
+    h.control(id, json!({"screen":"! pwd -P","cursor":[8,0]}));
+    wait_until(Duration::from_secs(10), "the changed command returned to the person", || {
+        fed(&h, "prompt_submit_not_ready", ticket) == 1 && !session(&mut c, id).pending_submit
+    });
+    assert_eq!(submits(&h, id), 0);
+}
+
 /// A running Codex seat takes words mid-turn as its composer does (T-845):
 /// pasted, then one Enter, which Codex sends as a `turn/steer`; the runtime's
 /// count of taken steers is the ack. The turn goes on — no new turn, no

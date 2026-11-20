@@ -3722,6 +3722,12 @@ async function terminalFlow(browser, engineName, size, viewport) {
       return { ticket: t.id, session: t.agent.session };
     });
     await page.locator("#keys-text").fill("private line for ticket-0");
+    await page.locator("#preview").press("Shift+Enter");
+    await page.locator("#preview").press("Enter");
+    await until(page, () => fixture.keys.length === 6);
+    assert.deepEqual((await keys()).at(-1), { ...pane, key: "enter" });
+    assert.equal(await page.locator("#keys-text").inputValue(), "private line for ticket-0");
+    await page.evaluate(() => fixture.keys.splice(5));
     await overview();
     await page.locator(`.ticket[data-id="${other.ticket}"]`).first().click();
     await page.locator("#tab-terminal").click();
@@ -3768,6 +3774,7 @@ async function terminalFlow(browser, engineName, size, viewport) {
     assert.equal(await page.locator('.key[data-key="enter"]').count(), 0, "Enter is the line's ⏎ (T-1219)");
     await page.locator("#keys-text").fill("second");
     await page.locator("#keys-text").press("Enter");
+    await page.locator("#preview").press("Enter");
     await page.waitForTimeout(200);
     assert.equal(await page.evaluate(() => fixture.keys.length), 6, "a second tap sends nothing");
     await page.evaluate(() => {

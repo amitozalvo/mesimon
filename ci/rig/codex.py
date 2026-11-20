@@ -21,11 +21,11 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question", "delegate", "forge", "read-other")
+            "identity", "question", "delegate", "forge", "read-other", "shell")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
          "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1,
-         "read-other": 1}
+         "read-other": 1, "shell": 4}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 # T-916: a crowned Codex seat asked one thing by the person, in words a person
 # would use. Everything after that one submission is the crown's own doing and
@@ -1244,6 +1244,19 @@ def adapter(base):
                 return
             if self.args.case == "steer":
                 return self.steer()
+            if self.args.case == "shell":
+                sid = self.start("Run sleep 12 once, wait for it to finish, then reply exactly SHELL_READY.")
+                self.wait(sid, "the turn is running its command", lambda s, t, p:
+                          s["state"]["state"] == "running" and "sleep 12" in p and "esc to interrupt" in p)
+                self.ask(sid, "!printf 'MESIMON_%s\\n' ACTIVE")
+                self.wait(sid, "the active turn's shell line ran", lambda s, t, p: "└ MESIMON_ACTIVE" in p)
+                self.completed(sid, "SHELL_READY")
+                for size, repeats in [("WRAPPED", 32), ("LONG", 350)]:
+                    self.ask(sid, f"! printf 'MESIMON_%s\\n' {size} # " + "wrap " * repeats)
+                    self.wait(sid, f"the {size.lower()} shell line ran and released terminal input",
+                              lambda s, t, p: f"└ MESIMON_{size}" in p and not s.get("pending_submit")
+                              and not s.get("observation_hold"))
+                return
             if self.args.case == "read-other":
                 return self.read_other()
             if self.args.case == "plan-launch":

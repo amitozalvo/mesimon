@@ -123,9 +123,16 @@ impl Daemon {
                         std::thread::sleep(Duration::from_millis(codex::STEER_READ_GAP_MS));
                     }
                     check(&tx, id, receipt)?;
-                    backend
+                    let screen = backend
                         .capture_input_screen(&pane)
-                        .map_err(|e| format!("could not deliver: {e}"))
+                        .map_err(|e| format!("could not deliver: {e}"))?;
+                    if road::is_shell(&words) && codex::composer_holds_text(&screen) {
+                        return Err(
+                            "the prompt box holds text ∙ a `!` line runs only from an empty box"
+                                .to_owned(),
+                        );
+                    }
+                    Ok(screen)
                 })?;
                 match sight {
                     SteerSight::Composer => {
@@ -133,9 +140,11 @@ impl Daemon {
                         if target(&backend, &sid, key.as_deref())? != pane {
                             return Err("the pane changed before delivery".into());
                         }
-                        backend
-                            .paste_input(&pane, &words)
-                            .map_err(|e| format!("could not deliver: {e}"))
+                        let pasted = match words.strip_prefix('!') {
+                            Some(body) => backend.paste_after_literal(&pane, "!", body),
+                            None => backend.paste_input(&pane, &words),
+                        };
+                        pasted.map_err(|e| format!("could not deliver: {e}"))
                     }
                     SteerSight::Dialog => Err(mesimon_core::command::ANSWER_IN_PANE_FIRST.into()),
                     SteerSight::Unseen => Err(mesimon_core::command::COMPOSER_NOT_FOUND.into()),

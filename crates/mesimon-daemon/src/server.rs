@@ -2875,8 +2875,9 @@ struct Owed {
     next_press: Option<u64>,
     /// The give-up clock, epoch ms: `INFLIGHT_MS` after a Claude live-pane
     /// paste. `None` on the launch roads (the attempts are their clock) and
-    /// for Codex (the record's hold is: `pending_submit` keeps the checkout
-    /// until a new turn is observed, and nothing here may expire under it).
+    /// for Codex after Enter (a shell draft awaiting its Enter uses the
+    /// composer wait). The record's hold is: `pending_submit` keeps the checkout
+    /// until a new turn is observed, and nothing here may expire under it.
     expires: Option<u64>,
     /// The composer wait (T-570), epoch ms: words still parked go into a
     /// Claude pane only once `composer::read` finds its composer, and one
@@ -3030,6 +3031,10 @@ fn sent_word(text: &str) -> &'static str {
 }
 
 impl Owed {
+    fn sent_shell(&self) -> Option<&str> {
+        self.sent.as_ref().map(|s| s.text.as_str()).filter(|text| road::is_shell(text))
+    }
+
     /// A launch entry: words parked for a pane on its way, an Enter owed.
     fn launch(ticket: ulid::Ulid, parked: Parked, ack: Ack) -> Self {
         Owed {
@@ -6020,7 +6025,16 @@ impl Daemon {
                 .unwrap_or(0)
                 .max(self.owed.get(&id).map_or(0, |o| o.screen_after));
             let Some(screen) = self.screen_since(&sid, after).cloned() else { continue };
-            if !crate::agents::codex::input_ready(&screen) {
+            // Only the Enter following an explicit shell line may use the
+            // shell composer. A fresh paste or a ticket title never may.
+            let shell = self.owed.get(&id).and_then(Owed::sent_shell);
+            let ready = match shell {
+                Some(words) if self.codex_input_due.contains_key(&id) => {
+                    crate::agents::codex::shell_box_shows(&screen, words)
+                }
+                _ => crate::agents::codex::input_ready(&screen),
+            };
+            if !ready {
                 continue;
             }
             // A planned launch (T-847): `/plan` first, and the words only
@@ -6067,6 +6081,10 @@ impl Daemon {
                     }
                 }
                 if submit && self.backend.send_enter(&sid).is_ok() {
+                    if let Some(owed) = self.owed.get_mut(&id).filter(|o| o.sent_shell().is_some())
+                    {
+                        owed.expires = None;
+                    }
                     if wake {
                         self.wake_entered(id);
                     }
@@ -6076,6 +6094,10 @@ impl Daemon {
                         rec.observation_hold = true;
                     }
                     dirty = true;
+                } else if submit && self.owed.get(&id).and_then(Owed::sent_shell).is_some() {
+                    self.release_codex_shell(id, ticket);
+                    dirty = true;
+                    continue;
                 }
                 self.codex_input_due.remove(&id);
                 continue;
@@ -6114,14 +6136,28 @@ impl Daemon {
                     text.push_str(&parked.text);
                 }
             }
-            if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
+            let shell = submit && !pending_prefill && !brief && road::is_shell(&text);
+            if shell {
+                if crate::agents::codex::composer_holds_text(&screen)
+                    || self.backend.paste_after_literal(&sid, "!", &text[1..]).is_err()
+                {
+                    self.release_codex_shell(id, ticket);
+                    dirty = true;
+                    continue;
+                }
+            } else if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
                 continue;
             }
             let wake = self.crown_wake_owed(id);
             if let Some(owed) = self.owed.get_mut(&id) {
                 owed.sent_at = Some(now_ms());
-                // What the box should hold when the wake's Enter is due.
-                if wake {
+                // What the box should hold before Enter. If a shell draft
+                // changes, give the pane back after the usual composer wait.
+                if shell {
+                    owed.screen_after = now_ms();
+                    owed.expires = Some(owed.screen_after + composer_wait_ms());
+                }
+                if wake || shell {
                     owed.sent = owed.parked.clone();
                 }
             }
@@ -6154,6 +6190,15 @@ impl Daemon {
             dirty = true;
         }
         dirty
+    }
+
+    /// A shell line that could not be entered leaves the pane to the person,
+    /// including its remote keys. Never press or re-paste the command.
+    fn release_codex_shell(&mut self, id: uuid::Uuid, ticket: ulid::Ulid) {
+        self.codex_input_due.remove(&id);
+        self.control_cancel(id);
+        self.drop_owed(id);
+        self.feed.board("daemon", "prompt_submit_not_ready", Some(ticket));
     }
 
     /// The `/plan` a planned Codex launch owes (T-847), one step a tick:
@@ -7939,6 +7984,14 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in expired {
+            if self.codex_input_due.contains_key(&id)
+                && self.owed.get(&id).and_then(Owed::sent_shell).is_some()
+            {
+                let ticket = self.owed[&id].ticket;
+                self.release_codex_shell(id, ticket);
+                changed = true;
+                continue;
+            }
             // The crown's submitted wake (T-936): its attempt retires, words
             // kept nowhere as unsent.
             let frame = self.owed.get(&id).and_then(|o| o.frame.clone());
@@ -16042,6 +16095,9 @@ impl Daemon {
         let Some(rec) = self.board.session(id) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
+        if text.strip_prefix('!').is_some_and(|body| body.trim().is_empty()) {
+            return Err("enter a shell command after `!`".into());
+        }
         if rec.pending_submit || self.owed.contains_key(&id) {
             return Err("a prompt is already waiting for this session".into());
         }
@@ -16068,7 +16124,7 @@ impl Daemon {
     /// a second turn; an empty box means they went and the count is on its
     /// way. The presses run out either way, and words never seen taken are
     /// the phone's `unknown`. The pane is read at the key
-    /// (`codex::steer_presses`): a running turn can raise an approval
+    /// (`codex::steer_holds`): a running turn can raise an approval
     /// dialog after the sampler's last screen, and an Enter there would
     /// answer it for the person. A sampled screen from after the paste
     /// (`want_codex_inputs`) showing the box empty spares that read.
@@ -16078,12 +16134,16 @@ impl Daemon {
             return false;
         };
         let sid = rec.sid16();
-        let after = self.owed.get(&id).map_or(u64::MAX, |o| o.screen_after);
+        let owed = self.owed.get(&id).expect("due steer");
+        let shell = owed.sent_shell();
         if rec.state.has_pane()
             && !matches!(rec.state, SessionState::RequiresAction { .. })
-            && self.screen_since(&sid, after).is_none_or(crate::agents::codex::composer_holds_text)
+            && self
+                .screen_since(&sid, owed.screen_after)
+                .is_none_or(|s| crate::agents::codex::steer_holds(s, shell))
         {
             let key = rec.pane_key.clone();
+            let shell = shell.map(str::to_owned);
             let owed = self.owed.get_mut(&id).expect("due steer");
             let receipt = owed.receipt_id;
             owed.next_press = None;
@@ -16091,7 +16151,7 @@ impl Daemon {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 if let Ok(target) = steer::target(&backend, &sid, key.as_deref()) {
-                    if crate::agents::codex::steer_presses(None, || {
+                    if crate::agents::codex::steer_presses(shell.as_deref(), None, || {
                         backend.capture_input_screen(&target).ok()
                     }) && steer::check(&tx, id, receipt).is_ok()
                     {

@@ -195,6 +195,12 @@ function Output({ store, ticket, entry, live }) {
       ${chat
         ? html`<${Chat} store=${store} entry=${entry} agent=${ticket?.agent} tail=${attention} />`
         : html`<pre id="preview" ref=${ref} class="screen" style=${{ "--cols": screenCols(entry) }} aria-label="Agent output" tabindex="0"
+        onKeyDown=${(e) => {
+          if (e.key !== "Enter" || e.repeat || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+          if (store.typing || cardAnswers(store, ticket.agent) || !store.keysReach(ticket)) return;
+          e.preventDefault();
+          store.sendKeys({ key: "enter" });
+        }}
         onScroll=${(e) => store.outputScrolled(e.currentTarget)}><span class="screen-lines">${screenRows(text)}</span></pre>`}
       <button id="latest" type="button" class="latest" hidden=${!entry || following}
         onClick=${() => store.latest()}><${Icon} name="down" size=${16} /><span>${unread ? `New ${chat ? "words" : "preview"} · Jump to latest` : "Jump to latest"}</span></button>

@@ -589,6 +589,15 @@ impl TmuxBackend {
     /// Bracketed input without submission. The provider owns readiness and
     /// the delay before Enter; native Codex paste detection needs that gap.
     pub fn paste_input(&self, sid16: &str, text: &str) -> Result<()> {
+        self.paste_after_literal(sid16, "", text)
+    }
+
+    /// Type a literal prefix and paste its body in one tmux command queue.
+    /// The buffer is loaded before either reaches the pane.
+    pub fn paste_after_literal(&self, sid16: &str, prefix: &str, text: &str) -> Result<()> {
+        if text.is_empty() && !prefix.is_empty() {
+            return self.send_text(sid16, prefix);
+        }
         // Each load/paste pair owns its buffer. Steers can now paste on a
         // worker while another seat receives words from the board.
         static NEXT_BUFFER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -614,7 +623,12 @@ impl TmuxBackend {
         if !st.success() {
             bail!("tmux load-buffer failed");
         }
-        if let Err(error) = self.run(&["paste-buffer", "-p", "-b", &buffer, "-d", "-t", sid16]) {
+        let mut keys = Vec::new();
+        if !prefix.is_empty() {
+            keys.extend(["send-keys", "-t", sid16, "-l", "--", prefix, ";"]);
+        }
+        keys.extend(["paste-buffer", "-p", "-b", &buffer, "-d", "-t", sid16]);
+        if let Err(error) = self.run(&keys) {
             let _ = self.run(&["delete-buffer", "-b", &buffer]);
             return Err(error);
         }

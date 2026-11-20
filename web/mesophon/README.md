@@ -242,7 +242,9 @@ every tag (on a host that edits nothing, the line opens in place). On a host
 that says `keys`, the Terminal tab's foot is a key bar and a typed line, each
 press one `keys` op ({ key } or { text }) into the ticket's agent session
 alone; the line's ⏎ is Enter when it is empty, so every key is in view at
-360 px. An empty composer over a working turn is Stop, an Escape the same way.
+360 px. With the terminal preview focused, Enter sends the key to the agent
+and keeps any draft in the line field. An empty composer over a working turn
+is Stop, an Escape the same way.
 The typed line belongs to its conversation, kept as the field's draft is:
 another ticket's Terminal tab never shows it, so it never goes to that agent.
 A typed line (at most 512 bytes) goes first, and its Enter only once the host
