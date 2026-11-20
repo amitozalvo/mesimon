@@ -35,8 +35,8 @@ If the current git branch starts with `msmn/`, you are in a mesimon ticket workt
 isolated checkout dedicated to one ticket (env carries `MESIMON_TICKET` and
 `MESIMON_WORKTREE_BRANCH`). Work and commit freely on this branch — **commit your work when
 done** (uncommitted changes can't merge and block cleanup), and when the user asks for a
-rebase, rebase onto the default branch, resolve conflicts, then run the tests and fix
-failures before reporting done. Never `git checkout main` here (it will fail — main belongs
+rebase, rebase onto the default branch, resolve conflicts and follow the rebase checks in
+[AGENTS.md](../AGENTS.md). Never `git checkout main` here (it will fail — main belongs
 to another worktree) and never merge or push to main yourself: the user merges through
 mesimon (fast-forward only, so a green rebased branch is the deliverable).
 

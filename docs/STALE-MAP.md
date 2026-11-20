@@ -48335,3 +48335,26 @@ Overlap with new builds caused flakes even at a release gate.
 **Refuted.** T-1194 kept per-ticket runs because a red on main had no owner. A crown can
 assign the fix by rerunning each red test alone at the batch's merge commits in order.
 The first ticket where it fails alone owns it. A nightly run still has no scheduled start.
+
+## Leave rebase verification to the repository (T-1365, 2026-11-20)
+
+The default rebase ask names the ticket branch, base and conflict resolution. The manual
+merge dialog says “ask the agent to rebase?”. This board's `columns.toml` has no
+`prompt_rebase` override. Of 21 train asks in six days, 19 conflicted only in this
+file. In the live Claude rig (`python3 -B ci/rig.py --only RB1,RB2`, Sonnet 5.5),
+the docs worker resolved an actual conflict and ran zero checks. The code worker resolved
+its conflict and ran all three checks named by the fixture for that change: unit, build
+and the affected e2e. Both commits replayed directly onto their requested base.
+
+A scratch `git rebase main` with two independently appended decision blocks stopped on
+one file. With `docs/STALE-MAP.md merge=union` it stopped on zero: both complete blocks
+appeared once, main's first. Git coalesced the blank separator. Union can silently combine
+competing edits to an existing block, so review the resulting text on such edits.
+This ticket’s own rebase still needed manual resolution: main did not yet carry the attribute.
+The two live cases use a fixture without the union attribute to exercise conflict handling.
+
+`cargo ut` passed. Of 185 selected e2es, 184 passed in the parallel run.
+`crown_e2e::the_crown_lets_one_agent_edit_the_others` failed its persisted-count
+assertion and passed on its one isolated rerun. Nextest marked the passing
+`crown_e2e::a_codex_expectation_outlives_a_restart_by_its_turn_id` leaky.
+Both fixture audits were clean.

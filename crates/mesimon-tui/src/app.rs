@@ -1577,7 +1577,7 @@ pub(crate) enum WorkflowMark {
 pub(crate) enum MergeStage {
     /// ff possible — next m merges.
     Merge,
-    /// default branch moved — next m asks the agent to rebase + test.
+    /// default branch moved — next m asks the agent to rebase.
     Rebase,
     /// merged — next m tells the agent.
     Notify,
@@ -16356,7 +16356,7 @@ impl App {
                 if d.outstanding {
                     "rebase already requested — ask the agent again?".into()
                 } else {
-                    "ask the agent to rebase + test?".into()
+                    "ask the agent to rebase?".into()
                 },
             ],
             MergeStage::Notify => vec![

@@ -2577,6 +2577,22 @@ Reply with the single word ready and end your turn."""
     def rig_step(self, test, what, record, step=None):
         step = step or {}
         say(f"  → rig: {what}")
+        if what == "rebase":
+            import rebase
+
+            def wait_for_stop(rec, mark):
+                def finished():
+                    current = self.agent_of(self.board(), test["ticket"])
+                    return current and word_of(current["state"]) == "idle" and any(
+                        l.get("kind") == "hook" and l.get("event") == "Stop"
+                        for l in self.worker_lines(rec["id"], mark))
+                return self.wait_for("the rebase turn", finished, STEP_TIMEOUT, self.watch)
+
+            try:
+                return rebase.run(self, test, record, step["conflict"], wait_for_stop)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired, WireError) as error:
+                record["failures"].append(f"rebase: {error}")
+                return False
         if what == "shared_shell":
             # A human-run terminal, shared explicitly. The agent only gets its read tool.
             try:

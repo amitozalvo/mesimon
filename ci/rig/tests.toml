@@ -2724,3 +2724,29 @@ checks = ["road:mod", "started_by_crown", "crown:ask_agent=1", "fed:queued_ask_k
   crown = "AS1: call start_agent for {key} with workspace worktree, no tier and no plan, and straight after it, before anything else, call ask_agent for {key} with deliver now and the text: Reply with the single word as1-teal and end your turn. Then end your turn with the single line: AS1 asked: and, in a few words, what the board said of your words. When the board wakes you for {key}, end your turn with the single line: AS1 seen."
   until = { stops = 2, state = "idle" }
   wake = true
+
+[[test]]
+id = "RB1"
+title = "RB1 · concurrent decision records"
+blind = true
+workspace = "worktree"
+brief = "Reply ready and end this turn. The board will send your next request."
+expect = "The board sends its default rebase ask. The worker rebases the concurrent STALE-MAP appends, keeps both blocks in base-first order and runs zero checks."
+checks = ["road:mod", "started_by_person"]
+
+  [[test.steps]]
+  rig = "rebase"
+  conflict = "docs"
+
+[[test]]
+id = "RB2"
+title = "RB2 · concurrent features"
+blind = true
+workspace = "worktree"
+brief = "Reply ready and end this turn. The board will send your next request."
+expect = "The board sends its default rebase ask. The worker resolves the conflict in features.sh, preserves both additions and runs unit, build and the features e2e."
+checks = ["road:mod", "started_by_person"]
+
+  [[test.steps]]
+  rig = "rebase"
+  conflict = "code"

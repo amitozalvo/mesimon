@@ -100,8 +100,7 @@ impl AgentPrompt {
     pub fn default_text(self) -> &'static str {
         match self {
             AgentPrompt::Rebase => {
-                "Rebase your current branch {branch} onto {base}, resolve any conflicts, \
-                 then run the tests and fix any failures before we merge."
+                "Rebase your current branch {branch} onto {base} and resolve any conflicts before we merge."
             }
             AgentPrompt::Merged => "Your branch {branch} has been merged into {base}.",
             AgentPrompt::NoteUpdated => {
@@ -257,16 +256,12 @@ mod tests {
     use super::*;
     use crate::command::sanitize_prompt;
 
-    /// The defaults are what the daemon sent before this module existed,
-    /// character for character — a board nobody has touched must read exactly
-    /// the same to every agent it has already started.
     #[test]
-    fn the_defaults_are_the_words_the_daemon_used_to_format() {
+    fn a_board_without_overrides_renders_the_default_messages() {
         let p = PromptSet::default();
         assert_eq!(
             p.render(AgentPrompt::Rebase, &[("branch", "msmn/T-1-x"), ("base", "main")]),
-            "Rebase your current branch msmn/T-1-x onto main, resolve any conflicts, then run \
-             the tests and fix any failures before we merge."
+            "Rebase your current branch msmn/T-1-x onto main and resolve any conflicts before we merge."
         );
         assert_eq!(
             p.render(AgentPrompt::Merged, &[("branch", "msmn/T-1-x"), ("base", "main")]),

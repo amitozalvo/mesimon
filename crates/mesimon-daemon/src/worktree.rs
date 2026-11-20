@@ -4231,13 +4231,12 @@ mod tests {
         };
         assert_eq!(
             ask(&leg("", "")),
-            "Rebase your current branch msmn/T-17-d1 onto main, resolve any conflicts, then run \
-             the tests and fix any failures before we merge."
+            "Rebase your current branch msmn/T-17-d1 onto main and resolve any conflicts before we merge."
         );
         assert_eq!(
             ask(&leg("", "origin/main")),
-            "Run git fetch first. Rebase your current branch msmn/T-17-d1 onto origin/main, \
-             resolve any conflicts, then run the tests and fix any failures before we merge."
+            "Run git fetch first. Rebase your current branch msmn/T-17-d1 onto origin/main \
+             and resolve any conflicts before we merge."
         );
         let (api, web, docs) =
             (leg("api", "origin/main"), leg("web", ""), leg("docs", "origin/main"));

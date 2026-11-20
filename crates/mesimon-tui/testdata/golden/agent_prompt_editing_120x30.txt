@@ -9,7 +9,7 @@
 
 
                            ╭─ AGENT PROMPTS ────────────────────────────────────────────────╮
-                           │   Rebase ask: Rebase your current branch {branch} onto {base}, │
+                           │   Rebase ask: Rebase your current branch {branch} onto {base}  │
                            │   Merged notice: mesimon's words                               │
                            │   Note nudge: mesimon's words                                  │
                            │   Crown wake: mesimon's words                                  │
