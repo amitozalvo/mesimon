@@ -93,6 +93,7 @@ Choose checks from the behaviour and dependencies changed, and say what each pro
 - **The full workspace suite runs after merge** (T-1194, T-1374) when the diff changes
   `core/src/command.rs`, `core/src/mcp.rs`, `core/src/authorize.rs`, a state file's schema,
   `daemon/src/server.rs` outside its tests, the tmux backend or the e2e harness.
+  A TUI-, docs- or `ci/`-only diff never needs it.
   - **With a crown**, merged workers run it only on the crown's ask. When the planned tickets
     have all landed or five qualifying merges have landed, whichever comes first, the crown
     asks the last-merged worker to run it once in its own worktree at its merged commit.
@@ -103,6 +104,7 @@ Choose checks from the behaviour and dependencies changed, and say what each pro
   - **Without a crown**, each qualifying ticket runs it once on its merged notice, in its own
     worktree at its merged commit. Rerun each red test alone. If it fails again, name it, fix
     forward on the same branch and deliver again. If it passes, name the rerun and leave it.
+    No merged notice means no run; the release gate is behind it.
   - The release gate runs the complete suite on both Claude transport roads.
 - A full suite run carries `--no-fail-fast`, so one red does not cost a second run. Clippy on
   all targets is the release gate's; a ticket does not owe it. A command expected to take over
