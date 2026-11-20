@@ -98,8 +98,17 @@ echo "built $out ($(find "$out" -type f | wc -l | tr -d ' ') files, $(du -sh "$o
 [ "$publish" = "1" ] || exit 0
 
 command -v gh >/dev/null || die "the GitHub CLI is required to publish" "brew install gh"
-gh auth status >/dev/null 2>&1 || die "gh is not logged in" "gh auth login"
-(cd "$out" && find . -type f | sed 's|^\./||' | sort) | while read -r rel; do
-  ci/publish-file.sh "$DIST_REPO" "$out/$rel" "$rel" "sync $rel ($label)"
+command -v jq >/dev/null || die "jq is required to publish" "brew install jq"
+tree=$(mktemp)
+trap 'rm -f "$tree"' EXIT
+# HEAD follows the default branch, which also receives the contents API's PUTs.
+# Only a complete tree can tell us that a path is new.
+gh api "repos/$DIST_REPO/git/trees/HEAD?recursive=1" --jq '
+  if .truncated == false then
+    INDEX(.tree[] | select(.type == "blob"); .path) | map_values(.sha)
+  else error("incomplete GitHub tree") end' > "$tree"
+(cd "$out" && find . -type f | sed 's|^\./||' | sort) | while IFS= read -r rel; do
+  existing=$(jq -er --arg path "$rel" '.[$path] // ""' "$tree")
+  ci/publish-file.sh "$DIST_REPO" "$out/$rel" "$rel" "sync $rel ($label)" "$existing"
 done
 echo "published the site to $DIST_REPO; Pages serves it at https://mesimon.dev within a minute or two"

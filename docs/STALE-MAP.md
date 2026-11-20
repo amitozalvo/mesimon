@@ -41008,6 +41008,20 @@ blip or a bad token is read as what it is and never as a new file. Verified read
 the releases repository: `og.png` → empty, `index.html` and a font → their blob ids. The
 publish itself is the author's to run.
 
+## The site reads one tree before publishing (T-1127, 2026-11-20)
+
+After T-1124, GitHub cut off the 165 KB contents response for an unchanged
+`remote-conversation.png`. The publisher stopped with `unexpected end of JSON input`.
+The blob ID alone answers whether a file changed. `ci/site.sh` now reads the default
+branch's recursive tree once, checks it is complete and passes each destination's blob ID
+to `ci/publish-file.sh`. An empty ID means create. Release callers that omit the ID keep
+their single-file lookup and its 404 handling.
+
+The read-only replay against `amitozalvo/mesimon-releases` matched `git hash-object` for
+all 18 built files. The unchanged fixture went from 18 contents GETs to one tree GET and
+zero PUTs. Changing one blob and removing one path added two PUTs, with the old SHA on
+the update alone. Both sent the base64 content through a file.
+
 ## The README's clips recorded again, and the intro's last frame as its logo (T-1122, 2026-11-03, the author: "mesimon changed since then, we should reflect it on the videos. also add the "משימון" logo with the mascot (same as opening animation) on github")
 
 **What changed.** `assets/demo.gif`, `search.gif`, `crown.gif` and `ticket-page.gif` are
