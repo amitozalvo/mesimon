@@ -47889,3 +47889,7 @@ worktree, workspace, merge-train, PR and forge integration tests passed (13 unit
 marked ignored). An earlier integration run was stopped for the remote-cache change, and
 its interrupted fixtures left no directories or sockets. The full workspace run is due on
 the merged commit.
+
+When teardown removes the last binding, the shared worktree queue clears the cached flags
+immediately and invalidates any outstanding sample. A teardown test delivers that sample
+late and checks that its branch conflict stays cleared.

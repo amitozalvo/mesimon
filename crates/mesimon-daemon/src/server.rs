@@ -21341,7 +21341,14 @@ impl Daemon {
     /// At most one board-wide sample at a time. Resolve uncached refs on
     /// its worker too, including the default branch for single-repo legs.
     fn queue_worktree_flags(&mut self) {
-        if self.wt_inflight || self.worktrees.is_empty() {
+        if self.worktrees.is_empty() {
+            // Teardown can remove the last binding while its sample is still out.
+            self.wt_gen = self.wt_gen.wrapping_add(1);
+            self.wt_refresh_pending = false;
+            self.forget_worktree_flags();
+            return;
+        }
+        if self.wt_inflight {
             return;
         }
         self.wt_inflight = true;
@@ -24548,6 +24555,36 @@ mod shell_archive_regressions {
                 return sample;
             }
         }
+    }
+
+    #[test]
+    fn last_binding_teardown_clears_conflicts_even_with_a_sample_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, rx) = queued_person_push_tests::daemon(dir.path());
+        let ticket = d.board.sessions[0].ticket;
+        let repo = d.paths.repo_root.clone();
+        crate::testrepo::init(&repo, "base.txt", "base");
+        let tip = worktree::branch_tip(&repo, "main");
+        d.worktrees.insert(
+            ticket,
+            Binding::new(
+                dir.path().join("topic"),
+                "main".into(),
+                tip.clone(),
+                tip,
+                BindingStatus::Attached,
+            ),
+        );
+        d.refresh_worktree_flags();
+        let mut old = board_sample(&rx);
+        old.repos[0].flags.conflicts.push("main".into());
+        d.wt_conflicts = old.repos[0].flags.conflicts.clone();
+
+        d.on_torn_down(ticket, false, false, Duration::ZERO);
+        assert!(d.wt_conflicts.is_empty());
+        assert!(!d.wt_refresh_pending);
+        d.on_worktree_flags(old);
+        assert!(d.wt_conflicts.is_empty(), "the late sample cannot restore a conflict");
     }
 
     #[test]
