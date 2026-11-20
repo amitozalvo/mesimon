@@ -1676,6 +1676,32 @@ checks = ["road:mod", "started_by_crown", "unlanded", "crown_line:M1 main:crown"
   rig = "forge_off"
 
 [[test]]
+id = "M2"
+title = "M2 · who lands the workspace change?"
+blind = true
+merge_guard = "train_off"
+no_remote_leg = true
+workspace = "worktree"
+brief = "In the ticket worktree's ledger-* child repository, create M2.txt containing m2 and commit it there. End your turn with the single word done."
+expect = "The crown identifies the ledger repository and says the person merges its change locally."
+checks = ["started_by_crown", "unlanded", "crown_line:M2 answer:ledger-", "crown_line:M2 answer:local", "crown_line:M2 answer:person,human,you,owner,maintainer,user", "replies:done"]
+
+  [[test.steps]]
+  crown = "M2: call start_agent for {key} with workspace worktree, no tier and no plan. When the board wakes you for its delivery, end your turn with the single line: M2 seen."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  rig = "prs_board"
+
+  [[test.steps]]
+  crown = "M2: read {key} on the board. Where does its outstanding work land, and who lands it? Identify the repository. Leave the branch as it is. Start your answer with M2 answer."
+  until = { state = "idle" }
+
+  [[test.steps]]
+  rig = "forge_off"
+
+[[test]]
 id = "H1"
 title = "H1 · a worker asked why its ticket did not move finds the held move: do the steps below"
 merge_guard = "train_off"

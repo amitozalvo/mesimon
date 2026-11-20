@@ -524,7 +524,7 @@ struct WorktreeSample {
     gen: u64,
     seq: u64,
     base: Option<String>,
-    remotes: HashMap<std::path::PathBuf, Option<crate::forge::Remotes>>,
+    remotes: HashMap<std::path::PathBuf, crate::forge::RemoteRead>,
     repos: Vec<worktree::RepoSample>,
 }
 
@@ -595,7 +595,7 @@ enum Msg {
     WorktreeFlags(WorktreeSample),
     /// A forge pass landed (T-739): the generation it was asked under, and
     /// what it found.
-    ForgeRemotes(u64, Vec<(std::path::PathBuf, Option<crate::forge::Remotes>)>),
+    ForgeRemotes(u64, Vec<(std::path::PathBuf, crate::forge::RemoteRead)>),
     ForgeSampled(u64, crate::forge::Sample),
     /// The pane sampler's reads landed (T-857): `pane_facts`, `activity`,
     /// the startup and composer captures, `ps`, `server_alive` and the
@@ -12321,6 +12321,39 @@ impl Daemon {
             .collect()
     }
 
+    /// A local leg on a pull-request board lands outside the board. A mixed
+    /// ticket names the route for each outstanding leg, in binding order.
+    fn local_leg_merge(&self, id: ulid::Ulid, pr_why: Option<&str>) -> Option<AgentMergeView> {
+        let legs = self.wt_repos.get(&id)?;
+        let pending =
+            || legs.iter().filter(|leg| leg.touched() && !leg.merged && !leg.tip.is_empty());
+        let local = |leg: &worktree::RepoFlags| {
+            self.forge.without_remotes.contains(&self.leg_dir(&leg.name))
+        };
+        if !pending().any(local) {
+            return None;
+        }
+        let mut forge = self.open_pr(id).is_some();
+        let mut routes = Vec::new();
+        for leg in pending() {
+            let name = mesimon_core::text::scrub_text(worktree::leg_word(&leg.name));
+            let route = if local(leg) {
+                "local merge by the person, no remote"
+            } else {
+                forge = true;
+                "pull request"
+            };
+            routes.push(format!("{name}: {route}"));
+        }
+        if let Some(why) = pr_why.filter(|_| forge) {
+            routes.push(why.into());
+        }
+        Some(AgentMergeView {
+            by: if forge { "person and forge" } else { "person" }.into(),
+            why: routes.join("; "),
+        })
+    }
+
     /// Who merges `id`'s branch when it is ready (T-613), and the one
     /// clause that decides it — `get_ticket`'s `merge` and the delivered
     /// wake's word. A person's: crown mode supervised, or a ticket whose
@@ -12338,15 +12371,14 @@ impl Daemon {
         if self.merge_state_word(id).as_deref() == Some("merged") {
             return view("nobody", "already merged");
         }
-        // A board whose branches land through pull requests (T-810): the
-        // forge merges every worktree ticket's, PR bound or not yet, whatever
-        // the crown's mode and the train, and `merge_ticket` refuses it. A
-        // bound set says how (T-778, T-797); a shared-checkout ticket's
-        // commits are on the base already, as on any board.
+        // The board lands no branch in pull-request mode (T-810). A
+        // remote-less leg has a local merger outside the board (T-1291).
         if self.through_prs() {
-            if let Some(why) =
-                self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_why(s))
-            {
+            let pr_why = self.forge.sets.get(&id).and_then(|s| mesimon_core::forge::merge_why(s));
+            if let Some(merge) = self.local_leg_merge(id, pr_why) {
+                return merge;
+            }
+            if let Some(why) = pr_why {
                 return view("forge", why);
             }
             if self
@@ -20972,7 +21004,7 @@ impl Daemon {
     fn forge_remotes_read(
         &mut self,
         epoch: u64,
-        found: Vec<(std::path::PathBuf, Option<crate::forge::Remotes>)>,
+        found: Vec<(std::path::PathBuf, crate::forge::RemoteRead)>,
     ) {
         if epoch == self.forge.epoch {
             self.forge.reading_remotes = false;
@@ -21887,7 +21919,7 @@ impl Daemon {
                     let found = remotes
                         .entry(q.repo.clone())
                         .or_insert_with(|| crate::forge::remotes_of(&q.repo, &q.base));
-                    q.forge = found.is_some();
+                    q.forge = found.is_ok();
                 }
             }
             let repos = worktree::compute_repo_flags(&queries);

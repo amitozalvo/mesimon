@@ -4990,11 +4990,10 @@ Reply with the single word ready and end your turn."""
                 # nothing landed it here.
                 branch = next((w["branch"] for w in self.snapshot().get("worktrees", [])
                                if w["ticket"] == tid), None)
-                landed = bool(branch) and subprocess.run(
-                    ["git", "-C", test.get("fixture_checkout", self.repo), "merge-base", "--is-ancestor", branch, "HEAD"],
-                    capture_output=True).returncode == 0
-                check(c, branch and not landed, f"{branch} landed on the base" if landed
-                      else f"{branch} not on the base" if branch else "no branch")
+                repo = test.get("fixture_checkout", self.repo)
+                ahead = git(repo, "rev-list", "--count", "HEAD.." + branch) if branch else None
+                check(c, ahead is not None and int(ahead) > 0,
+                      f"{branch}: {ahead} commits outside the base" if ahead is not None else "no branch")
             elif name == "fed_after":
                 # `fed_after:<cmd>:<prefix>` (T-919): the ticket's first board
                 # line whose cmd begins <prefix> comes after its first <cmd>
@@ -5461,7 +5460,18 @@ Reply with the single word ready and end your turn."""
             else:
                 if test.get("merge_guard") == "train_off" and self.snapshot()["automation"]["merge_train"]:
                     die(f"{test['id']} requires the rig board's merge train off")
-                self.run_test(test)
+                if test.get("no_remote_leg"):
+                    from rebase import git as fixture_git
+                    with tempfile.TemporaryDirectory(prefix="ledger-", dir=self.repo) as leg:
+                        fixture_git(leg, "init", "-b", "main")
+                        fixture_git(leg, "commit", "--allow-empty", "-m", "Ledger fixture")
+                        test["fixture_checkout"] = leg  # unlanded judges the changed leg
+                        try:
+                            self.run_test(test)
+                        finally:
+                            test.pop("fixture_checkout")
+                else:
+                    self.run_test(test)
             # The peer board a test laid (T-733) goes with the test, and the
             # link with it: the next test lays its own.
             if self.peer:

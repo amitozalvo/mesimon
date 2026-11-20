@@ -48701,3 +48701,25 @@ The guarded rerun outside the sandbox reproduced the EPERM failure. The
 post-fix regression, `cargo ut` (3,354 passed, 13 ignored), and all 42 tests
 in the Codex startup recovery, provider, external provider and trust modules
 passed with clean fixture audits.
+## A pull-request board names work that needs a local merge (T-1291, 2026-11-20)
+
+On simbly the root had one unlanded commit and no remote. The DONE gate named
+that commit, but `get_ticket` said the forge would merge it. T-810 chose the
+board's merge workflow. Its assumption that every touched repository on such
+a board can open a pull request did not hold for this workspace.
+
+`merge.by` reads `person` when only local work remains. Its reason names each
+repository, for example `root: local merge by the person, no remote`. Outstanding
+work on both routes reads `person and forge`. An open PR still counts and a
+landed PR leaves the local work with the person. The distinction comes from a
+successful, empty `git remote -v` on the existing discovery worker. An unread
+repository, an unparseable remote and a failed listing establish no exception.
+T-778, T-797 and T-810 still govern the train, `merge_ticket` and closed PRs.
+
+The mixed-binding regression returned `forge` on the old code for the root's
+one commit. With the fix it reports the local merge, then names both routes
+when the child is ahead too. Claude rig M2 passed on Opus 5.5 at high effort:
+the crown named the changed child and the person's local merge, with the
+commit still outside its base. An earlier disposable checkout stopped at
+Claude's trust prompt before a model answer. The ticket-worktree run supplied
+the live measurement.

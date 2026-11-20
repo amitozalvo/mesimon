@@ -233,10 +233,10 @@ pub const CROWN_WAKES: &str = concat!(
      the crown started as the board sees it. \
      A delivered worker's get_ticket says who merges its branch (merge: by train, crown, \
      person or forge, and why), and the delivered line carries the word, as does an ask's \
-     line whose turn left the branch ahead. The forge's — every \
-     worktree ticket's on a board whose Merge into setting is pull requests — lands through its \
-     pull request, merged on the forge, and merge_ticket refuses it; on a board that merges \
-     into main nothing is the forge's. The train's lands by itself, \
+     line whose turn left the branch ahead. On a pull-request board merge_ticket refuses the \
+     branch. A leg with work and no remote \
+     needs a local merge by the person; merge names it alongside any forge work. On a board that \
+     merges into main nothing is the forge's. The train's lands by itself, \
      and the crown hears it once, at the merge; it may land a branch as soon as its agent \
      delivers, and ask_agent's words still land on one hold_ticket holds. The crown's is the \
      train off, the ticket out of it by t, or a column the train stops short of, under \
@@ -4235,10 +4235,9 @@ mod tests {
             "says who merges its branch (merge: by train, crown, person or forge, and why)",
             "the delivered line carries the word",
             "as does an ask's line whose turn left the branch ahead",
-            "The forge's — every worktree ticket's on a board whose Merge into setting is pull \
-             requests — lands through its pull request, merged on the forge, and merge_ticket \
-             refuses it",
-            "on a board that merges into main nothing is the forge's",
+            "On a pull-request board merge_ticket refuses the branch",
+            "A leg with work and no remote needs a local merge by the person",
+            "On a board that merges into main nothing is the forge's",
             "The train's lands by itself",
             "the train off, the ticket out of it by t, or a column the train stops short of",
             "A person's — crown mode supervised — is the person's to merge, with m on its page",

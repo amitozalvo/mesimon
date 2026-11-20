@@ -68,6 +68,78 @@ fn forge_bed(name: &str, tip: &str) -> Bed {
     b
 }
 
+#[test]
+fn a_pull_request_workspace_names_the_legs_that_need_a_local_merge() {
+    use crate::worktree::{Binding, BindingStatus, RepoBinding};
+    use mesimon_core::board::{MergeInto, WorkspaceStrategy};
+
+    let mut bed = bed("merge-without-remote");
+    let id = bed.worker;
+    let d = &mut bed.d;
+    d.board.merge_into = MergeInto::PullRequests;
+    d.board.ticket_mut(id).unwrap().workspace = Some(WorkspaceStrategy::Worktree);
+    let root = d.paths.repo_root.clone();
+    let api = root.join("api");
+    std::fs::create_dir(&api).unwrap();
+    for dir in [&root, &api] {
+        assert!(crate::git::git(dir)
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .unwrap()
+            .success());
+    }
+    assert!(crate::git::git(&api)
+        .args(["remote", "add", "origin", "https://github.com/example/api.git"])
+        .status()
+        .unwrap()
+        .success());
+    let mut binding = Binding::new(
+        root.join("worker"),
+        "msmn/worker".into(),
+        "base".into(),
+        "base".into(),
+        BindingStatus::Attached,
+    );
+    for name in ["", "api"] {
+        binding.repos.push(RepoBinding {
+            name: name.into(),
+            base: "main".into(),
+            default_base: "main".into(),
+            base_oid: "base".into(),
+            branch_oid: "base".into(),
+        });
+    }
+    d.worktrees.insert(id, binding);
+    let leg = |name: &str, tip: &str| RepoFlags {
+        name: name.into(),
+        tip: tip.into(),
+        base_oid: "base".into(),
+        ..Default::default()
+    };
+    d.wt_repos.insert(id, vec![leg("", "commit"), leg("api", "base")]);
+    d.forge.remember_remote(api.clone(), crate::forge::remotes_of(&api, "main"));
+    assert_eq!(d.merge_by(id).by, "forge", "the root has not been probed");
+    d.forge.remember_remote(root.clone(), crate::forge::remotes_of(&root, "main"));
+    let merge = d.merge_by(id);
+    assert_eq!(merge.by, "person");
+    assert_eq!(merge.why, "root: local merge by the person, no remote");
+
+    d.forge.sets.insert(id, vec![pr(42, PrState::Merged, "past", &[])]);
+    assert_eq!(d.merge_by(id), merge, "a landed PR leaves only local work");
+    d.forge.sets.insert(id, vec![pr(42, PrState::Open, "open", &[])]);
+    assert_eq!(d.merge_by(id).by, "person and forge", "an open PR still holds");
+    d.forge.sets.clear();
+    d.wt_repos.get_mut(&id).unwrap()[1].tip = "api-commit".into();
+    let merge = d.merge_by(id);
+    assert_eq!(merge.by, "person and forge");
+    assert!(merge.why.contains("root: local merge by the person, no remote"));
+    assert!(merge.why.contains("api: pull request"));
+    d.wt_repos.get_mut(&id).unwrap()[0].merged = true;
+    assert_eq!(d.merge_by(id).by, "forge");
+    d.wt_repos.insert(id, vec![leg("", "base"), leg("api", "api-commit")]);
+    assert_eq!(d.merge_by(id).why, "this board merges through pull requests");
+}
+
 /// An archive keeps the last settled PRs for its card. An unfinished
 /// sibling still gets the full read, as does the ticket after restoration.
 #[test]

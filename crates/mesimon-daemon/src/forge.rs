@@ -1777,7 +1777,7 @@ fn read_reflog(dir: &Path) -> Option<Vec<Moved>> {
 /// The remote a repository's base branch is judged against, parsed: the
 /// branch's own remote, else `origin`, else the one remote there is.
 pub fn remote_of(repo: &Path, base: &str) -> Option<Remote> {
-    remotes_of(repo, base).map(|r| r.remote)
+    remotes_of(repo, base).ok().map(|r| r.remote)
 }
 
 /// A repository's remotes as the forge reads them (T-800).
@@ -1793,18 +1793,31 @@ pub struct Remotes {
     pub paths: Vec<String>,
 }
 
+/// Only a successful, empty git listing establishes that a local merge is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteMissing {
+    NoRemotes,
+    Unresolved,
+}
+
+pub type RemoteRead = Result<Remotes, RemoteMissing>;
+
 /// `remote_of`, with every remote's path beside it (`Remotes`). One `git
 /// remote -v`, which spells each URL after git's `insteadOf`, and one
 /// `ssh -G` per SSH host, which names the host an `~/.ssh/config` alias
 /// reaches (T-800): `git@github-work:o/r.git` is github.com's.
-pub fn remotes_of(repo: &Path, base: &str) -> Option<Remotes> {
+pub fn remotes_of(repo: &Path, base: &str) -> RemoteRead {
     let out = crate::git::git(repo)
         .args(["--no-optional-locks", "remote", "-v"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()
-        .filter(|o| o.status.success())?;
+        .filter(|o| o.status.success())
+        .ok_or(RemoteMissing::Unresolved)?;
+    if out.stdout.is_empty() {
+        return Err(RemoteMissing::NoRemotes);
+    }
     let listed = String::from_utf8_lossy(&out.stdout).into_owned();
     // `<name>\t<url> (fetch|push)`.
     let urls: Vec<(&str, &str, bool)> = listed
@@ -1838,10 +1851,13 @@ pub fn remotes_of(repo: &Path, base: &str) -> Option<Remotes> {
         }
         Some(r)
     };
-    let remote = order.iter().find_map(|name| {
-        let (_, url, _) = urls.iter().find(|(n, _, fetch)| n == name && *fetch)?;
-        parse(url)
-    })?;
+    let remote = order
+        .iter()
+        .find_map(|name| {
+            let (_, url, _) = urls.iter().find(|(n, _, fetch)| n == name && *fetch)?;
+            parse(url)
+        })
+        .ok_or(RemoteMissing::Unresolved)?;
     let mut paths = vec![remote.path.clone()];
     for (_, url, _) in &urls {
         if let Some(r) = parse(url).filter(|r| r.host == remote.host) {
@@ -1850,7 +1866,7 @@ pub fn remotes_of(repo: &Path, base: &str) -> Option<Remotes> {
             }
         }
     }
-    Some(Remotes { remote, paths })
+    Ok(Remotes { remote, paths })
 }
 
 /// The host `ssh` reaches for `alias`, by `ssh -G` (which prints the
@@ -1981,6 +1997,8 @@ pub struct State {
     pub probes: HashMap<String, HostProbe>,
     /// Per repository directory: its remote, parsed once.
     pub remotes: HashMap<PathBuf, Option<Remote>>,
+    /// The subset of cached misses where git listed zero remotes.
+    pub without_remotes: HashSet<PathBuf>,
     pub reading_remotes: bool,
     /// Per repository directory: every remote's path on its remote's host
     /// (`Remotes::paths`, T-800), what a PR's `repo` is matched against.
@@ -2296,12 +2314,17 @@ impl State {
     }
 
     /// Install the first completed read, including aliases used to match a PR.
-    pub fn remember_remote(&mut self, repo: PathBuf, found: Option<Remotes>) {
-        self.remotes.entry(repo.clone()).or_insert_with(|| {
-            found.map(|r| {
+    pub fn remember_remote(&mut self, repo: PathBuf, found: RemoteRead) {
+        self.remotes.entry(repo.clone()).or_insert_with(|| match found {
+            Ok(r) => {
                 self.paths.insert(repo, r.paths);
-                r.remote
-            })
+                Some(r.remote)
+            }
+            Err(RemoteMissing::NoRemotes) => {
+                self.without_remotes.insert(repo);
+                None
+            }
+            Err(RemoteMissing::Unresolved) => None,
         });
     }
 
@@ -4796,7 +4819,11 @@ mod tests {
                 .unwrap();
             assert!(st.success(), "git {args:?}");
         };
+        assert_eq!(remotes_of(&dir, "main"), Err(RemoteMissing::Unresolved));
         git(&["init", "-q", "-b", "main"]);
+        assert_eq!(remotes_of(&dir, "main"), Err(RemoteMissing::NoRemotes));
+        git(&["remote", "add", "backup", "/local/mirror"]);
+        assert_eq!(remotes_of(&dir, "main"), Err(RemoteMissing::Unresolved));
         git(&["remote", "add", "origin", "https://github.com/me/r.git"]);
         git(&["remote", "add", "upstream", "gh:o/r.git"]);
         git(&["config", "url.https://github.com/.insteadOf", "gh:"]);
@@ -4806,7 +4833,7 @@ mod tests {
         assert_eq!(r.paths, ["me/r", "o/r"], "the upstream beside it, the other host's not");
         assert_eq!(remote_of(&dir, "main"), Some(r.remote.clone()));
         let mut s = State::default();
-        s.remember_remote(dir.clone(), Some(r));
+        s.remember_remote(dir.clone(), Ok(r));
         assert_eq!(s.remotes[&dir].as_ref().map(Remote::key).as_deref(), Some("github.com/me/r"));
         assert_eq!(s.repo_paths(&dir), ["me/r", "o/r"]);
         assert!(s.repo_paths(&dir.join("nope")).is_empty());

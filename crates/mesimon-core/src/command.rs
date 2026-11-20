@@ -3301,8 +3301,9 @@ pub struct AgentPrView {
 /// outside and a person executes for it), `forge` (a pull request is bound
 /// to the ticket, open, merged or closed: its work goes through pull
 /// requests and the board lands none of it, T-778) or `nobody` (the branch
-/// is merged already, T-772). `why` is the one clause that decided it, in words a
-/// crown relays.
+/// is merged already, T-772). On a pull-request board a touched leg with
+/// no remote is the person's to merge locally. Mixed work reads
+/// `person and forge`; `why` names the outstanding legs and their routes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMergeView {
     pub by: String,
