@@ -10,6 +10,36 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.21.unstable.3 — 2026-11-20
+
+An unstable build focused on board responsiveness and idle resource use.
+Nothing changes a state file's format.
+
+### Changed
+
+- **An idle board uses almost no CPU.** The terminal board redraws when you
+  type, when the board changes or when a clock on screen ticks, instead of
+  about ten times a second.
+- **The board is ready sooner after the daemon starts, and a merge returns
+  sooner.** Worktree status for the rest of the board is read in the
+  background afterwards.
+- **Search stays responsive on large boards.** Results stay visible until the
+  next ranking arrives, and loading many notes no longer delays other board
+  actions.
+- Saving sessions and usage no longer pauses the board.
+- Pull request and merge request checks re-read only worktrees that changed.
+- Putting an agent to sleep no longer saves a separate copy of its
+  conversation. Waking resumes from the agent's own history, as before.
+
+### Fixed
+
+- A slow Remote Control or terminal client no longer stalls the board for
+  everyone else.
+- A background tool started by a Codex agent is stopped with the agent even
+  when the command that launched it has already exited.
+- A prompt typed while a steer to a Codex agent is still pending no longer
+  leaves that steer unresolved.
+
 ## v0.1.0-beta.21.unstable.2 — 2026-11-19
 
 An unstable build focused on board responsiveness.
