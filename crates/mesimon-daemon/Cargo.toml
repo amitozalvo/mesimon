@@ -19,6 +19,7 @@ toml.workspace = true
 ulid.workspace = true
 uuid.workspace = true
 libc = "0.2"
+rustix = { version = "1", features = ["fs"] }
 signal-hook = "0.3"
 sha2 = "0.10"
 base64 = "0.22"

@@ -34,7 +34,7 @@ fn a_merge_refusal_reaches_the_feed_and_ticket_only_while_current() {
         "git merge failed:\n\terror: untracked café.txt\u{1b}\u{202e}\n{}",
         "é".repeat(3000)
     );
-    d.record_train_refusal(id, "tip".into(), &raw);
+    d.record_train_refusal(id, "tip".into(), &raw, None);
     d.feed.flush().unwrap();
     let line: serde_json::Value = std::fs::read_to_string(d.paths.activity_log())
         .unwrap()

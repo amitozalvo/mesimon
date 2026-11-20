@@ -48474,3 +48474,18 @@ A manual hold allowed the crown to land the original BT1. Worktree starts now
 need a fixture target or the train off. Train fixtures keep the blocker in
 their own checkout on independent history. Before filing, the rig checks the
 upcoming worker branch names, including CR1's rename, and reports collisions.
+## A merge refused for disk space gets another turn (T-1370, 2026-11-20)
+
+Freeing space leaves both Git tips untouched. At the old tip-pair gate an injected
+ENOSPC stayed parked for the full 15-second observation after the fault cleared,
+with worktree checks every second. At that same cadence the fixed train retried
+after 2.05 seconds and fast-forwarded. Git's ENOSPC and EDQUOT diagnostics now keep
+the affected checkout with the refusal. After a worktree refresh interval the
+train checks its available blocks. Git tests the actual write when space is
+available, including quotas the filesystem's count cannot see. An unchanged
+reason stays a single feed entry. Other Git refusals keep their tip-pair gate.
+
+The merge-train regression also blocks the atomic ticket save after Git succeeds.
+Placement now saves the proposed ticket before recording or broadcasting the move.
+The live card and the restarted daemon both read REVIEW when the DONE write fails.
+The browser suite's disk check shipped on T-1363.

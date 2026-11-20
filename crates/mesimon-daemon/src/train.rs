@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,14 @@ pub struct AskRecord {
     pub conflict: bool,
 }
 
+struct Refusal {
+    tip: String,
+    base_tip: String,
+    detail: String,
+    /// The repository that ran out of space, and the next eligible retry.
+    retry: Option<(PathBuf, Instant)>,
+}
+
 #[derive(Default)]
 pub struct Train {
     armed: Option<Arm>,
@@ -66,7 +75,7 @@ pub struct Train {
     /// A merge the checkout refused (a dirty main, a lock): remembered per
     /// `(branch tip, base tip)` so it is not retried every bucket. Value is
     /// the detail, for the card.
-    refused: HashMap<ulid::Ulid, (String, String, String)>,
+    refused: HashMap<ulid::Ulid, Refusal>,
 }
 
 impl Train {
@@ -206,25 +215,41 @@ impl Train {
         self.asked.iter().map(|(t, r)| (*t, r.base_oid.clone())).collect()
     }
 
-    pub fn refuse(&mut self, ticket: ulid::Ulid, tip: String, base_tip: String, detail: String) {
-        self.refused.insert(ticket, (tip, base_tip, detail));
+    pub fn refuse(
+        &mut self,
+        ticket: ulid::Ulid,
+        tip: String,
+        base_tip: String,
+        detail: String,
+        retry: Option<(PathBuf, Instant)>,
+    ) {
+        self.refused.insert(ticket, Refusal { tip, base_tip, detail, retry });
     }
 
-    /// Forget every remembered refusal. The checkout that refused them has
+    /// Forget semantic refusals. The checkout that refused them has
     /// changed under them (T-289): the `(tip, base tip)` pair a refusal is
     /// keyed on does not move when the user STASHES, which is one of the two
     /// things the refusal itself asks for, so the git sample's own delta is
     /// what lets the train try again.
     pub fn forget_refusals(&mut self) {
-        self.refused.clear();
+        self.refused.retain(|_, r| r.retry.is_some());
     }
 
     /// The detail of a merge refused at exactly this `(tip, base tip)`.
     pub fn refusal(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> Option<&str> {
-        self.refused
-            .get(&ticket)
-            .filter(|(t, b, _)| t == tip && b == base_tip)
-            .map(|(_, _, d)| d.as_str())
+        self.current_refusal(ticket, tip, base_tip).map(|r| r.detail.as_str())
+    }
+
+    fn current_refusal(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> Option<&Refusal> {
+        self.refused.get(&ticket).filter(|r| r.tip == tip && r.base_tip == base_tip)
+    }
+
+    pub fn blocks_merge(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> bool {
+        let Some(r) = self.current_refusal(ticket, tip, base_tip) else { return false };
+        let Some((path, after)) = &r.retry else { return true };
+        // statvfs cannot see every quota or linked checkout. When a write
+        // might succeed, let Git decide at the normal worktree cadence.
+        Instant::now() < *after || rustix::fs::statvfs(path).is_ok_and(|s| s.f_bavail == 0)
     }
 }
 
@@ -379,7 +404,7 @@ mod tests {
     fn a_refusal_is_remembered_per_tip_pair() {
         let mut train = Train::default();
         let t = ulid::Ulid(1);
-        train.refuse(t, "a".into(), "b".into(), "dirty".into());
+        train.refuse(t, "a".into(), "b".into(), "dirty".into(), None);
         assert!(train.refusal(t, "a", "b").is_some());
         assert_eq!(train.refusal(t, "a", "b"), Some("dirty"));
         assert!(train.refusal(t, "a2", "b").is_none(), "the branch moved");
@@ -393,8 +418,8 @@ mod tests {
     #[test]
     fn a_checkout_that_changes_forgets_every_refusal() {
         let mut train = Train::default();
-        train.refuse(ulid::Ulid(1), "a".into(), "b".into(), "dirty".into());
-        train.refuse(ulid::Ulid(2), "c".into(), "b".into(), "dirty".into());
+        train.refuse(ulid::Ulid(1), "a".into(), "b".into(), "dirty".into(), None);
+        train.refuse(ulid::Ulid(2), "c".into(), "b".into(), "dirty".into(), None);
         train.record_ask(ulid::Ulid(1), "b".into(), false, 0, false, Instant::now());
         train.forget_refusals();
         assert!(train.refusal(ulid::Ulid(1), "a", "b").is_none());

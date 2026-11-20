@@ -13055,8 +13055,8 @@ impl Daemon {
         turn_of: Option<uuid::Uuid>,
         rule: &str,
     ) -> std::result::Result<String, String> {
-        let t = self.open_ticket(id).map_err(str::to_string)?;
-        let from = t.column.clone();
+        let mut moved = self.open_ticket(id).map_err(str::to_string)?.clone();
+        let from = moved.column.clone();
         if !self.board.columns.iter().any(|c| c.name == dest) {
             return Err(format!("no such column: {dest}"));
         }
@@ -13103,29 +13103,22 @@ impl Daemon {
             return Err(refusal.message());
         }
 
-        let order = self.order_within(dest, id, &pos);
+        let stamp = now_iso();
+        moved.remember_column_stay(&stamp);
+        moved.column = dest.to_string();
+        moved.order = self.order_within(dest, id, &pos);
+        moved.entered_at = Some(stamp);
+        // Publish only a placement the next boot can read. A shared record
+        // stages all its fields together and owns its final save and rollback.
+        if !self.team_defers_ticket_write() {
+            store::save_ticket(&self.paths, &moved)
+                .map_err(|e| format!("could not save {}'s move: {e}", moved.short_key))?;
+        }
         let automatic = !by.is_human();
-        // Bracket the mutation so an automation firing from inside it (M5's
-        // on-enter actions) sees depth > 0 and is refused. Nothing recurses
-        // today; that is exactly why this is cheap to put in now.
         if automatic {
             self.moves.enter();
         }
-        if let Some(t) = self.board.ticket_mut(id) {
-            let stamp = now_iso();
-            t.remember_column_stay(&stamp);
-            t.column = dest.to_string();
-            t.order = order;
-            // The card's age is time in column, so a column change is the
-            // one thing that restarts it (a reorder returned above).
-            t.entered_at = Some(stamp);
-            let t = t.clone();
-            // A shared record writes all of its fields once after placement;
-            // a failed write must not leave an intermediate ticket on disk.
-            if !self.team_defers_ticket_write() {
-                let _ = store::save_ticket(&self.paths, &t);
-            }
-        }
+        *self.board.ticket_mut(id).expect("open ticket on the writer") = moved;
         self.moves.record(id, &from, dest, by, turn_of, Instant::now());
         self.note_hand_move(id, by);
         self.held.moved(id);
@@ -15438,6 +15431,15 @@ impl Daemon {
     /// The merge key (M4): preflight in memory; merge only when clean; never
     /// resolve conflicts — that is MergeToAgent's job.
     fn merge_ticket(&mut self, id: ulid::Ulid, by: &Principal) -> Response {
+        self.attempt_merge(id, by, &mut None)
+    }
+
+    fn attempt_merge(
+        &mut self,
+        id: ulid::Ulid,
+        by: &Principal,
+        full_disk: &mut Option<std::path::PathBuf>,
+    ) -> Response {
         if let Decision::Deny { .. } = authorize(by, &Action::Mutate, &Resource::Ticket { id }) {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
@@ -15606,7 +15608,7 @@ impl Daemon {
                     notified: false,
                 }
             }
-            worktree::LegMerge::Refused { landed, leg, base: leg_base, error } => {
+            worktree::LegMerge::Refused { landed, leg, base: leg_base, error, full_disk: path } => {
                 if !landed.is_empty() {
                     // Some legs did land: the card must say so now.
                     self.refresh_ticket_flags(id);
@@ -15614,6 +15616,7 @@ impl Daemon {
                     self.queue_git_sample();
                     self.persist_and_notify();
                 }
+                *full_disk = path;
                 let detail = worktree::merge_refusal_detail(&error, &leg_base);
                 Response::Merge {
                     outcome: MergeOutcome::Refused,
@@ -16347,10 +16350,11 @@ impl Daemon {
             // the refusal memory is keyed on the pair, and the snapshot road
             // (`pending_items`) reads the same map, so neither forks git.
             let tip = self.wt_agg.get(&t).map(|a| a.tip.clone()).unwrap_or_default();
-            if self.train.refusal(t, &tip, self.base_tip_of(t)).is_some() {
+            if self.train.blocks_merge(t, &tip, self.base_tip_of(t)) {
                 continue;
             }
-            match self.merge_ticket(t, &by) {
+            let mut full_disk = None;
+            match self.attempt_merge(t, &by, &mut full_disk) {
                 Response::Merge { outcome: MergeOutcome::Merged, .. } => {
                     self.train_acted_ms = mesimon_core::clock::now_ms();
                     self.feed.board("automation", "merge_train_merged", Some(t));
@@ -16380,7 +16384,7 @@ impl Daemon {
                     return true;
                 }
                 Response::Merge { outcome: MergeOutcome::Refused, detail, .. } => {
-                    self.record_train_refusal(t, tip, &detail);
+                    self.record_train_refusal(t, tip, &detail, full_disk);
                     refused = true;
                 }
                 // NeedsRebase / AlreadyMerged: the cached flags lagged git;
@@ -16415,7 +16419,13 @@ impl Daemon {
 
     /// Keep and report the same bounded reason. Git's stderr may contain
     /// arbitrary paths; flatten before scrubbing so line breaks stay spaces.
-    fn record_train_refusal(&mut self, ticket: ulid::Ulid, tip: String, detail: &str) {
+    fn record_train_refusal(
+        &mut self,
+        ticket: ulid::Ulid,
+        tip: String,
+        detail: &str,
+        full_disk: Option<std::path::PathBuf>,
+    ) {
         use mesimon_core::text::{cap_bytes, scrub_text};
         let detail = scrub_text(&detail.split_whitespace().collect::<Vec<_>>().join(" "));
         let detail =
@@ -16425,8 +16435,22 @@ impl Daemon {
         } else {
             detail.to_string()
         };
-        self.feed.board_outcome("automation", "merge_train_refused:merge", Some(ticket), &detail);
-        self.train.refuse(ticket, tip, self.base_tip_of(ticket).to_string(), detail);
+        let base_tip = self.base_tip_of(ticket).to_owned();
+        // Quotas can still refuse a write on a volume with available blocks.
+        // Keep the reason visible during retries without flooding the feed.
+        if self.train.refusal(ticket, &tip, &base_tip) != Some(detail.as_str()) {
+            self.feed.board_outcome(
+                "automation",
+                "merge_train_refused:merge",
+                Some(ticket),
+                &detail,
+            );
+        }
+        let retry = full_disk.map(|path| {
+            let interval = Duration::from_millis(TICK_MS.saturating_mul(wt_refresh_ticks()));
+            (path, Instant::now() + interval)
+        });
+        self.train.refuse(ticket, tip, base_tip, detail, retry);
         self.train_acted_ms = mesimon_core::clock::now_ms();
     }
 

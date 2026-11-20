@@ -761,6 +761,85 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     let _ = c.request(Command::Shutdown);
 }
 
+/// Refuse only the fast-forward. The fault lives outside the checkout so
+/// clearing it changes neither Git tip nor the sampled checkout status.
+#[test]
+fn a_full_disk_retries_the_merge_and_a_failed_column_save_survives_restart() {
+    let Some(h) = Harness::boot_staged(
+        "train-full",
+        Some(&claude_stub(SILENT_STUB)),
+        &[("MESIMON_WT_REFRESH_TICKS", "4")],
+        |fixture, repo| {
+            init_repo(repo, "base", "base");
+            let wrapper = fixture.dir.join("git");
+            std::fs::write(
+                &wrapper,
+                r#"#!/bin/sh
+if [ "$3" = merge ] && [ "$4" = --ff-only ]; then
+    echo merge >> "$2/.git/attempts"
+    if [ -f "$2/.git/full" ]; then
+        echo "fatal: unable to create ORIG_HEAD.lock: No space left on device" >&2
+        exit 128
+    fi
+fi
+PATH="$REAL_GIT_PATH" exec git "$@"
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            let path = std::env::var("PATH").unwrap();
+            fixture.set_env("REAL_GIT_PATH", &path);
+            fixture.set_env("PATH", format!("{}:{path}", fixture.dir.display()));
+        },
+    ) else {
+        return;
+    };
+    let mut c = h.client("train-full");
+    let (id, sid, branch, _) = ready(&mut c, "alpha");
+    let hooks = h.paths.hook_sock();
+    hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    hook_send(&hooks, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    let ticket = c.board().ticket(id).unwrap().clone();
+    assert_eq!(ticket.column, "REVIEW");
+    let file = h.paths.board_dir.join("board/tickets").join(ticket.short_key).join("ticket.toml");
+    let durable = std::fs::read_to_string(&file).unwrap();
+    let full = h.repo.join(".git/full");
+    std::fs::write(&full, "").unwrap();
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(15), "the disk refusal", || {
+        feed_count_with(&h, "merge_train_refused:merge", id, "No space left on device") > 0
+    });
+    let refused = std::time::Instant::now();
+    assert!(!is_ancestor(&h.repo, &branch, "main"));
+    // The retry can write Git again, but the ticket's atomic save still
+    // fails. Keep its original file readable throughout, including at boot.
+    let tmp = file.with_extension("tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    std::fs::remove_file(full).unwrap();
+    wait_until(Duration::from_secs(15), "a second fast-forward at unchanged tips", || {
+        std::fs::read_to_string(h.repo.join(".git/attempts")).unwrap().lines().count() > 1
+    });
+    eprintln!("disk refusal to fast-forward retry: {:?}", refused.elapsed());
+    wait_until(Duration::from_secs(10), "the retry to land", || {
+        feed_count(&h, "merge_train_merged", id) == 1
+    });
+    assert!(is_ancestor(&h.repo, &branch, "main"));
+    assert!(h.feed().lines().any(|line| line.contains("movement_decision")
+        && line.contains(&id.to_string())
+        && line.contains("refused: could not save")));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), durable);
+    assert_eq!(c.board().ticket(id).unwrap().column, "REVIEW");
+    drop(c);
+    h.restart();
+    assert_eq!(h.client("after-restart").board().ticket(id).unwrap().column, "REVIEW");
+}
+
 /// T-809: a delivered ticket whose agent a tier switch relaunched. The
 /// relaunch's `SessionStart` lands the agent at `Idle{Unknown}`, at its
 /// composer with no turn in flight and nothing owed: a free seat, which the

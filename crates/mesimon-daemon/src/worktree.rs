@@ -465,17 +465,38 @@ pub fn ensure_root(paths: &Paths) -> Result<PathBuf> {
     Ok(root)
 }
 
+#[derive(Debug)]
+struct GitFailure {
+    verb: String,
+    stderr: String,
+    directory: PathBuf,
+}
+
+impl std::fmt::Display for GitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "git {} failed: {}", self.verb, self.stderr)
+    }
+}
+
+impl std::error::Error for GitFailure {}
+
 /// Run git with argv, capture stdout; non-zero exit becomes an error carrying
 /// stderr (callers rewrap into mesimon-voiced messages before the UI).
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::git::git(repo).args(args).output().context("run git")?;
+    let mut cmd = crate::git::git(repo);
+    if matches!(args.first(), Some(&"merge" | &"push")) {
+        // Git communicates a failed write's errno only through stderr.
+        cmd.env("LC_ALL", "C");
+    }
+    let out = cmd.args(args).output().context("run git")?;
     if !out.status.success() {
         // Named by its verb, never by a leading flag (`--no-optional-locks`).
-        bail!(
-            "git {} failed: {}",
-            args.iter().copied().find(|a| !a.starts_with('-')).unwrap_or(""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        return Err(GitFailure {
+            verb: args.iter().copied().find(|a| !a.starts_with('-')).unwrap_or("").to_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+            directory: repo.to_owned(),
+        }
+        .into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -2085,6 +2106,18 @@ pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
     }
 }
 
+/// A Git diagnostic ends in strerror(errno). Inspect the raw lines before
+/// flattening: a colliding filename listed by Git can itself name an errno.
+fn storage_exhausted(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let diagnostic = line.strip_prefix("remote: ").unwrap_or(line);
+        (diagnostic.starts_with("fatal: ") || diagnostic.starts_with("error: "))
+            && (diagnostic.ends_with(": No space left on device")
+                || diagnostic.ends_with(": Disk quota exceeded")
+                || diagnostic.ends_with(": Disc quota exceeded"))
+    })
+}
+
 /// A refusal reason fit for the status line: git's dirty-checkout refusal
 /// (multi-line, one path per line) gains actionable advice, keeping git's
 /// words and paths. Flattened to a single line — the wire must never carry text a
@@ -2574,7 +2607,13 @@ pub enum LegMerge {
     Merged(Vec<(String, String)>),
     /// Landed `landed`, then `leg` refused with git's words; the legs before
     /// it stay merged and the next call continues from here.
-    Refused { landed: Vec<(String, String)>, leg: String, base: String, error: String },
+    Refused {
+        landed: Vec<(String, String)>,
+        leg: String,
+        base: String,
+        error: String,
+        full_disk: Option<PathBuf>,
+    },
 }
 
 /// Merge the branch leg by leg, ff-only, in leg order: every touched,
@@ -2626,6 +2665,10 @@ pub fn merge_legs(legs: &[Leg], branch: &str) -> LegMerge {
                     landed,
                     leg: leg.name.clone(),
                     base: leg.base.clone(),
+                    full_disk: e
+                        .downcast_ref::<GitFailure>()
+                        .filter(|g| storage_exhausted(&g.stderr))
+                        .map(|g| g.directory.clone()),
                     error: e.to_string(),
                 }
             }
@@ -3349,6 +3392,22 @@ mod tests {
         assert_eq!(n, 1, "{summary}");
 
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn git_storage_diagnostics_cover_linux_and_macos_quotas() {
+        for reason in ["No space left on device", "Disk quota exceeded", "Disc quota exceeded"] {
+            assert!(storage_exhausted(&format!(
+                "fatal: unable to create 'ORIG_HEAD.lock': {reason}"
+            )));
+            assert!(storage_exhausted(&format!(
+                "remote: error: cannot lock ref: {reason}\nerror: push failed"
+            )));
+            assert!(!storage_exhausted(&format!(
+                "error: untracked files would be overwritten:\n\tfile: {reason}\nAborting"
+            )));
+        }
+        assert!(!storage_exhausted("fatal: cannot lock 'ORIG_HEAD.lock': File exists"));
     }
 
     #[test]
@@ -5099,7 +5158,7 @@ mod tests {
         std::fs::write(root.join("web/page.tsx"), "uncommitted\n").unwrap();
         let got = merge_legs(&legs, &b.branch);
         match got {
-            LegMerge::Refused { landed, leg, base, error } => {
+            LegMerge::Refused { landed, leg, base, error, .. } => {
                 assert_eq!(landed, vec![("api".to_string(), "main".to_string())]);
                 assert_eq!((leg.as_str(), base.as_str()), ("web", "main"));
                 assert!(merge_refusal_detail(&error, &base).contains("uncommitted"), "{error}");

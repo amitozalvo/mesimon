@@ -918,6 +918,7 @@ dependencies = [
  "mesimon-backend-tmux",
  "mesimon-core",
  "mesimon-team",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
