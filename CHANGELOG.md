@@ -10,6 +10,59 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.22.unstable.1 — 2026-11-20
+
+An unstable build that adds files to ticket prompts, on the board and from
+Remote Control. The crown's wake record gains a version number and crown acts
+gain an optional earlier title. Older builds leave both files intact, and
+existing files remain readable.
+
+### Added
+
+- **`Ctrl+O` attaches a file to a ticket prompt.** It works in the prompt
+  field and in its expanded editor. The file is stored with the ticket, up to
+  10 MiB, and the agent can open it from your prompt.
+- **Remote Control can send a file with a prompt.** Use + › Choose file. A
+  picture chosen this way is sent as the original file.
+- **A worker whose committed branch is waiting on its own background tasks is
+  told so once.** The message names the running tasks. Edit it or switch it
+  off under Settings › Agent prompts › Background task notice. After 30
+  minutes the card shows needs-you, or the crown is woken on a crowned board.
+- **A crown is woken when one of its workers exits in the middle of a turn.**
+
+### Changed
+
+- **Archive in Remote Control's Actions and Details asks for confirmation.**
+  Tap Archive ticket to confirm, or Cancel.
+- **A crown's rename of a ticket shows the old and new titles** in the ticket
+  conversation, on the board and in Remote Control.
+- **A crown hears that a merge has landed when it lands**, instead of after
+  the merged agent's reply to the merge notice.
+- **agy's trust question for a ticket worktree names the board's checkout.**
+  Trusting that checkout once in agy covers every ticket worktree on the board.
+- On a pull-request board, a repository with no remote reads as needing your
+  local merge instead of the forge's.
+- A Claude agent whose Stop hook exits quietly reads as finished sooner.
+
+### Fixed
+
+- **A subagent's report no longer appears as your prompt.** The ticket page
+  and Remote Control show one line naming the subagent instead.
+- **A photo taken with Remote Control's camera button reaches the draft.**
+  Before, coming back from the camera dropped it.
+- **A Claude permission request stays marked needs-you when a background
+  task reports back.**
+- **A Codex agent keeps its turn when macOS denies a check on one of its
+  processes.** Before, the agent's turn was lost.
+- A merge refused for lack of disk space is retried once space is free.
+- A ticket you move back to TODO and start again moves to IN PROGRESS when
+  its agent starts working.
+- A ticket move the board could not save no longer shows on the card.
+- An agy agent no longer reads as interrupted when it resumes after a brief
+  pause, and its ticket's conversation follows the main agent, not a
+  subagent.
+- A crown's move of a ticket no longer reads as a tag change in its activity.
+
 ## v0.1.0-beta.22 — 2026-11-20
 
 Everything from the three unstable builds since beta.21: a board that stays
