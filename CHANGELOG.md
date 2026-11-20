@@ -10,6 +10,81 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.22 — 2026-11-20
+
+Everything from the three unstable builds since beta.21: a board that stays
+responsive under load and uses almost no CPU while idle, and a Remote Control
+composer that opens at Steer. Session files gain an optional record of how a
+background task was parked. Existing session files remain readable.
+
+### Added
+
+- **`Tab` folds the ticket page's description to its first row**, and the
+  choice holds for every ticket.
+- **Remote Control's conversation shows a raised hand** as the ticket page
+  does, in the needs-you colour while the hand is up.
+- **Remote Control can press Enter from the terminal preview.** With the
+  preview focused, Enter goes to the agent and the line you were typing stays
+  in the field.
+
+### Changed
+
+- **An idle board uses almost no CPU.** The terminal board redraws when you
+  type, when the board changes or when a clock on screen ticks, instead of
+  about ten times a second.
+- **The board is ready sooner after the daemon starts, and a merge returns
+  sooner.** Worktree status for the rest of the board is read in the
+  background afterwards.
+- **Remote Control's composer opens at Steer**, with Queue one pick away.
+- **Search stays responsive on large boards.** Results stay visible until the
+  next ranking arrives, and loading many notes no longer delays other board
+  actions.
+- A reply from a linked board reaches a crown in the middle of its turn
+  instead of waiting for the turn to end.
+- The activity log says why a crown wake is waiting and when that hold clears.
+- Remote Control's Notes tab opens a ticket's only note directly, and a
+  picture being uploaded wears a ring instead of a line under the field.
+- Pull request and merge request checks make far fewer calls to the forge and
+  re-read only worktrees that changed.
+- Saving sessions and usage no longer pauses the board.
+- Putting an agent to sleep no longer saves a separate copy of its
+  conversation. Waking resumes from the agent's own history, as before.
+
+### Fixed
+
+- **Typing and navigation stay responsive** while a terminal opens, a session
+  is cleaned up, a preview is cleared or a ticket acknowledgement is pending.
+- **A slow Remote Control or terminal client no longer stalls the board for
+  everyone else.**
+- **Enter on the board respects the direct-to-agent setting again**, instead
+  of opening the ticket page and cancelling the attachment.
+- The ticket page keeps its picture while Enter attaches to the agent, and the
+  agent's screen appears sooner.
+- A shell command sent to a Codex agent is submitted instead of waiting in its
+  input box.
+- Creating a ticket and submitting a text prompt no longer blocks input while
+  the daemon answers. A delayed result leaves a newer draft intact.
+- A prompt queued from the phone stays sent instead of coming back to the
+  field.
+- Words from a crown or a linked board no longer show on the phone as yours.
+- Remote Control keeps a run of folded steps in its place in the
+  conversation, instead of showing newer rows above it.
+- A crown waiting for another board no longer blocks its own board or prevents
+  that board from receiving a crown request in return.
+- Restarting the daemon no longer marks an agent's turn finished while its
+  background task is still running.
+- A task stopped from Claude Code's tasks panel leaves the card.
+- A background tool started by a Codex agent is stopped with the agent even
+  when the command that launched it has already exited.
+- A prompt typed while a steer to a Codex agent is still pending no longer
+  leaves that steer unresolved.
+- A worker that moved its untouched branch onto the upstream no longer reads
+  as merged, and a ticket stacked on another ticket's unmerged commit no
+  longer reads as delivered when that commit lands.
+- A ticket with no commits, or whose pull request was closed without merging,
+  can move to DONE.
+- Dismissing the picture picker leaves the New ticket sheet open.
+
 ## v0.1.0-beta.21.unstable.3 — 2026-11-20
 
 An unstable build focused on board responsiveness and idle resource use.
