@@ -30,6 +30,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     draw_list(f, app, idx, "MENU", Scope::Menu, &items);
 }
 
+pub(super) fn draw_file_path(f: &mut Frame, app: &App, buffer: &crate::text::EditBuffer) {
+    draw_rows(
+        f,
+        app,
+        0,
+        "ATTACH FILE",
+        &[("File path".into(), "Up to 10 MiB".into())],
+        &[],
+        Some(("Path: ", buffer)),
+    );
+}
+
 pub(super) fn draw_merge_branch(f: &mut Frame, app: &App, buffer: &crate::text::EditBuffer) {
     draw_rows(
         f,

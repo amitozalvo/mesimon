@@ -27,4 +27,4 @@
 
 
 
- ASK  enter send ∙ esc cancel ∙ ^] keep draft ∙ tab expand ∙ shift+tab now / queued / immediately
+ ASK  enter send ∙ esc cancel ∙ ^o attach file ∙ ^] keep draft ∙ tab expand ∙ shift+tab now / queued / immediately

@@ -9504,6 +9504,14 @@ fn golden_ticket_prompt_field_120() {
     golden("ticket_prompt_120x30", &lines);
 }
 
+#[test]
+fn golden_ticket_prompt_with_file() {
+    let app = ticket_prompting(3, "Compare [sales.csv] with last month.");
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|line| line.contains("[sales.csv]")));
+    golden("ticket_prompt_with_file_120x30", &lines);
+}
+
 /// The note at rail row 3 with no field open — the resting page the field
 /// golden is measured against.
 fn app_noted_at(rail_idx: usize) -> App {

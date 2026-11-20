@@ -31,6 +31,18 @@ pub trait Transport {
         let _ = tx.send(self.request(command));
         rx
     }
+    fn prompt_with_files(
+        &mut self,
+        command: Command,
+        draft: Vec<crate::image_paste::DraftImage>,
+        history: std::sync::mpsc::Sender<String>,
+    ) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let _ = tx.send(crate::image_paste::send_prompt(command, &draft, history, |cmd| {
+            self.request(cmd)
+        }));
+        rx
+    }
     /// A read on a reusable, unsubscribed connection, off the input thread.
     fn read_detached(&mut self, command: Command) -> Receiver<Result<Response>> {
         self.request_detached(command)
@@ -303,6 +315,22 @@ impl Transport for Client {
         rx
     }
 
+    fn prompt_with_files(
+        &mut self,
+        command: Command,
+        draft: Vec<crate::image_paste::DraftImage>,
+        history: std::sync::mpsc::Sender<String>,
+    ) -> Receiver<Result<Response>> {
+        let (tx, rx) = channel();
+        let repo = self.repo_root.clone();
+        std::thread::spawn(move || {
+            let result = open_existing(&repo).and_then(|mut c| {
+                crate::image_paste::send_prompt(command, &draft, history, |cmd| c.request(cmd))
+            });
+            let _ = tx.send(result);
+        });
+        rx
+    }
     /// The snapshot, on the lane (T-812). The thread takes the lane, dials
     /// it when there is none, asks, and dies with the reply; a snapshot is
     /// ~14 a minute with one agent working, so the connection is kept

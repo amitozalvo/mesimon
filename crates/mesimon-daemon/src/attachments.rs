@@ -180,6 +180,10 @@ impl Uploads {
                 u.file.as_ref().is_none_or(|f| Some(f.ticket) == prompt_ticket),
                 "file belongs to a different ticket or prompt"
             );
+            anyhow::ensure!(
+                u.file.is_none() || !mesimon_core::road::is_shell(text),
+                "file attachments require an agent prompt"
+            );
             anyhow::ensure!(!u.held, "attachment upload is pending delivery");
             result.push((
                 u.meta.clone().context("attachment upload is incomplete")?,

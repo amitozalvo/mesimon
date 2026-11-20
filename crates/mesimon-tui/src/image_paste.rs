@@ -42,12 +42,14 @@ fn select_backend(ssh: bool, wsl: bool) -> Result<Backend> {
 pub struct DraftImage {
     pub id: Ulid,
     pub number: usize,
-    pub png: Option<Arc<[u8]>>,
+    pub bytes: Option<Arc<[u8]>>,
+    pub file: Option<(attachment::FileUpload, String)>,
 }
 
 pub enum Pasted {
     Text(String),
     Image(Vec<u8>),
+    File(attachment::FileUpload, Vec<u8>),
 }
 
 pub struct Pending {
@@ -92,6 +94,31 @@ pub fn start(landing: Landing) -> Result<Pending> {
         let _ = tx.send(read(backend).map_err(|e| format!("{e:#}")));
     })?;
     Ok(Pending { landing, result, started: std::time::Instant::now(), timed_out: false })
+}
+
+pub fn read_file(path: PathBuf, ticket: Ulid, landing: Landing) -> Result<Pending> {
+    let (tx, result) = mpsc::channel();
+    std::thread::Builder::new().name("mesimon-read-file".into()).spawn(move || {
+        let read = || -> Result<Pasted> {
+            use std::os::unix::fs::OpenOptionsExt;
+            let name =
+                path.file_name().and_then(|s| s.to_str()).context("file needs a UTF-8 name")?;
+            anyhow::ensure!(attachment::valid_basename(name), "invalid file name");
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)?;
+            let meta = f.metadata()?;
+            anyhow::ensure!(meta.is_file(), "choose a regular file");
+            anyhow::ensure!(meta.len() <= MAX_BYTES as u64, "file exceeds 10 MiB");
+            let mut bytes = Vec::new();
+            f.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= MAX_BYTES, "file exceeds 10 MiB");
+            Ok(Pasted::File(attachment::FileUpload { ticket, name: name.into() }, bytes))
+        };
+        let _ = tx.send(read().map_err(|e| format!("could not attach file: {e:#}")));
+    })?;
+    Ok(Pending { landing, result, started: Instant::now(), timed_out: false })
 }
 
 fn read(backend: Backend) -> Result<Pasted> {
@@ -323,13 +350,16 @@ pub fn unpack(text: &str) -> (String, Vec<DraftImage>) {
         };
         let marker = format!("[{label}]");
         body = body.replace(&format!("{marker}({})", attachment::target(id)), &marker);
-        images.push(DraftImage { id, number, png: None });
+        images.push(DraftImage { id, number, bytes: None, file: None });
     }
     (body, images)
 }
 
 pub fn marker(image: &DraftImage) -> String {
-    format!("[Image #{}]", image.number)
+    match &image.file {
+        Some((_, label)) => format!("[{label}]"),
+        None => format!("[Image #{}]", image.number),
+    }
 }
 
 pub fn pack(body: &str, images: &[DraftImage]) -> String {
@@ -355,7 +385,7 @@ pub fn pack(body: &str, images: &[DraftImage]) -> String {
 }
 
 pub fn check_draft(images: &[DraftImage], bytes: usize) -> Result<()> {
-    let total: usize = images.iter().filter_map(|i| i.png.as_ref()).map(|p| p.len()).sum();
+    let total: usize = images.iter().filter_map(|i| i.bytes.as_ref()).map(|p| p.len()).sum();
     anyhow::ensure!(
         bytes <= MAX_BYTES && total + bytes <= DRAFT_MAX_BYTES,
         "pictures exceed the 50 MiB draft limit (10 MiB per picture)"
@@ -443,7 +473,7 @@ mod tests {
 
     #[test]
     fn packing_never_overwrites_an_explicit_markdown_target() {
-        let image = DraftImage { id: Ulid::new(), number: 1, png: None };
+        let image = DraftImage { id: Ulid::new(), number: 1, bytes: None, file: None };
         let text = "[Image #1](https://example.org/picture.png) and [Image #1]";
         assert_eq!(
             pack(text, std::slice::from_ref(&image)),
@@ -462,7 +492,7 @@ mod tests {
         assert_eq!(plain, "Before [Image #3] after");
         assert_eq!(pack(&plain, &images), markdown);
         assert_eq!(images[0].id, id);
-        assert!(images[0].png.is_none());
+        assert!(images[0].bytes.is_none());
     }
 
     #[test]
@@ -489,4 +519,88 @@ mod tests {
         .is_err());
         assert!(check_draft(&[], MAX_BYTES + 1).is_err());
     }
+}
+
+pub(crate) fn upload(
+    body: &str,
+    draft: &[DraftImage],
+    limit: usize,
+    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
+) -> Result<(String, Vec<DraftImage>, Vec<Ulid>)> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use mesimon_core::command::{Command, Response};
+    let mut images: Vec<_> = draft
+        .iter()
+        .filter(|i| {
+            body.match_indices(&marker(i)).any(|(at, m)| !body[at + m.len()..].starts_with('('))
+        })
+        .cloned()
+        .collect();
+    anyhow::ensure!(
+        pack(body, &images).len() <= limit,
+        "text including image references exceeds {} KiB",
+        limit / 1024
+    );
+    let mut uploads = Vec::new();
+    for image in &mut images {
+        let Some(png) = &image.bytes else { continue };
+        let mut upload = None;
+        for index in 0..png.len().div_ceil(attachment::CHUNK_BYTES).max(1) {
+            let offset = index * attachment::CHUNK_BYTES;
+            let bytes = &png[offset..(offset + attachment::CHUNK_BYTES).min(png.len())];
+            match request(Command::UploadAttachment {
+                file: image.file.as_ref().map(|(f, _)| f.clone()),
+                upload,
+                offset,
+                data: STANDARD.encode(bytes),
+                complete: offset + bytes.len() == png.len(),
+            })? {
+                Response::AttachmentUploaded { upload: id } => {
+                    if upload.is_none() {
+                        uploads.push(id);
+                    }
+                    upload = Some(id);
+                }
+                response => {
+                    let _ = request(Command::DiscardAttachmentUploads { uploads });
+                    let message = match response {
+                        Response::Err { message } => message,
+                        _ => "daemon did not accept the attachment".into(),
+                    };
+                    anyhow::bail!(message);
+                }
+            }
+        }
+        image.id = upload.ok_or_else(|| anyhow::anyhow!("empty upload"))?;
+        image.bytes = None;
+    }
+    Ok((pack(body, &images), images, uploads))
+}
+
+pub(crate) fn send_prompt(
+    mut command: mesimon_core::command::Command,
+    draft: &[DraftImage],
+    history: mpsc::Sender<String>,
+    mut request: impl FnMut(mesimon_core::command::Command) -> Result<mesimon_core::command::Response>,
+) -> Result<mesimon_core::command::Response> {
+    use mesimon_core::command::{Command, Response, PROMPT_MAX_BYTES};
+    let Command::PromptSession { text, uploads, .. } = &mut command else {
+        anyhow::bail!("attachments require a ticket prompt");
+    };
+    let (linked, _, ids) = match upload(text, draft, PROMPT_MAX_BYTES, &mut request) {
+        Ok(upload) => upload,
+        Err(error) => {
+            return Ok(Response::Err { message: format!("attachment upload failed: {error}") })
+        }
+    };
+    *text = linked.clone();
+    *uploads = ids.clone();
+    let result = request(command);
+    if !ids.is_empty() {
+        let _ = request(Command::DiscardAttachmentUploads { uploads: ids });
+    }
+    if matches!(&result, Ok(r) if !matches!(r, Response::Err { .. })) {
+        let _ = history.send(linked);
+    }
+    result
 }

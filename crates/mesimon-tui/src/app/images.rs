@@ -1,7 +1,7 @@
 //! Clipboard completion and save-time upload of a draft's pictures.
 use super::*;
 use crate::image_paste::{self, DraftImage, Landing, Pasted};
-use base64::{engine::general_purpose::STANDARD, Engine};
+
 use mesimon_core::attachment;
 
 /// The two texts a clipboard read lands in: the room's body keeps its
@@ -47,13 +47,33 @@ fn land<B: Lands>(
             "text pasted"
         }
         .into(),
-        Ok(Pasted::Image(png)) => {
+        Ok(pasted @ (Pasted::Image(_) | Pasted::File(_, _))) => {
+            let (file, png) = match pasted {
+                Pasted::Image(bytes) => (None, bytes),
+                Pasted::File(file, bytes) => {
+                    let name = mesimon_core::text::scrub_cells(&file.name, false)
+                        .replace('[', "(")
+                        .replace(']', ")");
+                    let mut label = name.clone();
+                    let mut n = 1;
+                    while body.text().contains(&format!("[{label}]"))
+                        || images.iter().any(|i| image_paste::marker(i) == format!("[{label}]"))
+                        || label.starts_with("Image #") && n == 1
+                    {
+                        n += 1;
+                        label = format!("{name} #{n}");
+                    }
+                    (Some((file, label)), bytes)
+                }
+                Pasted::Text(_) => unreachable!(),
+            };
             if let Err(e) = image_paste::check_draft(images, png.len()) {
                 return e.to_string();
             }
             let number = attachment::next_number(body.text())
                 .max(images.iter().map(|i| i.number).max().unwrap_or(0).saturating_add(1));
-            let image = DraftImage { id: ulid::Ulid::new(), number, png: Some(png.into()) };
+            let image = DraftImage { id: ulid::Ulid::new(), number, bytes: Some(png.into()), file };
+            let is_file = image.file.is_some();
             let marker = image_paste::marker(&image);
             let mut grown = body.clone();
             let mut held = images.clone();
@@ -63,12 +83,68 @@ fn land<B: Lands>(
             }
             *body = grown;
             *images = held;
-            format!("{marker} pasted ∙ {keeps} keeps the picture")
+            if is_file {
+                format!("{marker} attached")
+            } else {
+                format!("{marker} pasted ∙ {keeps} keeps the picture")
+            }
         }
     }
 }
 
+fn file_target(mode: &Mode) -> Option<(ulid::Ulid, Landing)> {
+    match mode {
+        Mode::Input {
+            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(ticket), .. },
+            buffer,
+        } => Some((*ticket, Landing::Field(buffer.clone()))),
+        Mode::Editor(ed) if ed.focus == Field::Body => match ed.purpose {
+            EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
+                Some((ticket, Landing::Editor { draft: ed.draft_id, body: ed.body.clone() }))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl App {
+    pub(super) fn choose_prompt_file(&mut self, previous: Mode) {
+        self.mode = previous;
+        let Some((ticket, _)) = file_target(&self.mode) else { return };
+        if self.pending_paste.is_some() {
+            self.status = "a read is pending".into();
+            return;
+        }
+        let tools_off = self
+            .board
+            .ticket(ticket)
+            .and_then(|t| self.board.column(&t.column))
+            .is_some_and(|c| c.settings.agent_tools == mesimon_core::board::AgentTools::Off);
+        if !self.board.mcp_tools || tools_off {
+            self.status = "board tools are off for this ticket".into();
+            return;
+        }
+        self.mode = Mode::Input {
+            purpose: InputPurpose::FilePath(Box::new(std::mem::replace(
+                &mut self.mode,
+                Mode::Normal,
+            ))),
+            buffer: EditBuffer::new(4096),
+        };
+    }
+
+    pub(super) fn read_prompt_file(&mut self, path: std::path::PathBuf) {
+        let Some((ticket, landing)) = file_target(&self.mode) else { return };
+        match image_paste::read_file(path, ticket, landing) {
+            Ok(p) => {
+                self.pending_paste = Some(p);
+                self.status = "reading file".into();
+            }
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
     pub(super) fn poll_image_paste(&mut self) -> bool {
         let Some(pending) = &mut self.pending_paste else { return false };
         let result = match pending.result.try_recv() {
@@ -89,6 +165,11 @@ impl App {
         let pending = self.pending_paste.take().expect("pending clipboard read");
         if pending.timed_out || !landing_open(&self.mode, &pending.landing) {
             return false;
+        }
+        if let Ok(Pasted::File(file, _)) = &result {
+            if file_target(&self.mode).is_none_or(|(ticket, _)| ticket != file.ticket) {
+                return false;
+            }
         }
         const CHANGED: &str = "text changed while reading clipboard ∙ paste again";
         let one_line = self.board_field();
@@ -149,6 +230,15 @@ impl App {
     /// up first, as the room's `^s` sends them (T-853), and the words go
     /// linked to them. A refusal puts the field back with its pictures.
     pub(super) fn send_field(&mut self, mut purpose: InputPurpose, text: String) -> Result<()> {
+        if let InputPurpose::Prompt { images, .. } = &purpose {
+            if images.iter().any(|i| i.file.is_some()) {
+                let retry = Mode::Input {
+                    purpose: purpose.clone(),
+                    buffer: history_field(&text, self.board_field()),
+                };
+                return self.commit_prompt_draft(purpose, text, Vec::new(), Some(retry));
+            }
+        }
         let images = match &mut purpose {
             InputPurpose::Prompt { images, .. } => std::mem::take(images),
             _ => Vec::new(),
@@ -184,46 +274,7 @@ impl App {
         draft: &[DraftImage],
         limit: usize,
     ) -> Result<(String, Vec<DraftImage>, Vec<ulid::Ulid>)> {
-        let mut images: Vec<_> =
-            draft.iter().filter(|i| body.contains(&image_paste::marker(i))).cloned().collect();
-        anyhow::ensure!(
-            image_paste::pack(body, &images).len() <= limit,
-            "text including image references exceeds {} KiB",
-            limit / 1024
-        );
-        let mut uploads = Vec::new();
-        for image in &mut images {
-            let Some(png) = &image.png else { continue };
-            let mut upload = None;
-            for (index, bytes) in png.chunks(attachment::CHUNK_BYTES).enumerate() {
-                let offset = index * attachment::CHUNK_BYTES;
-                match self.req(Command::UploadAttachment {
-                    file: None,
-                    upload,
-                    offset,
-                    data: STANDARD.encode(bytes),
-                    complete: offset + bytes.len() == png.len(),
-                }) {
-                    Response::AttachmentUploaded { upload: id } => {
-                        if upload.is_none() {
-                            uploads.push(id);
-                        }
-                        upload = Some(id);
-                    }
-                    response => {
-                        let _ = self.req(Command::DiscardAttachmentUploads { uploads });
-                        let message = match response {
-                            Response::Err { message } => message,
-                            _ => "daemon did not accept the picture upload".into(),
-                        };
-                        anyhow::bail!(message);
-                    }
-                }
-            }
-            image.id = upload.ok_or_else(|| anyhow::anyhow!("empty picture"))?;
-            image.png = None;
-        }
-        Ok((image_paste::pack(body, &images), images, uploads))
+        image_paste::upload(body, draft, limit, |cmd| Ok(self.req(cmd)))
     }
 }
 

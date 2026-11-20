@@ -1649,6 +1649,7 @@ enum FocusTarget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputPurpose {
+    FilePath(Box<Mode>),
     SetMergeBranch,
     /// New-ticket composer. `workspace` is the Shift+Tab selector below the
     /// name (M4 layering): None = the board default (shared checkout).
@@ -6036,6 +6037,7 @@ impl App {
         } else if let Mode::Input { purpose, buffer } = &mut self.mode {
             let what = match purpose {
                 InputPurpose::Create { .. } | InputPurpose::Rename { .. } => "a title",
+                InputPurpose::FilePath(_) => "a file path",
                 InputPurpose::SetMergeBranch => "an integration branch",
                 InputPurpose::RenameColumn { .. } => "a column name",
                 InputPurpose::Prompt { .. } => "an ask",
@@ -11755,6 +11757,7 @@ impl App {
             | Verb::EditorUp
             | Verb::EditorDown
             | Verb::EditorExternal
+            | Verb::AttachFile
             | Verb::EditorPaste
             | Verb::NextNote
             | Verb::PrevNote
@@ -14145,6 +14148,10 @@ impl App {
                 return self.handle_key_inner(code, mods);
             }
             Some(Verb::Cancel) => {
+                if let InputPurpose::FilePath(previous) = purpose {
+                    self.mode = *previous;
+                    return Ok(());
+                }
                 if purpose == InputPurpose::SetMergeBranch {
                     self.return_to_settings(Verb::SetMergeBranch);
                 } else {
@@ -14177,6 +14184,10 @@ impl App {
             // the delivery toggle rides along.
             // A picture into the ask field stays in the field (T-1210): the
             // room's clipboard read, landing where the words are typed.
+            Some(Verb::AttachFile) => {
+                self.choose_prompt_file(Mode::Input { purpose, buffer });
+                return Ok(());
+            }
             Some(Verb::EditorPaste) if matches!(purpose, InputPurpose::Prompt { .. }) => {
                 self.read_clipboard_into_field(&buffer);
             }
@@ -14260,6 +14271,7 @@ impl App {
                 }
                 InputPurpose::Rename { .. }
                 | InputPurpose::RenameColumn { .. }
+                | InputPurpose::FilePath(_)
                 | InputPurpose::SetMergeBranch => {}
             },
             // `^p` (T-434): the launch this field ends in runs in plan mode,
@@ -14270,6 +14282,7 @@ impl App {
                 }
                 InputPurpose::Rename { .. }
                 | InputPurpose::RenameColumn { .. }
+                | InputPurpose::FilePath(_)
                 | InputPurpose::SetMergeBranch => {}
             },
             // `^r` (T-443): the tier the launch these words end in runs on,
@@ -14715,6 +14728,10 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Verb::AttachFile) => {
+                self.choose_prompt_file(Mode::Editor(ed));
+                return Ok(());
+            }
             Some(Verb::EditorPaste) => self.read_clipboard_into(&ed),
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
@@ -15108,6 +15125,34 @@ impl App {
             self.status = "clipboard read pending".into();
             self.mode = Mode::Editor(ed);
             return Ok(());
+        }
+        if ed.images.iter().any(|i| i.file.is_some()) {
+            if let Some((ticket, pane_key)) = &ed.capture_terminal {
+                let answer = self.req(Command::AdoptTerminal {
+                    ticket: *ticket,
+                    pane_key: Some(pane_key.clone()),
+                });
+                if !matches!(answer, Response::Spawned { .. }) {
+                    self.status = match answer {
+                        Response::Err { message } => message,
+                        _ => "could not adopt terminal".into(),
+                    };
+                    self.mode = Mode::Editor(ed);
+                    return Ok(());
+                }
+            }
+            let purpose = InputPurpose::Prompt {
+                images: ed.images.clone(),
+                target,
+                walk: None,
+                queued,
+                immediately,
+                accept_plan,
+                plan,
+                tier,
+            };
+            self.mode = Mode::Normal;
+            return self.commit_prompt_draft(purpose, text, vec![], Some(Mode::Editor(ed)));
         }
         // The pictures the words name go up first (T-853), as a note's do,
         // and the words go linked to them; a refusal keeps the room open
@@ -16678,6 +16723,13 @@ impl App {
     /// handing the terminal over. The board stays up, so the next ticket is
     /// the next keystroke.
     fn commit_input(&mut self, purpose: InputPurpose, buffer: String, start: bool) -> Result<()> {
+        if let InputPurpose::FilePath(previous) = purpose {
+            self.mode = *previous;
+            if !buffer.is_empty() {
+                self.read_prompt_file(buffer.into());
+            }
+            return Ok(());
+        }
         let title = buffer.trim().to_string();
         // A blank field commits nothing — with two exceptions, both in the
         // ask field. A blank Enter in a field reopened on a WAITING ask is
@@ -16765,6 +16817,7 @@ impl App {
             return Ok(());
         }
         match purpose {
+            InputPurpose::FilePath(_) => unreachable!(),
             InputPurpose::SetMergeBranch => {
                 match self.req(Command::SetMergeInto {
                     into: mesimon_core::board::MergeInto::Branch(title.clone()),
@@ -16969,12 +17022,30 @@ impl App {
         text: String,
         uploads: Vec<ulid::Ulid>,
     ) -> Result<()> {
-        let InputPurpose::Prompt { target, queued, immediately, accept_plan, plan, tier, .. } =
-            purpose
+        self.commit_prompt_draft(purpose, text, uploads, None)
+    }
+
+    fn commit_prompt_draft(
+        &mut self,
+        purpose: InputPurpose,
+        text: String,
+        uploads: Vec<ulid::Ulid>,
+        retry: Option<Mode>,
+    ) -> Result<()> {
+        let InputPurpose::Prompt {
+            target,
+            queued,
+            immediately,
+            accept_plan,
+            plan,
+            tier,
+            images,
+            ..
+        } = purpose
         else {
             return Ok(());
         };
-        if !text.is_empty() {
+        if !text.is_empty() && retry.is_none() {
             self.remember_prompt(&text);
         }
         let ticket = match target {
@@ -17106,6 +17177,20 @@ impl App {
             }
             app.refresh_soon()
         };
+        if let Some(mode) = retry {
+            let (tx, history) = std::sync::mpsc::channel();
+            let rx = self.client.prompt_with_files(command, images, tx);
+            self.status = "sending attachments".into();
+            return self.submit_reply(rx, move |app, answer| {
+                if matches!(answer, Response::Err { .. }) {
+                    app.recover_submission(mode);
+                }
+                if let Ok(text) = history.try_recv() {
+                    app.remember_prompt(&text);
+                }
+                finish(app, answer)
+            });
+        }
         if synchronous {
             let answer = self.req(command);
             return finish(self, answer);
@@ -17680,6 +17765,9 @@ impl App {
             LinkTarget::Url(url) => self.open_outside(url),
             LinkTarget::Attachment { ticket, attachment } => {
                 match self.req(Command::ReadAttachment { ticket, attachment }) {
+                    Response::FileAttachment { path, .. } => {
+                        self.open_outside(path.display().to_string())
+                    }
                     Response::Attachment { .. } => {
                         if let Some(t) = self.board.ticket(ticket) {
                             let path = self
@@ -26385,6 +26473,57 @@ mod tests {
         assert!(!words.contains("uploads: []"), "the upload rides the prompt: {words}");
     }
 
+    #[test]
+    fn picked_file_survives_fold_and_a_refused_send_then_retries() {
+        struct RefuseOnce(Box<dyn Transport>, bool);
+        impl Transport for RefuseOnce {
+            fn request(&mut self, cmd: Command) -> Result<Response> {
+                if matches!(cmd, Command::PromptSession { .. }) && !self.1 {
+                    self.1 = true;
+                    return Ok(Response::Err { message: "test refusal".into() });
+                }
+                self.0.request(cmd)
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.client = Box::new(RefuseOnce(app.client, false));
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::FilePath(_), .. }));
+        let dir = std::env::temp_dir().join(format!("msmn-file-picker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("sales.csv");
+        std::fs::write(&path, b"abc").unwrap();
+        app.on_paste(path.to_str().unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let end = Instant::now() + Duration::from_secs(2);
+        while !app.poll_image_paste() {
+            assert!(Instant::now() < end);
+            std::thread::yield_now();
+        }
+        assert!(matches!(&app.mode, Mode::Input {buffer,..} if buffer.as_str()=="[sales.csv]"));
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Input {buffer,..} if buffer.as_str()=="[sales.csv]"),
+            "{:?}",
+            app.mode
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent
+            .borrow()
+            .iter()
+            .any(|s| s.contains("PromptSession") && s.contains("[sales.csv](mesimon-attachment:")));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
     /// The field's pictures ride into the room on Tab and back on a clean
     /// Esc (T-1210), and a taken-back ask's link folds into the field as
     /// its marker, sent again as the same link with nothing to upload.
@@ -26404,7 +26543,7 @@ mod tests {
         match &app.mode {
             Mode::Input { purpose: InputPurpose::Prompt { images, .. }, buffer } => {
                 assert_eq!(buffer.as_str(), "a[Image #1]");
-                assert!(images[0].png.is_some(), "the picture came back with the words");
+                assert!(images[0].bytes.is_some(), "the picture came back with the words");
             }
             other => panic!("not folded back: {other:?}"),
         }
@@ -32928,7 +33067,7 @@ mod tests {
         app.fold_composer(ed);
         let Mode::Input { purpose, buffer } = app.mode.clone() else { panic!("composer folded") };
         let InputPurpose::Create { images, .. } = &purpose else { panic!() };
-        assert_eq!(images[0].png.as_deref(), Some(&[1, 2][..]));
+        assert_eq!(images[0].bytes.as_deref(), Some(&[1, 2][..]));
         assert!(!sent.borrow().iter().any(|s| s.contains("UploadAttachment")));
         app.commit_input(purpose, buffer.into_text(), false).unwrap();
         assert!(sent.borrow().iter().any(|s| s.contains("CreateTicketWithNote")));
@@ -32967,7 +33106,7 @@ mod tests {
         app.poll_image_paste();
         app.editor_save(editor(&app).clone()).unwrap();
         assert_eq!(app.status, "disk full");
-        assert!(editor(&app).images[0].png.is_some());
+        assert!(editor(&app).images[0].bytes.is_some());
         assert!(editor(&app).dirty());
         assert!(sent.borrow().iter().any(|s| s.contains("DiscardAttachmentUploads")));
         app.editor_save(editor(&app).clone()).unwrap();

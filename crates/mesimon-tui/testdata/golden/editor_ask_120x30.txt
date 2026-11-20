@@ -24,7 +24,7 @@
                                                             │                                                          │
                                                             │                                                          │
                                                             │                                                          │
-                                                            ╰──────────────────────────────────── ^s send ∙ esc close ─╯
+                                                            ╰─────────────────── ^s send ∙ esc close ∙ ^o attach file ─╯
 
 
- ASK  ^s send ∙ esc close
+ ASK  ^s send ∙ esc close ∙ ^o attach file

@@ -1076,6 +1076,7 @@ pub enum Verb {
     /// this ("open in external editor").
     EditorExternal,
     EditorPaste,
+    AttachFile,
     /// `tab` in the note editor (T-440): the ticket's next note, in the
     /// rail's order and round again from the description. A note with
     /// unsaved changes stays put and says so — the draft is never dropped
@@ -8071,6 +8072,17 @@ fn ask_word(c: &Ctx) -> &'static str {
 
 static INPUT: &[Binding] = &[
     Binding {
+        keys: &[Key::Ctrl('o')],
+        verb: Verb::AttachFile,
+        show: "^o",
+        hint: |_| "attach file",
+        avail: |c| c.prompting && c.ask_ticket && !c.ask_shell,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 21,
+    },
+    Binding {
         keys: &[Key::Enter],
         verb: Verb::Save,
         show: "enter",
@@ -8571,6 +8583,17 @@ static SEARCH: &[Binding] = &[
 /// note it walks them (T-440), and elsewhere it is unbound. `{ }` are text
 /// here — paging is `pgup`/`pgdn`.
 static EDITOR: &[Binding] = &[
+    Binding {
+        keys: &[Key::Ctrl('o')],
+        verb: Verb::AttachFile,
+        show: "^o",
+        hint: |_| "attach file",
+        avail: |c| c.editor_asking && c.editor_body && c.ask_ticket && !c.ask_shell,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 21,
+    },
     Binding {
         keys: &[Key::Ctrl('v')],
         verb: Verb::EditorPaste,

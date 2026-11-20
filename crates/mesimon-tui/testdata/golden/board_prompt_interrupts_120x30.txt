@@ -27,4 +27,4 @@
 
 
 
- ASK  enter sends into the turn: a running command goes to the background, or the turn stops ∙ esc cancel ∙ tab expand
+ ASK  enter sends into the turn: a running command goes to the background, or the turn stops ∙ esc cancel

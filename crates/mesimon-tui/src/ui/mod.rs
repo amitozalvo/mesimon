@@ -318,6 +318,9 @@ fn draw_app_dialogs(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Sections | Mode::Settings { .. } | Mode::Theme { .. }) {
         settings::draw(f, app);
     }
+    if let Mode::Input { purpose: crate::app::InputPurpose::FilePath(_), buffer } = &app.mode {
+        menu::draw_file_path(f, app, buffer);
+    }
     if let Mode::Input { purpose: crate::app::InputPurpose::SetMergeBranch, buffer } = &app.mode {
         menu::draw_merge_branch(f, app, buffer);
     }

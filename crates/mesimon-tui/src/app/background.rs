@@ -93,6 +93,14 @@ impl App {
     ) -> Result<()> {
         debug_assert!(self.submission.is_none());
         let rx = self.client.request_detached(command);
+        self.submit_reply(rx, finish)
+    }
+
+    pub(super) fn submit_reply(
+        &mut self,
+        rx: Receiver<Result<Response>>,
+        finish: impl FnOnce(&mut App, Response) -> Result<()> + 'static,
+    ) -> Result<()> {
         self.submission = Some(Submission { rx, finish: Box::new(finish) });
         self.poll_submission()?;
         Ok(())
