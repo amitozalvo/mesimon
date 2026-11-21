@@ -749,6 +749,9 @@ pub struct Picked {
 pub struct Agent {
     #[serde(default)]
     pub permission: Option<Permission>,
+    /// Why the person must review the current command in the terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_refusal: Option<String>,
     #[serde(default)]
     pub dialog: Option<Dialog>,
     /// This reply could not fit the dialog. The question still stands;
@@ -1607,6 +1610,7 @@ mod tests {
                 tier: None,
                 exit: None,
                 card_answers: None,
+                permission_refusal: None,
                 dialog_omitted: false,
                 hand: None,
             }),

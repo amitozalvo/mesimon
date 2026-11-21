@@ -163,10 +163,50 @@ pub(super) fn preview(path: &Path) -> Option<AgentPreview> {
     })
 }
 
+/// Chat folds a "Write <file>" label into its count of written files. A
+/// model can give that summary to a command as well as a file tool.
+fn write_label(call: &Value, label: &str) -> bool {
+    let name = label.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+        .next();
+    matches!(call["name"].as_str(), Some("write_to_file" | "write_file")) || name == Some("Write")
+}
+
+/// agy gives each call in a planner step its own following GENERIC step.
+/// Emit a write at its successful result's offset, so an incremental page
+/// beginning after the call still adds it exactly once. Use step indices
+/// because interrupted calls can leave holes in the transcript.
+fn completed_write(path: &Path, at: u64, result: &Value) -> Option<TranscriptRow> {
+    let result_index = result["step_index"].as_u64()?;
+    for window in [4096, TAIL_BYTES, TAIL_BYTES_MAX] {
+        let text = crate::agents::claude::tail::window_text(path, at, window)?;
+        for line in text.lines().rev() {
+            let step: Value = serde_json::from_str(line).ok()?;
+            if is_step(&step, "MODEL", "GENERIC") {
+                continue;
+            }
+            let index = result_index.checked_sub(step["step_index"].as_u64()?)?.checked_sub(1)?;
+            let call = calls_of(&step).get(usize::try_from(index).ok()?)?;
+            let label = tool_label(call);
+            return if write_label(call, &label) {
+                TranscriptRow::tool(at, &label, step_ms(result))
+            } else {
+                None
+            };
+        }
+        if window >= at {
+            break;
+        }
+    }
+    None
+}
+
 /// What one step shows on a phone (T-626): the person's words, the
 /// agent's, and a line per tool call. Tool output, injected system
 /// messages and the model's reasoning are not rows.
-pub(super) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
+pub(super) fn rows(path: &Path, at: u64, v: &Value) -> Vec<TranscriptRow> {
+    if is_step(v, "MODEL", "GENERIC") && v["status"] == "DONE" {
+        return completed_write(path, at, v).into_iter().collect();
+    }
     let ms = step_ms(v);
     if let Some(words) = prompt_of(v) {
         return TranscriptRow::new(at, RowKind::Prompt, &words, ms).into_iter().collect();
@@ -184,7 +224,10 @@ pub(super) fn rows(at: u64, v: &Value) -> Vec<TranscriptRow> {
                 continue;
             }
         }
-        out.extend(TranscriptRow::tool(at, &tool_label(call), ms));
+        let label = tool_label(call);
+        if !write_label(call, &label) {
+            out.extend(TranscriptRow::tool(at, &label, ms));
+        }
     }
     out
 }
@@ -207,8 +250,15 @@ mod tests {
         p
     }
 
-    fn lines(body: &str) -> Vec<Value> {
-        body.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    fn phone_rows(body: &str) -> Vec<TranscriptRow> {
+        let dir = tempfile::tempdir().unwrap();
+        crate::agents::read_transcript(
+            mesimon_core::board::SessionKind::Agy,
+            &file(dir.path(), body),
+            Default::default(),
+        )
+        .unwrap()
+        .rows
     }
 
     #[test]
@@ -260,10 +310,8 @@ mod tests {
 
     #[test]
     fn the_phone_reads_prompts_replies_and_one_line_per_tool_call() {
-        let got: Vec<(RowKind, String)> = lines(TOOLS)
-            .iter()
-            .enumerate()
-            .flat_map(|(i, v)| rows(i as u64, v))
+        let got: Vec<(RowKind, String)> = phone_rows(TOOLS)
+            .into_iter()
             .map(|r| (r.kind, r.text))
             .collect();
         assert_eq!(
@@ -277,13 +325,38 @@ mod tests {
             "no brief, no tool output, no reasoning"
         );
         let shell: Vec<RowKind> =
-            lines(SHELL).iter().flat_map(|v| rows(0, v)).map(|r| r.kind).collect();
+            phone_rows(SHELL).into_iter().map(|r| r.kind).collect();
         assert_eq!(shell, vec![RowKind::Prompt, RowKind::Tool, RowKind::Reply]);
-        for v in lines(TURNS) {
-            for r in rows(0, &v) {
-                assert!(!r.text.contains("ADDITIONAL_METADATA"), "{}", r.text);
-                assert!(!r.text.contains("SYSTEM_MESSAGE"), "{}", r.text);
-            }
+        for r in phone_rows(TURNS) {
+            assert!(!r.text.contains("ADDITIONAL_METADATA"), "{}", r.text);
+            assert!(!r.text.contains("SYSTEM_MESSAGE"), "{}", r.text);
+        }
+    }
+
+    #[test]
+    fn chat_counts_a_write_only_on_its_successful_result_even_on_a_later_page() {
+        use crate::agents::{read_transcript, transcript::Ask};
+        use mesimon_core::board::SessionKind;
+        let dir = tempfile::tempdir().unwrap();
+        let calls = serde_json::json!({
+            "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+            "tool_calls": [
+                {"name": "run_command", "args": {"toolSummary": "Write approved.txt"}},
+                {"name": "run_command", "args": {"toolSummary": "Write denied.txt"}}
+            ]
+        });
+        let result = |index, status: &str| serde_json::json!({
+            "step_index": index, "source": "MODEL", "type": "GENERIC", "status": status
+        });
+        let p = file(dir.path(), &format!("{calls}\n"));
+        let page = |after| read_transcript(SessionKind::Agy, &p, Ask { after, ..Ask::default() }).unwrap();
+        let pending = page(None);
+        assert!(pending.rows.is_empty());
+        file(dir.path(), &format!("{calls}\n{}\n{}\n", result(2, "DONE"), result(3, "ERROR")));
+        for after in [None, Some(pending.end)] {
+            let rows = page(after).rows;
+            assert_eq!(rows.len(), 1);
+            assert_eq!((rows[0].at, rows[0].text.as_str()), (pending.end, "Write approved.txt"));
         }
     }
 
@@ -297,7 +370,7 @@ mod tests {
                 "Arguments": {"reason": "Which colour?"}}}],
         });
         let got: Vec<(RowKind, String)> =
-            rows(9, &v).into_iter().map(|r| (r.kind, r.text)).collect();
+            phone_rows(&format!("{v}\n")).into_iter().map(|r| (r.kind, r.text)).collect();
         assert_eq!(
             got,
             vec![(RowKind::Tool, "raise_hand".into()), (RowKind::Reply, "Which colour?".into())]

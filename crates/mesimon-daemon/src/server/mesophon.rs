@@ -313,6 +313,7 @@ struct AgyCall {
     id: String,
     tool: String,
     input: serde_json::Value,
+    pending: bool,
     offered: bool,
 }
 /// How long a renewing wait outlives its run for the next one to take it
@@ -3261,6 +3262,7 @@ impl Daemon {
                             id: call.id,
                             tool: call.name,
                             input: call.args,
+                            pending: false,
                             offered: false,
                         },
                     );
@@ -3274,12 +3276,20 @@ impl Daemon {
                     == Some(true);
                 let agent_state =
                     frame.payload.get("agent_state").and_then(serde_json::Value::as_str);
-                if !pending {
+                if pending {
+                    if let Some(call) = self.control.agy_calls.get_mut(&id) {
+                        call.pending = true;
+                    }
+                } else {
                     if matches!(agent_state, Some("working" | "thinking" | "tool_use")) {
+                        // Working titles also arrive between PreToolUse and its first confirmation.
+                        if self.control.agy_calls.get(&id).is_some_and(|call| call.pending) {
+                            self.control.agy_calls.remove(&id);
+                            self.control_changed();
+                        }
                         self.control_cancel_permission(id);
                     }
                     if matches!(agent_state, Some("working" | "thinking")) {
-                        self.control.agy_calls.remove(&id);
                         self.close_agy_dialog(id, DialogEdge::Answered);
                     } else if agent_state == Some("idle")
                         && !self.board.session(id).is_some_and(|s| s.agy_background_running)
@@ -3332,7 +3342,9 @@ impl Daemon {
             return;
         }
         let ticket = rec.ticket;
-        let Some(call) = self.control.agy_calls.get(&id).filter(|c| !c.offered) else { return };
+        let Some(call) = self.control.agy_calls.get(&id).filter(|c| c.pending && !c.offered) else {
+            return;
+        };
         let hold = Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS);
         let projection = api::Permission {
             request: call.id.clone(),
@@ -3344,6 +3356,7 @@ impl Daemon {
             if let Some(call) = self.control.agy_calls.get_mut(&id) {
                 call.offered = true;
             }
+            self.control_changed();
             return;
         }
         let by = Principal::Automation { rule: "agy_observer".into() };
@@ -4817,6 +4830,13 @@ impl Daemon {
             dialog_omitted: false,
             trust: self.control_trust_of(s),
             permission: self.control_permission_of(s.id).map(phone_permission),
+            permission_refusal: self
+                .control
+                .agy_calls
+                .get(&s.id)
+                .filter(|call| call.pending && call.tool == "run_command")
+                .and_then(|call| agy_command(&call.input).err())
+                .map(str::to_owned),
             session: s.id.to_string(),
             provider: match s.kind {
                 SessionKind::Codex => "codex",
@@ -7091,11 +7111,24 @@ fn agy_rows_slice(lines: &[&str]) -> Option<Vec<Row>> {
 /// on it (T-1235).
 #[derive(Debug, PartialEq, Eq)]
 enum AgyBinding {
-    Command { command: String, bypass_sandbox: bool },
+    Command { command: String },
     FileCreateOrWrite { path: String },
     FileEdit { path: String },
     FileRead { path: String },
     Mcp { server: String, tool: String },
+}
+
+/// The ordinary command a card can bind, or why this call belongs in Terminal.
+fn agy_command(input: &serde_json::Value) -> Result<&str, &'static str> {
+    const UNVERIFIED: &str = "The card can't verify the whole command. Review it in Terminal.";
+    match input.get("BypassSandbox") {
+        Some(serde_json::Value::Bool(true)) => {
+            return Err("This command asks to run outside agy's sandbox. Review it in Terminal.");
+        }
+        None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => {}
+        _ => return Err(UNVERIFIED),
+    }
+    input["CommandLine"].as_str().filter(|s| plain_line(s)).ok_or(UNVERIFIED)
 }
 
 fn agy_binding(projection: &api::Permission) -> Option<AgyBinding> {
@@ -7110,13 +7143,7 @@ fn agy_binding(projection: &api::Permission) -> Option<AgyBinding> {
     let path = |keys: &[&str]| keys.iter().find_map(|k| plain(k));
     match projection.tool.as_str() {
         "run_command" => {
-            let command = plain("CommandLine")?;
-            let bypass_sandbox = match projection.input.get("BypassSandbox") {
-                None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => false,
-                Some(serde_json::Value::Bool(true)) => true,
-                _ => return None,
-            };
-            Some(AgyBinding::Command { command, bypass_sandbox })
+            Some(AgyBinding::Command { command: agy_command(&projection.input).ok()?.into() })
         }
         "write_to_file" | "write_file" => {
             Some(AgyBinding::FileCreateOrWrite { path: path(&["TargetFile", "Path"])? })
@@ -7167,12 +7194,11 @@ fn agy_draws(screen: &str, cols: u16, binding: &AgyBinding) -> Option<(&'static 
     if let Some(r) = rule {
         above = &above[r + 1..];
     }
-    // Strip optional sandbox warning or auto-approve hint right above the menu/prompt.
     if above
         .last()
         .is_some_and(|l| l.contains("Confirm the command is safe to run outside of the sandbox"))
     {
-        above = &above[..above.len() - 1];
+        return None;
     }
     let (&prompt_line, mut preview) = above.split_last()?;
     let prompt = prompt_line.trim();
@@ -7189,14 +7215,9 @@ fn agy_draws(screen: &str, cols: u16, binding: &AgyBinding) -> Option<(&'static 
         }
     }
     match binding {
-        AgyBinding::Command { command, bypass_sandbox } => {
-            let right_prompt = if *bypass_sandbox {
-                prompt.ends_with("Allow sandbox bypass for command execution?")
-            } else {
-                prompt == "Run this command?"
-            };
-            if !right_prompt
-                || preview.iter().any(|l| l.trim() == "Full command:" || l.contains('⋮') || l.contains('…'))
+        AgyBinding::Command { command } => {
+            if prompt != "Run this command?"
+                || preview.iter().any(|l| l.trim() == "Full command:" || l.contains(['⋮', '…', '⋯']))
             {
                 return None;
             }
@@ -8699,6 +8720,7 @@ mod tests {
                     tier: None,
                     exit: None,
                     card_answers: None,
+                    permission_refusal: None,
                     dialog_omitted: false,
                     hand: None,
                 }),
@@ -12285,7 +12307,7 @@ esc to cancel                                                                 Ge
         );
         assert_eq!(
             agy_approval_step(&bypass_screen, 100, true, &bypass_cmd),
-            Ok(DialogStep::Submit)
+            Err(Miss::LabelNotFound)
         );
         let truncated = cmd_screen.replace("   echo AGY_CAPTURE_OK", "   echo AGY_CAPTURE_OK\n   ⋮");
         assert_eq!(agy_approval_step(&truncated, 100, true, &cmd), Err(Miss::LabelNotFound));

@@ -5481,8 +5481,21 @@ async function navigationFlow(browser, engineName, size, viewport, fullThemes) {
       await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
       { op: "permission", request: "agy-perm-1", decision: "allow", ticket: "m2", session: "m2-session" },
     );
+    const refusal = "This command asks to run outside agy's sandbox. Review it in Terminal.";
+    await page.evaluate((reason) => {
+      fixture.tickets[0].agent.permission = null;
+      fixture.tickets[0].agent.permission_refusal = reason;
+      fixture.update();
+    }, refusal);
+    await until(page, (reason) => document.querySelector("#attention")?.textContent.includes(reason), refusal);
+    assert.equal(await page.locator("#attention button").count(), 0);
+    if (size === "phone") await page.locator("#back").click();
+    await fieldsCard.getByText(refusal).waitFor();
+    assert.equal(await fieldsCard.getByRole("button", { name: /Approve once|Deny/ }).count(), 0);
+    await fieldsCard.locator(".need-open").click();
     await page.evaluate(() => {
       fixture.tickets[0].agent.provider = "claude";
+      delete fixture.tickets[0].agent.permission_refusal;
       fixture.tickets[0].agent.permission = null;
       fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",
         multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };

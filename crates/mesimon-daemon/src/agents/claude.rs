@@ -256,6 +256,7 @@ impl AgentAdapter for Claude {
 
     fn rows(
         &self,
+        _path: &std::path::Path,
         at: u64,
         record: &serde_json::Value,
     ) -> Vec<mesimon_core::mesophon::TranscriptRow> {

@@ -124,20 +124,18 @@ def build_confirm_dialog(spec):
     if name == "run_command":
         cmd = args["CommandLine"]
         first = cmd.split()[0] if cmd.split() else cmd
-        bypass = args.get("BypassSandbox") is True
-        prompt_lines = (
-            ["🔓 Allow sandbox bypass for command execution?",
-             "⚠️ Confirm the command is safe to run outside of the sandbox with full network and disk access.",
-             ""]
-            if bypass else ["Run this command?"]
-        )
+        # 1.5.14 shows the ordinary question even on a BypassSandbox retry.
+        lines = cmd.splitlines()
+        preview = ["   " + line for line in lines[:4]]
+        if len(lines) > 4:
+            preview.append(f"   ⋯ ({len(lines) - 4} lines hidden)")
         return {
             "kind": "confirm",
             "id": spec["id"],
             "name": name,
             "esc_disabled": False,
             "header": "Command",
-            "preview": ["Requesting permission for:", "   " + cmd, ""] + prompt_lines,
+            "preview": ["Requesting permission for:", *preview, "", "Run this command?"],
             "choices": [
                 "Yes, run command",
                 f"Yes, and always allow in this conversation for commands that start with '{first}'",
@@ -499,6 +497,7 @@ def main():
             finish_question(td)
 
     def handle_tool_key(td, token, pasted=None):
+        log("agy-dialog-keys.jsonl", {"id": td["id"], "key": token})
         if td["kind"] == "confirm":
             n = len(td["choices"])
             if token == "up":
@@ -702,6 +701,10 @@ def main():
                         paint()
                         report("tool_use", pending=False)
                     else:
+                        if spec["name"] == "run_command":
+                            # agy 1.5.14 reports both titles after PreToolUse.
+                            report("working")
+                            report("working")
                         st["tool_dialog"] = build_confirm_dialog(spec)
                         paint()
                         report("tool_use", pending=True)

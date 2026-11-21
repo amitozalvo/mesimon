@@ -184,7 +184,7 @@ pub fn read_transcript(
     ask: transcript::Ask,
 ) -> Option<transcript::Page> {
     let adapter = adapter(provider)?;
-    transcript::page(path, ask, &|at, v| adapter.rows(at, v)).ok()
+    transcript::page(path, ask, &|at, v| adapter.rows(path, at, v)).ok()
 }
 
 pub fn read_transcript_reply(
@@ -417,6 +417,7 @@ pub trait AgentAdapter {
     /// none, or its rows in order.
     fn rows(
         &self,
+        path: &Path,
         at: u64,
         record: &serde_json::Value,
     ) -> Vec<mesimon_core::mesophon::TranscriptRow>;

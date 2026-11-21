@@ -142,7 +142,8 @@ export function Attention({ store, ticket, entry, live }) {
   const dialog = ticket?.agent?.dialog;
   const trust = ticket?.agent?.trust;
   const omitted = ticket?.agent?.dialog_omitted;
-  if (!permission && !dialog && !trust && !omitted) return html`<section id="attention" hidden></section>`;
+  const refusal = ticket?.agent?.permission_refusal;
+  if (!permission && !dialog && !trust && !omitted && !refusal) return html`<section id="attention" hidden></section>`;
   // An answer on its way, never a prompt queued for the turn (T-568).
   const busy = answerBusy(entry);
   const off = !live || busy;
@@ -171,9 +172,9 @@ export function Attention({ store, ticket, entry, live }) {
       </div>
     </section>`;
   }
-  if (omitted && !dialog)
+  if (refusal || (omitted && !dialog))
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
-      <p class="attention-note">${DIALOG_OMITTED}</p>
+      <p class="attention-note">${refusal || DIALOG_OMITTED}</p>
     </section>`;
   const answer = (response, enabled = true) => ({
     disabled: off || !enabled,

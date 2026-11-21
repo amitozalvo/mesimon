@@ -714,8 +714,8 @@ impl AgentAdapter for Agy {
         history::preview(path)
     }
 
-    fn rows(&self, at: u64, record: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
-        history::rows(at, record)
+    fn rows(&self, path: &Path, at: u64, record: &Value) -> Vec<mesimon_core::mesophon::TranscriptRow> {
+        history::rows(path, at, record)
     }
 
     fn conversation_key(&self, record: &SessionRecord) -> Option<String> {

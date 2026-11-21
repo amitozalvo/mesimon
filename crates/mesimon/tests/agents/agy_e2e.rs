@@ -989,7 +989,7 @@ fn an_agy_phone_approves_denies_and_answers_every_captured_dialog_shape() {
         "id": "call-cmd-deny",
         "name": "run_command",
         "initial_cursor": 2,
-        "args": { "CommandLine": "rm -rf /tmp/scratch", "BypassSandbox": true },
+        "args": { "CommandLine": "printf denied", "BypassSandbox": false },
     }));
     let p = phone.await_permission(t, "run_command deny card");
     assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Deny), ("answered".into(), None));
@@ -1131,6 +1131,50 @@ fn an_agy_phone_approves_denies_and_answers_every_captured_dialog_shape() {
         "PreToolUse must print nothing: {:?}",
         bed.printed()
     );
+}
+
+/// Replay agy 1.5.14: PreToolUse, working, working, confirmation pending.
+/// A retry has its own call id even when the command is byte-for-byte identical.
+#[test]
+fn intervening_working_titles_preserve_the_command_and_refused_calls_never_type() {
+    let Some((bed, http_port)) = Bed::boot_with_relay("agy-command-card") else { return };
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
+    agy_board(&mut c);
+    let mut phone = TestPhone::pair(&mut c, http_port);
+    let t = ticket(&mut c, "Review command retries");
+    let Response::Spawned { id, .. } = start(&mut c, t, true) else { panic!("spawn agy") };
+    bed.await_prompt(0, "turn", "Review command retries");
+
+    let cue = |request: &str, command: &str, bypass: bool| bed.cue_dialog(serde_json::json!({
+        "id": request, "name": "run_command",
+        "args": {"CommandLine": command, "BypassSandbox": bypass}
+    }));
+    let answer = |request: &str, decision| api::Request::Permission {
+        ticket: t.to_string(), session: id.to_string(), request: request.into(), decision
+    };
+    cue("ordinary", "printf hello", false);
+    let card = phone.await_permission(t, "ordinary command after two working titles");
+    assert_eq!(card.request, "ordinary");
+    assert_eq!(phone.settle(answer("ordinary", PermissionDecision::Allow)), ("answered".into(), None));
+
+    for (request, command, bypass, reason) in [
+        ("retry", "printf hello", true, "outside agy's sandbox"),
+        ("multiline", "printf 'one\ntwo\nthree\nfour\nfive\nsix'", false, "verify the whole command"),
+    ] {
+        cue(request, command, bypass);
+        wait_until(Duration::from_secs(10), reason, || {
+            let agent = phone.agent(t);
+            agent.permission.is_none() && agent.permission_refusal.as_deref().is_some_and(|s| s.contains(reason))
+        });
+        for stale_or_current in ["ordinary", request] {
+            for decision in [PermissionDecision::Allow, PermissionDecision::Deny] {
+                assert!(matches!(phone.call(answer(stale_or_current, decision)).1, Reply::Rejected { .. }));
+            }
+        }
+        let keys: Vec<serde_json::Value> = bed.jsonl("agy-dialog-keys.jsonl");
+        assert!(keys.iter().all(|key| key["id"] == "ordinary"), "{keys:?}");
+        assert_eq!(bed.decisions().len(), 1);
+    }
 }
 
 /// T-1235: an autonomous crown answers an agy worker's `ask_question` stops

@@ -49690,3 +49690,45 @@ and then skipped without a count, so `X` answered "nothing finished to sleep".
   - "Re-read `agy models` when agy refuses a model at launch (`not recognized as a known model`)": also misses an account that gained models, acts only after a ticket launch crashes in a pane, and scrapes CLI error prose.
   - "Bind `r` on Claude Code and Codex tier pages too": Mesimon runs no model-list subcommand for either CLI (both write their own local catalog/cache files, re-read on page open), and `r` on the 60-cell dialog border would crowd `esc` or suggest a network refresh where none happens.
 - **Checks.** `cargo ut` (73 + 17 + 790 + 990 + 24 + 1,504 passed, 0 failed; sandboxed run first hit the expected 6 `tmux` socket `Operation not permitted` failures in `mesimon-backend-tmux`); `--test agents -- agy_e2e:: tier_e2e::` (9 passed), `--test tools mcp_e2e::` (4 passed), `--test board restart_skew_e2e::` (3 passed), 0 reruns. No golden changed; no rig run (nothing an agent or the crown is told changed). Full workspace suite owed once after merge (`command.rs`, `mcp.rs`, `server.rs` changed). A running daemon serves `RefreshAgyModels` after `U`.
+
+## agy command decisions on the phone (T-1403, 2026-11-21)
+
+On agy 1.5.14, a lead `PreToolUse(run_command)` can precede two
+`working` titles and then `tool_confirmation_pending: true`. The titles
+before confirmation keep the call. Only its own pending report can open
+its permission card. Returning to work after confirmation clears it.
+The next tool call, invocation, or end of the turn also retires the old call.
+
+A sandbox-bypass retry can have a new call ID and draw the ordinary
+`Run this command?` in the pane. The hook's `BypassSandbox: true` makes
+that request terminal-only. A multi-line command also belongs in Terminal
+because the card cannot verify the whole preview. Both the Inbox card and
+the open ticket show the reason. Neither request enters the daemon's
+answerable permission set. The agy e2e replays the two working titles,
+the retry and the four-line preview with `⋯ (2 lines hidden)`. It tries
+both phone decisions against current and stale IDs and checks the keys
+received by the stand-in.
+
+A planner step marked `DONE` only records what the model asked to run.
+Chat counts a write at the byte offset of its successful `GENERIC` result.
+This also covers a command the model summarized as `Write …` and an
+incremental transcript page that begins after its call.
+
+**Live check.** One agy rig session on Gemini 4 Neon High, paired through
+Mesophon on a 390 × 844 Chromium phone. The ticket card's Approve once
+ran `printf cobalt > approved.txt` (agy recorded exit 0). Its Deny
+on `printf amber > denied.txt` left agy's pane at `User declined the
+tool call`. Chat showed only the first write while the second waited.
+The driver's extra file assertion timed out looking in the checkout,
+although agy can resolve a relative path in its session folder. Checking
+the saved run first looked for a denial transcript row that agy had not
+written. Its final pane confirmed the denial. The live session ran once.
+
+**Checks and reruns.** Both runs of `cargo ut` passed (3,401 tests).
+The second covered the consolidated command check and the transcript
+tests through the page reader. Both `agents agy_e2e::` runs passed
+(9 tests). The second used the recorded retry and truncated preview and
+checked every key received by each refused call. Mesophon navigation,
+chat and terminal passed on Chromium and WebKit at phone, tablet and
+desktop sizes (18 cases). State and asset tests passed (73). All ran
+under `ci/test-run.py`. The other 84 browser cases were outside these flows.
