@@ -27,8 +27,10 @@ Two more, each only when you ask for it:
   update offer. The download is checked against its published checksum first and refused
   without one.
 
-Never your shell rc, your git config, your `~/.claude/` or `~/.codex/` configuration, or your
-tmux config. Native agents still own their conversations and native trust decisions.
+Never your shell rc, your git config, your `~/.claude/`, `~/.codex/` or `~/.gemini/`
+configuration, or your tmux config. An agy session gets a per-session folder in mesimon's state
+dir, passed with `--add-dir`, and a session settings file beside it, passed with `--settings`.
+Native agents still own their conversations and native trust decisions.
 
 Every path, and what mesimon keeps there, is in [What mesimon writes](#what-mesimon-writes).
 
@@ -89,12 +91,13 @@ What the tools can and cannot do is in
 |---|---|
 | `<repo>/.mesimon/` | Your board: columns, tickets, and durable content-import receipts/staging under `board/imports/`. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
-| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, provider launch settings, normalized previews, logs, the token counts behind each ticket's estimated cost, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
+| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, provider launch settings (including each agy session's `agy/<session>/` folder and `agy/<session>.json`), normalized previews, logs, the token counts behind each ticket's estimated cost, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
+| `~/.local/state/mesimon/agy-models.tsv` | The model list `agy models` last printed, cached across boards when agy is enabled. |
 | `~/.local/state/mesimon/notifications/` | Notification mascot images and signed Mesimon copies of the installed macOS notification helper. |
 | `~/.local/state/mesimon/team/` | Board sharing: this machine's identity on the relay (`device.toml`), and the roots of team boards you joined without a checkout, under `boards/`. Only after you sign in. |
 | `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
 | `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one, and whether the board follows the OS's appearance. One per machine, not per repo. |
-| `~/.local/state/mesimon/usage.json` | Your plan's quota as Claude Code and Codex last reported it: each window's percentage and reset time, and the plan's name. Shared by every board on the machine, written only while a board is open. |
+| `~/.local/state/mesimon/usage.json` | Your plan's quota as Claude Code, Codex and agy last reported it: each window's percentage and reset time, and the plan's name. Shared by every board on the machine, written only while a board is open. |
 | `~/.local/state/mesimon/usage.lock` | An empty lock file, so only one board's daemon reads the quota at a time. |
 | `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. Codex starts and wakes create an empty `.codex/` directory in their Git worktree so Codex can resolve the main checkout's existing trust; existing contents are untouched. |

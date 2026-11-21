@@ -7,6 +7,10 @@
     "codex": {
       "version": "0.163.0",
       "read_at": "2026-01-01"
+    },
+    "agy": {
+      "version": "1.5.9",
+      "read_at": "2026-01-01"
     }
   },
   "before": {
@@ -16,12 +20,15 @@
     "surfaces": {
       "claude-mods.d.ts": "interface Prompt { submit(): void }\n",
       "codex-plugins.md": "# Plugins\nOld settings.\n",
-      "codex-hooks.md": "# Hooks\nSessionStart\n"
+      "codex-hooks.md": "# Hooks\nSessionStart\n",
+      "agy-hooks.md": "# Lifecycle Hooks\nPreToolUse\n",
+      "agy-mcp.md": "# MCP Servers\nmcp_config.json\n"
     }
   },
   "versions": {
     "claude": "2.1.11",
-    "codex": "0.164.0"
+    "codex": "0.164.0",
+    "agy": "1.5.11"
   },
   "protocol": {
     "v2/TurnSteerParams.ts": "export type TurnSteerParams = {threadId: string, clientUserMessageId?: string};\n"
@@ -29,10 +36,14 @@
   "responses": {
     "https://api.github.com/repos/anthropics/claude-code/releases?per_page=100&page=1": "[{\"tag_name\": \"v2.1.12\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.12\"}, {\"tag_name\": \"v2.1.11\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.11\"}, {\"tag_name\": \"v2.1.10\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.10\"}, {\"tag_name\": \"v2.1.9\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/anthropics/claude-code/releases/tag/v2.1.9\"}]",
     "https://api.github.com/repos/openai/codex/releases?per_page=100&page=1": "[{\"tag_name\": \"rust-v0.165.0-alpha.1\", \"prerelease\": true, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.165.0-alpha.1\"}, {\"tag_name\": \"rust-v0.164.0\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.164.0\"}, {\"tag_name\": \"rust-v0.163.0\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed PermissionRequest hooks.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/openai/codex/releases/tag/rust-v0.163.0\"}]",
+    "https://api.github.com/repos/google-antigravity/antigravity-cli/releases?per_page=100&page=1": "[{\"tag_name\": \"1.5.11\", \"prerelease\": false, \"draft\": false, \"body\": \"- Added PreToolUse hookcwd.\\n- Changed logo colors.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.11\"}, {\"tag_name\": \"1.5.10\", \"prerelease\": false, \"draft\": false, \"body\": \"- Fixed OSC 7501 subagent statusline.\\n- Adjusted spacing.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.10\"}, {\"tag_name\": \"1.5.9\", \"prerelease\": false, \"draft\": false, \"body\": \"- Added run_workflow.\\n- Adjusted spacing.\", \"published_at\": \"2026-01-02T00:00:00Z\", \"html_url\": \"https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.9\"}]",
     "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md": "# Changelog\n\n## 2.1.12\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.11\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.10\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n## 2.1.9\n\n- Fixed PermissionRequest hooks.\n- Changed logo colors.\n\n",
+    "https://raw.githubusercontent.com/google-antigravity/antigravity-cli/main/CHANGELOG.md": "# Changelog\n\n## 1.5.11\n\n- Added PreToolUse hookcwd.\n- Changed logo colors.\n\n## 1.5.10\n\n- Fixed OSC 7501 subagent statusline.\n- Adjusted spacing.\n\n## 1.5.9\n\n- Added run_workflow.\n- Adjusted spacing.\n\n",
     "https://raw.githubusercontent.com/anthropics/claude-code/main/mods/types/claude-code.d.ts": "interface Prompt { submit(): void }\nNew queue API (synthetic test data).\n",
     "https://developers.openai.com/plugins/build/plugins.md": "# Plugins\nOld settings.\nNew queue API (synthetic test data).\n",
-    "https://learn.chatgpt.com/docs/hooks.md": "# Hooks\nSessionStart\nNew queue API (synthetic test data).\n"
+    "https://learn.chatgpt.com/docs/hooks.md": "# Hooks\nSessionStart\nNew queue API (synthetic test data).\n",
+    "https://antigravity.google/docs/hooks.md": "# Lifecycle Hooks\nPreToolUse\nPreInvocation\n",
+    "https://antigravity.google/docs/mcp.md": "# MCP Servers\nmcp_config.json\neager\n"
   },
   "claude_decls": {
     "before": {

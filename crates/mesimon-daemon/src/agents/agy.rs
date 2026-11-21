@@ -11,8 +11,10 @@
 //! Three hooks and the title command run `mesimon hook`, which prints
 //! nothing. That is the answer agy takes as "no opinion" on every event:
 //! **a hook that prints `{}` or `{"decision":""}` on `PreToolUse` denies the
-//! tool call**, so no hook of mesimon's ever prints an empty object. The one
-//! hook that prints is the brief's, on `SessionStart` (T-1232).
+//! tool call**, so no hook of mesimon's ever prints an empty object. `PreToolUse`
+//! runs `mesimon gate --provider agy` over agy's structured write tools (T-1238),
+//! printing nothing on pass and `{"decision":"deny","reason":"…"}` on refusal;
+//! the other hook that prints is the brief's, on `SessionStart` (T-1232).
 //!
 //! The board's tools (T-1232) are `.agents/mcp_config.json` beside the hooks,
 //! the shim [`hook_settings::mcp_config_json`] renders for Claude, and an
@@ -64,12 +66,20 @@ pub const PRE_INVOCATION: &str = "AgyPreInvocation";
 pub const STOP: &str = "AgyStop";
 pub const TITLE: &str = "AgyTitle";
 
-/// The hooks registered, as `(agy's event, the frame's name)`. `PreToolUse`
-/// and `PostToolUse` are not among them: the title feed says when a
-/// confirmation is pending and when it is answered, and a hook on every tool
-/// call is a process per call.
+/// The observer hooks registered, as `(agy's event, the frame's name)`.
+/// `PostToolUse` is not among them: the title feed says when a confirmation
+/// is pending and when it is answered, and a hook on every tool call is a
+/// process per call; `PreToolUse` carries only the write gate ([`GATE_MATCHER`]).
 const HOOKS: [(&str, &str); 3] =
     [("SessionStart", SESSION_START), ("PreInvocation", PRE_INVOCATION), ("Stop", STOP)];
+
+/// agy's structured file-writing tools (T-1238), matched on `PreToolUse` for
+/// `mesimon gate --provider agy`. Cascade models use `write_to_file`,
+/// `replace_file_content` and `multi_replace_file_content`; direct-tool models
+/// (such as Gemini 4 Carbon) use `write_file` and `edit_file` (`claude/tools.go`
+/// in agy 1.5.13 maps Claude's `Write`/`Edit`/`NotebookEdit` to both sets).
+pub const GATE_MATCHER: &str = "write_to_file|write_file|replace_file_content|\
+multi_replace_file_content|edit_file|sed_file|notebook_edit|edit_notebook|delete_file";
 
 /// `mesimon hook` aborts itself at 500 ms; agy's own bound is seconds.
 const HOOK_TIMEOUT_SECS: u32 = 5;
@@ -185,6 +195,26 @@ fn hook_command(bin: &Path, sock: &Path, session: uuid::Uuid, event: &str) -> St
     )
 }
 
+/// One `mesimon gate --provider agy` command line as agy runs it, through `sh -c`.
+fn gate_command(
+    bin: &Path,
+    sock: &Path,
+    board_dir: &Path,
+    state_dir: &Path,
+    session: uuid::Uuid,
+) -> String {
+    use mesimon_core::text::sh_quote;
+    let allow = state_dir.join(crate::paths::WORKTREES_DIR);
+    format!(
+        "{} gate --provider agy --session {session} --sock {} --deny-board {} --deny-state {} --allow {}",
+        sh_quote(&bin.display().to_string()),
+        sh_quote(&sock.display().to_string()),
+        sh_quote(&board_dir.display().to_string()),
+        sh_quote(&state_dir.display().to_string()),
+        sh_quote(&allow.display().to_string()),
+    )
+}
+
 /// The brief's word to `mesimon agent-brief`: answer in agy's shape.
 pub const BRIEF_PROVIDER: &str = "agy";
 
@@ -195,11 +225,18 @@ pub fn brief_answer() -> Value {
     json!({ "injectSteps": [{ "systemMessage": { "systemMessage": mesimon_core::brief::TEXT } }] })
 }
 
-/// `hooks.json`: one named hook, `mesimon`, with a flat handler list per
-/// event (agy takes the grouped `matcher` form on tool events alone). With
-/// the brief on, `SessionStart` runs a second handler after the observer,
-/// the one that prints.
-fn render_hooks(bin: &Path, sock: &Path, session: uuid::Uuid, brief: bool) -> Value {
+/// `hooks.json`: one named hook, `mesimon`, with a flat handler list on
+/// lifecycle events and the grouped `matcher` form on `PreToolUse` (the write
+/// gate, T-1238). With the brief on, `SessionStart` runs a second handler
+/// after the observer, the one that prints.
+fn render_hooks(
+    bin: &Path,
+    sock: &Path,
+    board_dir: &Path,
+    state_dir: &Path,
+    session: uuid::Uuid,
+    brief: bool,
+) -> Value {
     let mut events = serde_json::Map::new();
     for (event, name) in HOOKS {
         let mut handlers = vec![json!({
@@ -219,6 +256,17 @@ fn render_hooks(bin: &Path, sock: &Path, session: uuid::Uuid, brief: bool) -> Va
         }
         events.insert(event.into(), Value::Array(handlers));
     }
+    events.insert(
+        "PreToolUse".into(),
+        json!([{
+            "matcher": GATE_MATCHER,
+            "hooks": [{
+                "type": "command",
+                "command": gate_command(bin, sock, board_dir, state_dir, session),
+                "timeout": HOOK_TIMEOUT_SECS,
+            }],
+        }]),
+    );
     json!({ "mesimon": events })
 }
 
@@ -289,7 +337,14 @@ fn prepare(context: &LaunchContext<'_>, trusted: &[String]) -> Result<(PathBuf, 
     // The brief rides with the board's tools, as Codex's does: it names
     // `get_ticket`, which an `Off` column has not got.
     let tools = context.tools != AgentTools::Off;
-    let hooks = render_hooks(&bin, &paths.hook_sock(), session, context.brief && tools);
+    let hooks = render_hooks(
+        &bin,
+        &paths.hook_sock(),
+        &paths.board_dir,
+        &paths.state_dir,
+        session,
+        context.brief && tools,
+    );
     write_private(&agents.join("hooks.json"), &hooks)?;
     // Rewritten or removed on every launch: a wake follows the column's tier
     // as it stands then.
@@ -605,8 +660,13 @@ impl AgentAdapter for Agy {
         }
     }
 
-    /// Not read yet: agy keeps a lock per open conversation, and nothing
-    /// here has measured it.
+    /// Measured on agy 1.5.13 (`presence/presence.go`, `presence/lock_unix.go`,
+    /// T-1238): `presence/<conversation>.lock` under agy's home is an empty
+    /// BSD `flock(LOCK_EX | LOCK_NB)` file with no PID written inside it.
+    /// Probing it takes the exclusive lock (racing agy's own `presence.Acquire`
+    /// and touching `~/.gemini`), cannot distinguish `own_pane` from another
+    /// process without an owning PID, and agy itself refuses a second writer
+    /// at `--conversation` startup (`presence: held by another process`).
     fn external_owner(
         &self,
         _record: &SessionRecord,
@@ -1025,14 +1085,36 @@ mod tests {
 
         let hooks = read_json(&dir.join(".agents/hooks.json"));
         let ours = hooks["mesimon"].as_object().unwrap();
-        assert_eq!(ours.len(), 3, "{hooks}");
+        assert_eq!(ours.len(), 4, "{hooks}");
         for (event, name) in HOOKS {
             let command = ours[event][0]["command"].as_str().unwrap();
             assert!(command.ends_with(&format!("--session {} --event {name}", ctx.session)));
             assert!(command.contains(" hook --sock '"), "{command}");
         }
-        // No tool hook: an empty answer there would deny every call.
-        assert!(ours.get("PreToolUse").is_none() && ours.get("PostToolUse").is_none());
+        // `PreToolUse` carries the write gate (grouped matcher + hooks, T-1238);
+        // `PostToolUse` is absent so no broad per-tool process runs.
+        assert!(ours.get("PostToolUse").is_none());
+        let pre = ours["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1, "{hooks}");
+        assert_eq!(pre[0]["matcher"], GATE_MATCHER);
+        let gate_cmd = pre[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(gate_cmd.contains(" gate --provider agy "), "{gate_cmd}");
+        assert!(gate_cmd.contains(&format!("--session {}", ctx.session)), "{gate_cmd}");
+        assert!(
+            gate_cmd.contains(&format!("--deny-board '{}'", paths.board_dir.display())),
+            "{gate_cmd}"
+        );
+        assert!(
+            gate_cmd.contains(&format!("--deny-state '{}'", paths.state_dir.display())),
+            "{gate_cmd}"
+        );
+        assert!(
+            gate_cmd.contains(&format!(
+                "--allow '{}'",
+                paths.state_dir.join(crate::paths::WORKTREES_DIR).display()
+            )),
+            "{gate_cmd}"
+        );
         // A column without the board's tools: no server, no rule, no brief.
         assert_eq!(ours["SessionStart"].as_array().unwrap().len(), 1, "{hooks}");
         assert!(!dir.join(".agents/mcp_config.json").exists());

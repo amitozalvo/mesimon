@@ -207,7 +207,7 @@ fn help_text() -> &'static str {
          mesimon mesophon setup         check the relay and open its browser app\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
          mesimon state replay <files...>  replay offline state scenarios\n  \
-         mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \
+         mesimon state compatibility [claude|codex|agy] <version>  show measured coverage\n  \
          mesimon --version\n\n\
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \

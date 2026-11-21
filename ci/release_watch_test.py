@@ -60,6 +60,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('synthetic offline fixtures', output)
         self.assertIn('### 2.1.10', output)
         self.assertIn('### 2.1.11', output)
+        self.assertIn('## agy: 1.5.9 → 1.5.11', output)
+        self.assertIn('### 1.5.10', output)
+        self.assertIn('### 1.5.11', output)
         self.assertNotIn('### 2.1.12', output)
         self.assertNotIn('0.165.0-alpha', output)
         self.assertIn('#### Other\n\n- Changed logo colors.', output)
@@ -142,6 +145,39 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('+new', diff)
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, 'no TypeScript'):
             watch.protocol(Path(directory))
+
+    def test_agy_background_autoupdate_ahead_of_github_prints_digest_and_blocks_mark_read(self):
+        f = fixture()
+        f['versions']['agy'] = '1.5.13'
+        url = f'https://api.github.com/repos/{watch.REPOS["agy"]}/releases?per_page=100&page=2'
+        f['responses'][url] = '[]'
+        current = watch.collect(f['state'], f['responses'].__getitem__, f['versions'], f['protocol'])
+        self.assertEqual(current['unpublished'], {'agy': '1.5.13'})
+        output = watch.digest(f['state'], f['before'], current)
+        self.assertIn('### 1.5.11', output)
+        self.assertIn('### 1.5.13 (installed locally; not yet published on GitHub)', output)
+        with patch.object(watch, 'load_checkpoint', return_value=(f['state'], f['before'])), \
+                patch.object(watch, 'installed_versions', return_value=f['versions']), \
+                patch.object(watch, 'run'), patch.object(watch, 'protocol', return_value=f['protocol']), \
+                patch.object(watch, 'fetch', side_effect=f['responses'].__getitem__), \
+                patch.object(watch, 'mark_read') as mark, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(watch.main([]), 0)
+            self.assertEqual(watch.main(['--mark-read']), 1)
+            mark.assert_not_called()
+
+    def test_checkpoint_without_agy_migrates_cleanly_on_first_capture(self):
+        f = fixture()
+        legacy_versions = {'claude': '2.1.9', 'codex': '0.163.0'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path, data = root / 'release-watch.json', root / 'release-watch'
+            watch.mark_read(state_path, data, legacy_versions, f['protocol'], f['before']['surfaces'])
+            state, before = watch.load_checkpoint(state_path, data)
+            self.assertNotIn('agy', state)
+            current = watch.collect(state, f['responses'].__getitem__, f['versions'], f['protocol'])
+            output = watch.digest(state, before, current)
+            self.assertIn('## agy: first capture → 1.5.11', output)
 
 
 class CheckpointTests(unittest.TestCase):

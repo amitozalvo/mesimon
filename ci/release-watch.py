@@ -23,18 +23,30 @@ CI = Path(__file__).resolve().parent
 FIXTURES = CI / "release-watch/fixtures"
 DATA = Path.home() / ".local/state/mesimon/release-watch"
 STATE = DATA / "release-watch.json"
-REPOS = {"claude": "anthropics/claude-code", "codex": "openai/codex"}
-CHANGELOG = "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md"
+REPOS = {
+    "claude": "anthropics/claude-code",
+    "codex": "openai/codex",
+    "agy": "google-antigravity/antigravity-cli",
+}
+REQUIRED_PROVIDERS = ("claude", "codex")
+CHANGELOGS = {
+    "claude": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
+    "agy": "https://raw.githubusercontent.com/google-antigravity/antigravity-cli/main/CHANGELOG.md",
+}
+CHANGELOG = CHANGELOGS["claude"]
 # Moving references, not evidence that an API shipped in the installed version.
 SURFACES = {
     "claude-mods.d.ts": "https://raw.githubusercontent.com/anthropics/claude-code/main/mods/types/claude-code.d.ts",
     "codex-plugins.md": "https://developers.openai.com/plugins/build/plugins.md",
     "codex-hooks.md": "https://learn.chatgpt.com/docs/hooks.md",
+    "agy-hooks.md": "https://antigravity.google/docs/hooks.md",
+    "agy-mcp.md": "https://antigravity.google/docs/mcp.md",
 }
 WATCHED = (
     "hook", "plugin", "mod", "$.prompt", "permission", "settings", "--plugin-dir",
     "mcp", "turn/steer", "app-server", "queue", "compact", "transcript", "sessionstart",
-    "userpromptsubmit", "pretooluse", "posttooluse", "turn.", "classic.",
+    "userpromptsubmit", "pretooluse", "posttooluse", "preinvocation", "postinvocation",
+    "statusline", "--add-dir", "--conversation", "trustedworkspaces", "turn.", "classic.",
     "tool.", "session.", "agent.spawn", "paste", "stop", "interrupt", "subagent",
     "clientusermessageid", "prompt", "dialog", "plan", "tmux", "monitor", "sandbox",
 )
@@ -94,15 +106,28 @@ def fetch(url):
         return response.read().decode("utf-8")
 
 
+def release_tags(provider, value):
+    if provider == "claude":
+        return ("v" + value,)
+    if provider == "codex":
+        return ("rust-v" + value,)
+    if provider == "agy":
+        return (value, "v" + value)
+    raise ValueError(f"Unknown provider: {provider!r}")
+
+
 def release_tag(provider, value):
-    return ("v" if provider == "claude" else "rust-v") + value
+    return release_tags(provider, value)[0]
 
 
-def releases(provider, last, installed, get=fetch, known=()):
+def releases(provider, last, installed, get=fetch, known=(), allow_unpublished_install=False):
     """Read newest-first pages through the baseline, not just the latest release.
 
     Read the whole boundary page before stopping; sort the result by SemVer.
-    Claude's changelog can establish an anchor absent from GitHub releases.
+    Claude's and agy's changelogs can establish an anchor absent from GitHub releases.
+    agy updates itself in the background at every launch from its own CDN, so its
+    installed version can lead GitHub; read-only runs surface that gap while
+    --mark-read refuses to advance past an unpublished install.
     Missing anchors in both sources or exhausted pagination remain errors.
     """
     if last == installed:
@@ -110,6 +135,7 @@ def releases(provider, last, installed, get=fetch, known=()):
     selected = {}
     found = set()
     reached_baseline = False
+    anchors = {last} if allow_unpublished_install else {last, installed}
     for page in range(1, 201):
         url = f"https://api.github.com/repos/{REPOS[provider]}/releases?per_page=100&page={page}"
         rows = json.loads(get(url))
@@ -124,7 +150,7 @@ def releases(provider, last, installed, get=fetch, known=()):
                 value = version(row["tag_name"])
             except ValueError:
                 continue
-            if row["tag_name"] != release_tag(provider, value):
+            if row["tag_name"] not in release_tags(provider, value):
                 continue
             found.add(value)
             reached_baseline |= version_key(value) <= version_key(last)
@@ -137,9 +163,11 @@ def releases(provider, last, installed, get=fetch, known=()):
                 selected[value] = row
         if reached_baseline and {last, installed} <= found | set(known):
             break
+        if reached_baseline and allow_unpublished_install and anchors <= found | set(known):
+            break
     else:
         raise ValueError(f"{provider}: release pagination exceeded 200 pages; refusing a partial digest")
-    if not {last, installed} <= found | set(known):
+    if not anchors <= found | set(known):
         raise ValueError(f"{provider}: missing baseline/installed release: {sorted({last, installed} - found - set(known))}")
     return [(v, selected[v]) for v in sorted(selected, key=version_key)]
 
@@ -185,7 +213,11 @@ def changes(before, after, prefix):
 
 def load_checkpoint(state_path, data):
     state = json.loads(state_path.read_text())
-    for provider in REPOS:
+    present = [p for p in REPOS if p in state]
+    for provider in REQUIRED_PROVIDERS:
+        if provider not in state:
+            raise KeyError(provider)
+    for provider in present:
         version(state[provider]["version"])
         date.fromisoformat(state[provider]["read_at"])
     name = state["snapshot"]
@@ -195,7 +227,7 @@ def load_checkpoint(state_path, data):
     if hashlib.sha256(raw).hexdigest() + ".json" != name:
         raise ValueError("Checkpoint hash mismatch")
     snapshot = json.loads(raw)
-    if snapshot["versions"] != {p: state[p]["version"] for p in REPOS}:
+    if snapshot["versions"] != {p: state[p]["version"] for p in present}:
         raise ValueError("Checkpoint versions do not match last-read versions")
     return state, snapshot
 
@@ -225,49 +257,104 @@ def atomic_write(path, raw):
 
 def collect(state, get, versions, files):
     for provider, installed in versions.items():
-        if version_key(installed) < version_key(state[provider]["version"]):
+        if provider in state and version_key(installed) < version_key(state[provider]["version"]):
             raise ValueError(f"{provider}: installed {installed} is older than last-read; refusing to rewind")
-    sections = (changelog_sections(get(CHANGELOG))
-                if state["claude"]["version"] != versions["claude"] else {})
-    notes = {p: releases(p, state[p]["version"], versions[p], get,
-                         known=sections if p == "claude" else ()) for p in REPOS}
-    # Either source may publish a version without the other. Print their union.
-    wanted = {v for v in sections
-              if version_key(state["claude"]["version"]) < version_key(v) <= version_key(versions["claude"])
-              and ("-" in versions["claude"] or "-" not in v)}
-    rows = dict(notes["claude"])
-    notes["claude"] = [(v, rows.get(v)) for v in sorted(wanted | rows.keys(), key=version_key)]
+    changelogs = {}
+    for provider, url in CHANGELOGS.items():
+        if provider in versions and state.get(provider, {}).get("version") != versions[provider]:
+            changelogs[provider] = changelog_sections(get(url))
+        else:
+            changelogs[provider] = {}
+    notes = {}
+    unpublished = {}
+    for p in REPOS:
+        if p not in versions or p not in state:
+            notes[p] = None
+            continue
+        last, installed = state[p]["version"], versions[p]
+        sections = changelogs.get(p, {})
+        found_releases = releases(
+            p,
+            last,
+            installed,
+            get,
+            known=sections,
+            allow_unpublished_install=(p == "agy"),
+        )
+        rows = dict(found_releases)
+        if p in CHANGELOGS:
+            # Either source may publish a version without the other. Print their union.
+            wanted = {
+                v
+                for v in sections
+                if version_key(last) < version_key(v) <= version_key(installed)
+                and ("-" in installed or "-" not in v)
+            }
+            notes[p] = [(v, rows.get(v)) for v in sorted(wanted | rows.keys(), key=version_key)]
+        else:
+            notes[p] = found_releases
+        if p == "agy" and last != installed and installed not in (rows.keys() | sections.keys()):
+            unpublished[p] = installed
     surfaces = {name: get(url) for name, url in SURFACES.items()}
-    return {"versions": versions, "protocol": files, "surfaces": surfaces,
-            "notes": notes, "changelog": sections}
+    return {
+        "versions": versions,
+        "protocol": files,
+        "surfaces": surfaces,
+        "notes": notes,
+        "changelogs": changelogs,
+        "changelog": changelogs["claude"],
+        "unpublished": unpublished,
+    }
 
 
 def digest(state, before, current, dry=False):
     out = ["# Release watch" + (" — synthetic offline fixtures" if dry else ""), "",
            "Keyword matches are review leads, not compatibility verdicts. Nothing is filed.", ""]
+    changelogs = current.get("changelogs") or {"claude": current.get("changelog", {})}
+    unpublished = current.get("unpublished", {})
     for provider, installed in current["versions"].items():
+        if provider not in state:
+            out += [
+                f"## {provider}: first capture → {installed}",
+                "",
+                "No last-read checkpoint for this provider yet (agy updates itself in the background at every launch); `--mark-read` records this baseline.",
+                "",
+            ]
+            body = changelogs.get(provider, {}).get(installed)
+            if body:
+                out += [f"### {installed} ([CHANGELOG.md]({CHANGELOGS[provider]}))", "", grouped(body)]
+            continue
         out += [f"## {provider}: {state[provider]['version']} → {installed}", "",
                 f"Last read: {state[provider]['read_at']}", ""]
-        if not current["notes"][provider]:
+        if not current["notes"][provider] and provider not in unpublished:
             out += ["No intervening releases.", ""]
+        changelog_url = CHANGELOGS.get(provider)
+        provider_changelog = changelogs.get(provider, {})
         for value, row in current["notes"][provider]:
             if row is None:
                 out += [f"### {value} (changelog only; no GitHub release)", "",
-                        f"[CHANGELOG.md]({CHANGELOG})", "", grouped(current["changelog"][value])]
+                        f"[CHANGELOG.md]({changelog_url})", "", grouped(provider_changelog[value])]
                 continue
             out += [f"### {value} ({row['published_at']})", "",
                     f"[Release notes]({row['html_url']})", "", grouped(row.get("body") or "No release body published.")]
-            if provider == "claude":
-                if value not in current["changelog"]:
+            if changelog_url:
+                if value not in provider_changelog:
                     out += ["Release only; no CHANGELOG.md entry for this version.", ""]
                     continue
-                body = current["changelog"][value]
+                body = provider_changelog[value]
                 # Common identical bodies need not be printed twice.
                 release_lines = [s for s in (row.get("body") or "").splitlines() if s.strip() and not s.startswith("#")]
                 if release_lines == [s for s in body.splitlines() if s.strip()]:
-                    out += [f"[CHANGELOG.md]({CHANGELOG}) contains the same entries.", ""]
+                    out += [f"[CHANGELOG.md]({changelog_url}) contains the same entries.", ""]
                 else:
-                    out += [f"[CHANGELOG.md]({CHANGELOG}) (independent source):", "", grouped(body)]
+                    out += [f"[CHANGELOG.md]({changelog_url}) (independent source):", "", grouped(body)]
+        if provider in unpublished:
+            out += [
+                f"### {unpublished[provider]} (installed locally; not yet published on GitHub)",
+                "",
+                "agy updates itself in the background at every launch; `--mark-read` waits until upstream publishes this version.",
+                "",
+            ]
     diff = changes(before["protocol"], current["protocol"], "codex")
     out += ["## Codex app-server protocol", "", "`codex app-server generate-ts --out <temporary directory>` (default surface, as in T-934).", "",
             f"Compared {len(before['protocol'])} → {len(current['protocol'])} TypeScript files.", "",
@@ -370,6 +457,9 @@ def main(argv=None):
                 raise ValueError("Installed versions changed during capture; rerun before marking read")
         print(digest(state, before, current, args.dry_run), flush=True)
         if args.mark_read:
+            if current.get("unpublished"):
+                ahead = ", ".join(f"{p} {v}" for p, v in sorted(current["unpublished"].items()))
+                raise ValueError(f"unpublished installed release ({ahead}); refusing to mark read")
             mark_read(STATE, DATA, current["versions"], current["protocol"], current["surfaces"])
             print("Marked installed versions read.", file=sys.stderr)
         return 0

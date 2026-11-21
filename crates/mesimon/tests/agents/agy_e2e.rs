@@ -52,9 +52,13 @@ impl Bed {
     }
 
     fn cue(&self, word: &str) {
+        self.cue_with(word, "");
+    }
+
+    fn cue_with(&self, word: &str, body: &str) {
         let dir = self.h.dir.join("agy-cue");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(word), "").unwrap();
+        std::fs::write(dir.join(word), body).unwrap();
     }
 
     /// What the hooks printed, one `(event, stdout)` per handler that did.
@@ -336,6 +340,55 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     );
     let calls = std::fs::read_to_string(bed.h.dir.join("agy-models.log")).unwrap();
     assert_eq!(calls.lines().count(), 1, "one read for a daemon whose file is fresh");
+
+    // T-1238: the launch's `PreToolUse` write gate passes ordinary writes with
+    // zero bytes on stdout and denies `.mesimon/` and the session's own folder
+    // (`--add-dir` puts it in agy's workspace) with `{"decision":"deny",…}`,
+    // reporting `GateDenied` to the daemon's activity feed.
+    bed.cue_with(
+        "gate-1-ok",
+        &serde_json::json!({"name": "write_file", "args": {"Path": "src/ok.rs"}}).to_string(),
+    );
+    bed.cue_with(
+        "gate-2-board",
+        &serde_json::json!({
+            "name": "write_to_file",
+            "args": {"TargetFile": ".mesimon/board/columns.toml"}
+        })
+        .to_string(),
+    );
+    bed.cue_with(
+        "gate-3-session",
+        &serde_json::json!({
+            "name": "edit_file",
+            "args": {"Path": folder.join(".agents/hooks.json").display().to_string()}
+        })
+        .to_string(),
+    );
+    wait_until(Duration::from_secs(10), "the three PreToolUse gate runs", || {
+        bed.jsonl::<serde_json::Value>("agy-gate.jsonl").len() == 3
+    });
+    let gates = bed.jsonl::<serde_json::Value>("agy-gate.jsonl");
+    assert_eq!(gates[0]["code"], 0);
+    assert_eq!(gates[0]["stdout"], "", "an ordinary write must emit zero bytes");
+    for denied in [&gates[1], &gates[2]] {
+        assert_eq!(denied["code"], 0);
+        let out: serde_json::Value =
+            serde_json::from_str(denied["stdout"].as_str().unwrap()).unwrap();
+        assert_eq!(out["decision"], "deny", "{out}");
+        assert!(out["reason"].as_str().unwrap().contains("mesimon"), "{out}");
+    }
+    assert_eq!(
+        bed.printed().len(),
+        3,
+        "only SessionStart brief and the two denied PreToolUse calls printed: {:?}",
+        bed.printed()
+    );
+    wait_until(Duration::from_secs(5), "GateDenied in activity feed", || {
+        let feed =
+            std::fs::read_to_string(bed.h.paths.state_dir.join("activity.jsonl")).unwrap_or_default();
+        feed.contains("board_dir") && feed.contains("state_dir")
+    });
 }
 
 /// A folder the person never trusted gets agy's own dialog: the seat reads

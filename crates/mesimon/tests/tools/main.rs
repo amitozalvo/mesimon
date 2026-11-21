@@ -15,6 +15,7 @@ mod boardlink_e2e;
 mod brief_e2e;
 mod brief_offer_e2e;
 mod channel_cli;
+mod doctor_e2e;
 mod duplicate_e2e;
 mod mcp_e2e;
 mod notes_e2e;

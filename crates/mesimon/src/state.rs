@@ -34,19 +34,22 @@ pub fn run(args: &[String]) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&compatibility(&args[1..])?)?);
             Ok(())
         }
-        _ => bail!("usage: mesimon state replay <files...> | explain [session-prefix] [--repo path] | ping <KEY|session-prefix> [--repo path] | compatibility [claude|codex] <version>"),
+        _ => bail!("usage: mesimon state replay <files...> | explain [session-prefix] [--repo path] | ping <KEY|session-prefix> [--repo path] | compatibility [claude|codex|agy] <version>"),
     }
 }
 
 pub(crate) const CODEX_TESTED_VERSION: &str = "0.153.4";
+pub(crate) const AGY_TESTED_VERSION: &str = "1.5.13";
 
 fn compatibility(args: &[String]) -> Result<Value> {
     let (provider, version) = match args {
         [version] => ("claude", version.as_str()),
-        [provider, version] if matches!(provider.as_str(), "claude" | "claude_code" | "codex") => {
+        [provider, version]
+            if matches!(provider.as_str(), "claude" | "claude_code" | "codex" | "agy") =>
+        {
             (provider.as_str(), version.as_str())
         }
-        _ => bail!("usage: mesimon state compatibility [claude|codex] <version>"),
+        _ => bail!("usage: mesimon state compatibility [claude|codex|agy] <version>"),
     };
     if provider == "codex" {
         let manifest: Value =
@@ -54,6 +57,13 @@ fn compatibility(args: &[String]) -> Result<Value> {
         let matched = manifest["versions"].get(version);
         let now_ms = mesimon_core::clock::now_ms();
         return Ok(codex_compatibility(&manifest, version, matched, now_ms));
+    }
+    if provider == "agy" {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../docs/agy-compatibility.json"))?;
+        let matched = manifest["versions"].get(version);
+        let now_ms = mesimon_core::clock::now_ms();
+        return Ok(agy_compatibility(&manifest, version, matched, now_ms));
     }
     let manifest: Value =
         serde_json::from_str(include_str!("../../../docs/claude-compatibility.json"))?;
@@ -78,6 +88,27 @@ fn codex_compatibility(
         "status": if matched.is_some() { "partially_observed" } else { "untested" },
         "manifest": "docs/codex-compatibility.json",
         "adapter_revision": manifest["adapter_revision"],
+        "evidence_age_days": age_days,
+        "evidence": matched,
+        "policy": "No automatic model calls or configuration changes"})
+}
+
+fn agy_compatibility(
+    manifest: &Value,
+    version: &str,
+    matched: Option<&Value>,
+    now_ms: u64,
+) -> Value {
+    let age_days = matched
+        .and_then(|evidence| evidence["captured_at_unix_ms"].as_u64())
+        .and_then(|captured| now_ms.checked_sub(captured))
+        .map(|age| age / 86_400_000);
+    json!({"provider": "agy", "agy_version": version,
+        "tested_version": AGY_TESTED_VERSION,
+        "status": if matched.is_some() { "partially_observed" } else { "untested" },
+        "manifest": "docs/agy-compatibility.json",
+        "adapter_revision": manifest["adapter_revision"],
+        "auto_updates_at_launch": manifest["auto_updates_at_launch"],
         "evidence_age_days": age_days,
         "evidence": matched,
         "policy": "No automatic model calls or configuration changes"})
@@ -274,7 +305,8 @@ fn explain(args: &[String]) -> Result<()> {
             "observation_hold": session.kind == SessionKind::Codex && session.observation_hold,
             "provider_identity": {"claude_session_id": session.claude_session_id,
                 "codex_thread_id": session.codex_thread_id, "codex_turn_id": session.codex_turn_id,
-                "codex_generation": session.codex_generation, "codex_observed_sequence": session.codex_observed_seq},
+                "codex_generation": session.codex_generation, "codex_observed_sequence": session.codex_observed_seq,
+                "agy_conversation_id": session.agy_conversation_id},
             "runtime_observation": if session.kind == SessionKind::Codex {
                 codex_runtime(&mesimon_daemon::agents::codex::snapshot_path(&paths, session.id), session, now_ms)
             } else { Value::Null },
@@ -321,6 +353,18 @@ mod tests {
         let unknown = compatibility(&["codex".into(), "9.0.0".into()]).unwrap();
         assert_eq!(unknown["status"], "untested");
         assert!(unknown["evidence"].is_null());
+        for version in ["1.5.8", "1.5.9", AGY_TESTED_VERSION] {
+            let agy = compatibility(&["agy".into(), version.into()]).unwrap();
+            assert_eq!(agy["provider"], "agy");
+            assert_eq!(agy["agy_version"], version);
+            assert_eq!(agy["status"], "partially_observed", "{version}");
+            assert_eq!(agy["manifest"], "docs/agy-compatibility.json");
+            assert_eq!(agy["auto_updates_at_launch"], true);
+        }
+        let agy_unknown = compatibility(&["agy".into(), "9.0.0".into()]).unwrap();
+        assert_eq!(agy_unknown["status"], "untested");
+        assert!(agy_unknown["evidence"].is_null());
+        assert!(agy_unknown["evidence_age_days"].is_null());
         assert!(compatibility(&["future".into(), "1".into()]).is_err());
     }
 

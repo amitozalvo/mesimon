@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "adapter_revision": "agy-hooks-title-1",
+  "provider": "agy",
+  "auto_updates_at_launch": true,
+  "switch": "MESIMON_AGY=1",
+  "versions": {
+    "1.5.8": {
+      "captured_at": "2026-11-14",
+      "captured_at_unix_ms": 1794614400000,
+      "mode": [
+        "native_interactive_tmux"
+      ],
+      "scope": "Initial provider, per-session launch files, hook/title turn signals and exact-path folder trust (T-1225).",
+      "observed": [
+        "launch_files",
+        "turn_signals",
+        "exact_path_trust",
+        "conversation_resume",
+        "pretooluse_empty_json_denies"
+      ],
+      "claims": [
+        {
+          "claim": "Hooks load from .agents/hooks.json in a folder added with --add-dir, and .agents/mcp_config.json beside it starts its server, leaving the checkout and ~/.gemini untouched.",
+          "status": "observed",
+          "ticket": "T-1225"
+        },
+        {
+          "claim": "--settings is session-only (trustedWorkspaces, title command, permissions.allow, agentMode) and never saved back to ~/.gemini/antigravity-cli/settings.json.",
+          "status": "observed",
+          "ticket": "T-1225"
+        },
+        {
+          "claim": "On PreToolUse, printing {} or {\"decision\":\"\"} denies the tool call and a non-zero exit blocks it; zero bytes on stdout is no opinion.",
+          "status": "observed",
+          "ticket": "T-1225"
+        },
+        {
+          "claim": "agy starts a background update check at every interactive launch.",
+          "status": "observed",
+          "ticket": "T-1225"
+        }
+      ]
+    },
+    "1.5.9": {
+      "captured_at": "2026-11-14",
+      "captured_at_unix_ms": 1794664560000,
+      "model": "gemini-3.8-flash-high",
+      "mode": [
+        "native_interactive_tmux"
+      ],
+      "scope": "Brief and MCP tools (T-1232), composer paste/steer/Esc (T-1233), modes and model list (T-1234, T-1326), transcript/cost/context/quota (T-1237), and subagent hold (T-1332).",
+      "observed": [
+        "brief_and_scoped_mcp",
+        "composer_paste_and_steer",
+        "esc_inferred_interrupt",
+        "agy_modes_and_models",
+        "transcript_cost_context_quota",
+        "subagent_and_task_hold"
+      ],
+      "end_to_end": {
+        "brief_get_ticket": {
+          "status": "passed",
+          "kind": "real_agy_mesimon_rig",
+          "model": "gemini-3.8-flash-high",
+          "claim": "Title-only prompt receives SessionStart brief, rejects server/discover (-32601) before initialize (2025-11-25), calls get_ticket first and replies with the description nonce."
+        }
+      },
+      "claims": [
+        {
+          "claim": "Esc mid-turn emits no Stop; the title feed transitioning to idle without a prior Stop or running background work identifies the interrupt.",
+          "status": "observed",
+          "ticket": "T-1233"
+        },
+        {
+          "claim": "Hooks supply brain/<id>/.system_generated/logs/transcript_full.jsonl with uncached input_tokens, cache_read_tokens and output_tokens; the title feed's antigravity/brain path is not written by the CLI.",
+          "status": "observed",
+          "ticket": "T-1237"
+        },
+        {
+          "claim": "Child subagents inherit the seat's hooks with their own conversationId; Stop with fullyIdle=false and title subagents/task_count hold the seat working until the lead stops and background work drains.",
+          "status": "observed",
+          "ticket": "T-1332"
+        }
+      ]
+    },
+    "1.5.13": {
+      "captured_at": "2026-11-21",
+      "captured_at_unix_ms": 1795219200000,
+      "model": "gemini-4-carbon-high",
+      "mode": [
+        "native_interactive_tmux",
+        "binary_and_live_session_inspection"
+      ],
+      "scope": "Lead transcript repair and rapid-resume settle (T-1334), worktree trust checkout hint (T-1361), interactive MCP startup ordering (T-1380), and PreToolUse write gate, session-folder boundary, presence lock and compaction inspection (T-1238).",
+      "observed": [
+        "structured_write_guard",
+        "session_folder_workspace_boundary",
+        "hooks_under_skip_permissions",
+        "presence_flock_inspection",
+        "saved_lead_transcript_repair",
+        "worktree_trust_checkout_hint",
+        "interactive_mcp_startup_ordering",
+        "worktree_git_sandbox_boundary"
+      ],
+      "claims": [
+        {
+          "claim": "Cascade models issue write_to_file, replace_file_content and multi_replace_file_content (TargetFile), sed_file (target_file) and notebook_edit (NotebookPath/notebook_path/AbsolutePathUri), while direct-tool models such as Gemini 4 Carbon issue write_file and edit_file (Path); mesimon gate --provider agy matches and judges both sets.",
+          "status": "observed",
+          "ticket": "T-1238"
+        },
+        {
+          "claim": "PreToolUse runs inside HookMixinWrapper tool conversion (PreToolHookConverter) ahead of permission confirmation, so --dangerously-skip-permissions auto-approves confirmation prompts without skipping hooks or overriding a PreToolUse deny.",
+          "status": "observed",
+          "ticket": "T-1238"
+        },
+        {
+          "claim": "--add-dir mounts <state>/agy/<session> in agy's Active Workspaces; mesimon gate --allow exempts only <state>/worktrees, denying structured writes to <state>/agy/<session>/.agents/hooks.json and <state>/agy/<session>.json under StateDir while run_command stays unhooked.",
+          "status": "observed",
+          "ticket": "T-1238"
+        },
+        {
+          "claim": "presence/<conversation>.lock under ~/.gemini/antigravity-cli is an empty BSD flock(LOCK_EX | LOCK_NB) file carrying no PID; probing it acquires the exclusive lock and touches ~/.gemini, while agy natively refuses a duplicate --conversation writer at startup.",
+          "status": "observed",
+          "ticket": "T-1238"
+        },
+        {
+          "claim": "Interactive sessions start MCP servers in the background (since 1.1.9), so the first turn can precede eager tool registration even when .agents/mcp_config.json marks get_ticket eager.",
+          "status": "observed",
+          "ticket": "T-1380"
+        },
+        {
+          "claim": "In a Mesimon git worktree, .git points into the main checkout's .git/worktrees/<branch>, which agy's default command sandbox blocks (git exits 128) unless the main checkout is accessible or the command runs outside the sandbox.",
+          "status": "observed",
+          "ticket": "T-1334"
+        },
+        {
+          "claim": "agy exposes no PreCompact or PostCompact hook in hooks.json; automatic compaction runs inside an active turn and manual /compact emits no Stop (settling without EndTurn/REVIEW movement).",
+          "status": "observed",
+          "ticket": "T-1238"
+        }
+      ],
+      "not_yet_observed": [
+        "board and Remote Control answers for agy permission, question and plan dialogs (T-1235)",
+        "external agy conversation census and adoption (T-1236)",
+        "live interactive agy execution on Linux",
+        "real account quota exhaustion and recovery"
+      ],
+      "limitations": [
+        "agy updates itself in the background at every launch, so installed versions move ahead of recorded captures without manual upgrades.",
+        "MESIMON_AGY=1 remains required until agy dialog answers (T-1235) and remaining adoption/first-turn gates are decided.",
+        "Selected version-scoped observations do not certify all models, enterprise policies or future upstream releases."
+      ]
+    }
+  }
+}

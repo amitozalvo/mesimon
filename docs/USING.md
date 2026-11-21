@@ -1060,11 +1060,11 @@ another ticket and, where you turn it on, archiving one, belong to the ticket we
 [the crown](#the-crown-one-agent-runs-the-board) alone;
 [promise 3](PROMISES.md#3-zero-prompt-injection) says how the crown works.
 
-Claude's `Edit`/`Write`/`NotebookEdit` and Codex's structured `apply_patch` writes into `.mesimon/` and
-mesimon's state directory are refused too — which is why a note, a markdown file under
-`.mesimon/`, reaches an agent through a tool and not through `Write`; the tool stamps who wrote
-it. Its shell is not: `sed -i` into those paths still
-works, because mesimon does not hook shell commands.
+Claude's `Edit`/`Write`/`NotebookEdit`, Codex's structured `apply_patch`, and agy's structured
+file-write tools into `.mesimon/` and mesimon's state directory are refused too — which is why a
+note, a markdown file under `.mesimon/`, reaches an agent through a tool and not through `Write`;
+the tool stamps who wrote it. Its shell is not: `sed -i` into those paths still works, because
+mesimon does not hook shell commands.
 
 `mesimon doctor --mcp` prints all of it — the exact flag, every tool description, the token cost,
 and what mesimon deliberately does not send.

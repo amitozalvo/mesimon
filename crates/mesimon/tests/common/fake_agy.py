@@ -43,6 +43,7 @@ and carries the context window, the plan's quota and an `email`.
 """
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -162,6 +163,25 @@ def main():
             log("agy-stdout.jsonl", {"event": payload.get("hookEventName", "title"),
                                      "command": command,
                                      "stdout": done.stdout.decode(errors="replace")})
+        return done
+
+    def pretool(name, args):
+        payload = {
+            "conversationId": st["conversation"] or MINTED,
+            "workspacePaths": [os.getcwd(), folder],
+            "modelName": "fake",
+            "hookEventName": "PreToolUse",
+            "cwd": os.getcwd(),
+            "toolCall": {"id": "call_gate", "name": name, "args": args},
+            "stepIdx": st["steps"],
+        }
+        for group in hooks.get("PreToolUse", []):
+            matcher = group.get("matcher", "")
+            if matcher in ("", "*") or re.search(f"^(?:{matcher})$", name):
+                for handler in group.get("hooks", []):
+                    done = run(handler["command"], payload)
+                    log("agy-gate.jsonl", {"tool": name, "code": done.returncode,
+                                           "stdout": done.stdout.decode(errors="replace")})
 
     def hook(event, extra):
         payload = {
@@ -377,7 +397,9 @@ def main():
                     return
                 paint()
             for cue in sorted(os.listdir(CUES)):
-                os.remove(os.path.join(CUES, cue))
+                cue_path = os.path.join(CUES, cue)
+                body = open(cue_path).read()
+                os.remove(cue_path)
                 if cue == "ask":
                     report("tool_use", pending=True)
                 elif cue == "answer":
@@ -385,6 +407,9 @@ def main():
                 elif cue == "stop":
                     stop()
                     paint()
+                elif cue.startswith("gate"):
+                    spec = json.loads(body)
+                    pretool(spec["name"], spec["args"])
                 elif cue == "quit":
                     return
     finally:

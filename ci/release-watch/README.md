@@ -25,12 +25,20 @@ Claude starts from the 2.1.309 measurement; the first review covers 2.1.310.
 The upstream sources are [Claude's changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md),
 [Claude releases](https://github.com/anthropics/claude-code/releases),
 [Codex releases](https://github.com/openai/codex/releases),
+[agy's changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md),
+[agy releases](https://github.com/google-antigravity/antigravity-cli/releases),
 [Claude mod declarations](https://github.com/anthropics/claude-code/blob/main/mods/types/claude-code.d.ts),
-[Codex plugins](https://developers.openai.com/plugins/build/plugins), and
-[Codex hooks](https://learn.chatgpt.com/docs/hooks). Captures retain upstream text
+[Codex plugins](https://developers.openai.com/plugins/build/plugins),
+[Codex hooks](https://learn.chatgpt.com/docs/hooks),
+[agy hooks](https://antigravity.google/docs/hooks.md), and
+[agy MCP](https://antigravity.google/docs/mcp.md). Captures retain upstream text
 and generated headers. Codex is Apache-2.0; upstream references remain their authors' work.
 The release list is paginated through the baseline tag; stable installs exclude
-prereleases, preview installs include them. GitHub's unauthenticated rate limit may
+prereleases, preview installs include them. `agy` updates itself in the background at
+every launch from its own updater CDN, so its installed version can lead GitHub: an
+ordinary run prints the published releases and flags the unpublished install, while
+`--mark-read` refuses to advance past it until upstream publishes the release or
+changelog entry. GitHub's unauthenticated rate limit may
 require retrying later; incomplete reads are errors, not empty digests.
 
 Published API references are moving documents, not installed-version evidence.

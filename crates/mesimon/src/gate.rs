@@ -1,9 +1,10 @@
-//! `mesimon gate` — the static deny-only deciding hook (D10, T-84).
+//! `mesimon gate` — the static deny-only deciding hook (D10, T-84, T-1238).
 //!
 //! Registered as a `PreToolUse` hook on `Edit`/`Write`/`NotebookEdit` for
-//! Claude or `apply_patch` for Codex, it
-//! refuses a structured write into a path mesimon owns and says nothing about
-//! anything else. It is a separate subcommand from `mesimon hook` on purpose:
+//! Claude, `apply_patch` for Codex, or agy's file-write tools (`--provider
+//! agy`), it refuses a structured write into a path mesimon owns and says
+//! nothing about anything else. It is a separate subcommand from `mesimon hook`
+//! on purpose:
 //! the observer's invariant is that it NEVER writes stdout (stdout on several
 //! hook events is injected straight into the agent's context), and teaching it
 //! to sometimes emit a decision would put that invariant one refactor away
@@ -15,17 +16,17 @@
 //!    tighten what the user already permitted; it can never widen it. `"ask"`
 //!    is never emitted either — it collapses to a deny in headless, which
 //!    would turn "no opinion" into a silent refusal in exactly the background
-//!    session path.
+//!    session path; on agy, `{}` or `{"decision":""}` also denies the call.
 //! 2. **The decision is local and static.** The guarded roots arrive in argv;
 //!    no daemon round trip is involved, so the gate is sub-millisecond on the
 //!    agent's critical path and, more importantly, a dead daemon cannot make
 //!    it fail open. Reporting the denial to the feed happens afterwards and is
 //!    allowed to fail.
-//! 3. **`Bash` is not hooked, and that is written down.** `file_path` is a real
-//!    argument, so this check is exact. A command string is not, and any
-//!    shape-matching pre-filter is an evasion hole (`D=.mesimon; sed -i ...
-//!    $D/...`). The honest scope is: the tiers govern mesimon's tools and its
-//!    structured writes, not the agent's shell.
+//! 3. **`Bash` / `run_command` is not hooked, and that is written down.** A
+//!    structured file path is a real argument, so this check is exact. A
+//!    command string is not, and any shape-matching pre-filter is an evasion
+//!    hole (`D=.mesimon; sed -i ... $D/...`). The honest scope is: the tiers
+//!    govern mesimon's tools and its structured writes, not the agent's shell.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -100,7 +101,11 @@ fn decide(args: &[String]) {
     };
     let verdict = Verdict::deny(rule);
     // `NoOpinion` writes NOTHING. Not `{}`, not `"ask"`, not a newline.
-    let Some(out) = verdict.to_hook_output() else { return };
+    let out = match val(args, "--provider") {
+        Some("agy") => verdict.to_agy_hook_output(),
+        _ => verdict.to_hook_output(),
+    };
+    let Some(out) = out else { return };
     if let Ok(s) = serde_json::to_string(&out) {
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(s.as_bytes());
@@ -137,6 +142,7 @@ fn structured_paths<'a>(payload: &'a serde_json::Value, provider: Option<&str>) 
         Some("codex") if payload["tool_name"] == "apply_patch" => {
             input["command"].as_str().map(codex_patch_paths).unwrap_or_default()
         }
+        Some("agy") => agy_structured_paths(payload),
         // `NotebookEdit` names its file `notebook_path` (T-577 found the
         // gate never judged one).
         None | Some("claude") => ["file_path", "notebook_path"]
@@ -146,6 +152,59 @@ fn structured_paths<'a>(payload: &'a serde_json::Value, provider: Option<&str>) 
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// agy's `PreToolUse` sends `toolCall: {name, args}` (protojson camelCase,
+/// measured on 1.5.8–1.5.13). Cascade models name the destination `TargetFile`
+/// (`write_to_file`, `replace_file_content`, `multi_replace_file_content`),
+/// direct-tool models name it `Path` (`write_file`, `edit_file`, `delete_file`),
+/// `sed_file` names it `target_file`, and notebook tools use `NotebookPath`,
+/// `notebook_path` or `AbsolutePathUri` (`file://…`). Shell and read tools
+/// never match the registered `PreToolUse` regex and are ignored here as well.
+fn agy_structured_paths(payload: &serde_json::Value) -> Vec<&str> {
+    const IGNORED_TOOLS: &[&str] = &[
+        "run_command",
+        "read_file",
+        "view_file",
+        "view_file_outline",
+        "read_notebook",
+        "list_dir",
+        "list_directory",
+        "grep_search",
+        "code_search",
+        "find_by_name",
+    ];
+    if payload["toolCall"]["name"].as_str().is_some_and(|name| IGNORED_TOOLS.contains(&name)) {
+        return Vec::new();
+    }
+    let Some(args) = payload
+        .get("toolCall")
+        .and_then(|call| call.get("args"))
+        .or_else(|| payload.get("args"))
+    else {
+        return Vec::new();
+    };
+    const KEYS: &[&str] = &[
+        "Path",
+        "TargetFile",
+        "target_file",
+        "NotebookPath",
+        "notebook_path",
+        "AbsolutePath",
+        "AbsolutePathUri",
+        "file_path",
+        "path",
+    ];
+    let mut out = Vec::new();
+    for key in KEYS {
+        if let Some(raw) = args[key].as_str().filter(|s| !s.is_empty()) {
+            out.push(raw);
+            if let Some(stripped) = raw.strip_prefix("file://").filter(|s| !s.is_empty()) {
+                out.push(stripped);
+            }
+        }
+    }
+    out
 }
 
 /// Codex 0.153.4's apply_patch grammar names paths in these four headers.
@@ -392,6 +451,85 @@ mod tests {
         assert_eq!(structured_paths(&legacy, None), vec![".mesimon/a"]);
         assert_eq!(structured_paths(&legacy, Some("claude")), vec![".mesimon/a"]);
         assert!(structured_paths(&legacy, Some("codex")).is_empty());
+        assert!(structured_paths(&legacy, Some("agy")).is_empty());
+    }
+
+    #[test]
+    fn agy_judges_every_write_tool_denies_session_folder_and_allows_worktree() {
+        let d = tmp();
+        std::fs::create_dir_all(d.join("state/agy/s1/.agents")).unwrap();
+        std::fs::create_dir_all(d.join("state/worktrees/T-1/src")).unwrap();
+        let allow = [d.join("state/worktrees")];
+        let cwd = d.join("repo").display().to_string();
+        let judge = |tool: &str, args: serde_json::Value| {
+            let payload = serde_json::json!({
+                "hookEventName": "PreToolUse",
+                "cwd": cwd,
+                "toolCall": { "id": "call_1", "name": tool, "args": args },
+            });
+            first_denied_path(
+                &payload,
+                &["--provider".into(), "agy".into()],
+                &cwd,
+                &roots(&d),
+                &allow,
+            )
+            .map(|(rule, path)| (rule, path.to_owned()))
+        };
+
+        for (tool, key) in [
+            ("write_file", "Path"),
+            ("edit_file", "Path"),
+            ("delete_file", "Path"),
+            ("write_to_file", "TargetFile"),
+            ("replace_file_content", "TargetFile"),
+            ("multi_replace_file_content", "TargetFile"),
+            ("sed_file", "target_file"),
+            ("notebook_edit", "NotebookPath"),
+            ("notebook_edit", "notebook_path"),
+        ] {
+            let board = serde_json::json!({ key: ".mesimon/board/columns.toml" });
+            let (rule, _) = judge(tool, board).unwrap_or_else(|| panic!("{tool} {key}"));
+            assert_eq!(rule, RuleId::BoardDir, "{tool} {key}");
+            assert_eq!(
+                Verdict::deny(rule).to_agy_hook_output().unwrap(),
+                serde_json::json!({"decision": "deny", "reason": rule.reason()})
+            );
+
+            // `--add-dir` puts the session folder in agy's workspace, but `--allow`
+            // exempts `state/worktrees` alone: structured edits to the session's
+            // own hooks or settings file hit `StateDir`.
+            let own_hooks = d.join("state/agy/s1/.agents/hooks.json").display().to_string();
+            assert_eq!(judge(tool, serde_json::json!({ key: own_hooks })).unwrap().0, RuleId::StateDir);
+            let own_settings = d.join("state/agy/s1.json").display().to_string();
+            assert_eq!(
+                judge(tool, serde_json::json!({ key: own_settings })).unwrap().0,
+                RuleId::StateDir
+            );
+
+            // Ordinary source and managed worktrees produce `None` (0 bytes on stdout).
+            assert!(judge(tool, serde_json::json!({ key: "src/main.rs" })).is_none());
+            let wt = d.join("state/worktrees/T-1/src/lib.rs").display().to_string();
+            assert!(judge(tool, serde_json::json!({ key: wt })).is_none());
+        }
+
+        // `edit_notebook` passes `AbsolutePathUri` (`file://...`).
+        let uri = format!("file://{}", d.join("repo/.mesimon/board/x.ipynb").display());
+        assert_eq!(
+            judge("edit_notebook", serde_json::json!({"AbsolutePathUri": uri})).unwrap().0,
+            RuleId::BoardDir
+        );
+
+        // Shell and read tools are never parsed as writes, and agy payloads stay
+        // inert unless `--provider agy` is selected.
+        assert!(judge("run_command", serde_json::json!({"CommandLine": "rm -rf .mesimon"})).is_none());
+        assert!(judge("read_file", serde_json::json!({"Path": ".mesimon/board/columns.toml"})).is_none());
+        let agy_payload = serde_json::json!({
+            "toolCall": { "name": "write_file", "args": { "Path": ".mesimon/board/columns.toml" } }
+        });
+        assert!(structured_paths(&agy_payload, None).is_empty());
+        assert!(structured_paths(&agy_payload, Some("claude")).is_empty());
+        assert!(structured_paths(&agy_payload, Some("codex")).is_empty());
     }
 
     fn roots(dir: &Path) -> Vec<(RuleId, PathBuf)> {

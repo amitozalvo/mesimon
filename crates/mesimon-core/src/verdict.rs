@@ -83,6 +83,19 @@ impl Verdict {
             })),
         }
     }
+
+    /// What goes on stdout for an agy `PreToolUse` hook (T-1238). `None` means
+    /// write NOTHING and exit 0: on agy 1.5.8+, `{}` or `{"decision":""}`
+    /// denies the tool call, so a pass must emit zero bytes.
+    pub fn to_agy_hook_output(&self) -> Option<Value> {
+        match self {
+            Verdict::NoOpinion => None,
+            Verdict::Deny { reason, .. } => Some(json!({
+                "decision": "deny",
+                "reason": reason,
+            })),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -99,11 +112,14 @@ mod tests {
             s,
             r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"nope"}}"#
         );
+        let agy = serde_json::to_string(&v.to_agy_hook_output().unwrap()).unwrap();
+        assert_eq!(agy, r#"{"decision":"deny","reason":"nope"}"#);
     }
 
     #[test]
     fn no_opinion_is_empty_stdout_never_ask() {
         assert!(Verdict::NoOpinion.to_hook_output().is_none());
+        assert!(Verdict::NoOpinion.to_agy_hook_output().is_none());
     }
 
     /// The type-system point, asserted as a fact rather than a comment: the
@@ -113,6 +129,8 @@ mod tests {
         for rule in [RuleId::BoardDir, RuleId::StateDir] {
             let out = Verdict::deny(rule).to_hook_output().unwrap();
             assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+            let agy = Verdict::deny(rule).to_agy_hook_output().unwrap();
+            assert_eq!(agy["decision"], "deny");
         }
     }
 
@@ -121,7 +139,8 @@ mod tests {
     /// or `"ask"` — the two words that would turn this hook from something
     /// that can only tighten into something that can widen, or (for `"ask"`)
     /// into a silent deny in headless. The mod's TypeScript (T-577) is
-    /// walked beside the Rust, in either quote.
+    /// walked beside the Rust, in either quote, and `verdict.rs` / `gate.rs`
+    /// are checked on `"decision"` as well for agy's `PreToolUse` shape.
     #[test]
     fn no_source_line_can_decide_allow_or_ask() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -146,6 +165,10 @@ mod tests {
                 if !matches!(path.extension().and_then(|x| x.to_str()), Some("rs" | "ts")) {
                     continue;
                 }
+                let is_gate_src = matches!(
+                    path.file_name().and_then(|n| n.to_str()),
+                    Some("verdict.rs" | "gate.rs")
+                );
                 let Ok(text) = std::fs::read_to_string(&path) else { continue };
                 for (i, line) in text.lines().enumerate() {
                     // Comments may discuss the banned words — this very test's
@@ -154,14 +177,23 @@ mod tests {
                     if code.starts_with("//") || code.starts_with('*') {
                         continue;
                     }
-                    if !line.contains("permissionDecision") {
+                    let mentions_gate_decision =
+                        line.contains("permissionDecision") || (is_gate_src && line.contains("\"decision\""));
+                    if !mentions_gate_decision {
                         continue;
                     }
                     checked += 1;
-                    for banned in ["\"allow\"", "\"ask\"", "'allow'", "'ask'"] {
+                    for banned in [
+                        "\"allow\"",
+                        "\"ask\"",
+                        "\"force_ask\"",
+                        "'allow'",
+                        "'ask'",
+                        "'force_ask'",
+                    ] {
                         assert!(
                             !line.contains(banned),
-                            "{}:{}: {banned} in a permissionDecision position",
+                            "{}:{}: {banned} in a gate decision position",
                             path.display(),
                             i + 1
                         );

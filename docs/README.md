@@ -17,8 +17,9 @@ For people working on mesimon:
   compare it with current code and intended product behavior.
 - `state-scenarios/` — recorded agent-state scenarios replayed by the daemon's state tests
   (`crates/mesimon-daemon/src/state_replay.rs`).
-- `claude-compatibility.json`, `codex-compatibility.json` — the agent compatibility manifests
-  compiled into the binary; `mesimon state` reports which one it ran against.
+- `claude-compatibility.json`, `codex-compatibility.json`, `agy-compatibility.json` — the agent
+  compatibility manifests compiled into the binary; `mesimon state` reports which one it ran
+  against.
 - `release-notes/` — the writing guide for `CHANGELOG.md` entries.
 
 The pre-code research corpus this directory once held — the numbered planning documents, the

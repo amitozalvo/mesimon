@@ -857,6 +857,37 @@ fn agent_board_tools_tier_and_collisions() {
     );
     assert!(out.is_empty(), "the gate must have no opinion on ordinary writes, got {out:?}");
 
+    // T-1238: `mesimon gate --provider agy` refuses board and state writes
+    // (including the session's own `--add-dir` folder) as `{"decision":"deny","reason":"…"}`
+    // and prints zero bytes on ordinary or worktree writes.
+    let agy_session_hooks = state_dir.join("agy").join(sid.to_string()).join(".agents/hooks.json");
+    std::fs::create_dir_all(agy_session_hooks.parent().unwrap()).unwrap();
+    let agy_wt = state_dir.join("worktrees/T-1/src/lib.rs");
+    std::fs::create_dir_all(agy_wt.parent().unwrap()).unwrap();
+    for (tool, field, target) in [
+        ("write_to_file", "TargetFile", board_file.display().to_string()),
+        ("write_file", "Path", agy_session_hooks.display().to_string()),
+        ("sed_file", "target_file", state_dir.join("sessions.json").display().to_string()),
+        ("notebook_edit", "NotebookPath", board_file.display().to_string()),
+    ] {
+        let out = gate_agy_raw(&hook_sock, sid, &repo, &state_dir, tool, field, &target);
+        let denied: Value = serde_json::from_str(&out).expect("agy deny json");
+        assert_eq!(denied["decision"], "deny", "{tool}: {denied}");
+        assert!(denied["reason"].as_str().unwrap().contains("mesimon"), "{tool}: {denied}");
+    }
+    for allowed in [repo.join("src/main.rs"), agy_wt] {
+        let out = gate_agy_raw(
+            &hook_sock,
+            sid,
+            &repo,
+            &state_dir,
+            "write_file",
+            "Path",
+            &allowed.display().to_string(),
+        );
+        assert!(out.is_empty(), "agy pass must print nothing, got {out:?}");
+    }
+
     // ---- teardown --------------------------------------------------------
     drop(shim);
     let _ = c.request(Command::Shutdown);
@@ -982,6 +1013,40 @@ fn gate_verdict(
 ) -> Value {
     let out = gate_raw(hook_sock, session, repo, state_dir, file_path);
     serde_json::from_str(&out).unwrap_or_else(|e| panic!("gate stdout is not json ({e}): {out:?}"))
+}
+
+fn gate_agy_raw(
+    hook_sock: &std::path::Path,
+    session: uuid::Uuid,
+    repo: &std::path::Path,
+    state_dir: &std::path::Path,
+    tool: &str,
+    field: &str,
+    target: &str,
+) -> String {
+    let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
+        .args(["gate", "--provider", "agy", "--session", &session.to_string(), "--sock"])
+        .arg(hook_sock)
+        .arg("--deny-board")
+        .arg(repo.join(".mesimon"))
+        .arg("--deny-state")
+        .arg(state_dir)
+        .arg("--allow")
+        .arg(state_dir.join("worktrees"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn agy gate");
+    let payload = json!({
+        "hookEventName": "PreToolUse",
+        "cwd": repo.display().to_string(),
+        "toolCall": {"id": "call_1", "name": tool, "args": {field: target}},
+    });
+    child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().expect("agy gate output");
+    assert!(out.status.success(), "the agy gate always exits 0");
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// T-1031: sizes are the UTF-8 bytes actually delivered in MCP text blocks,

@@ -49165,3 +49165,79 @@ All four mod passes were green. At eight jobs the hooks failure was
 alone on hooks at the measured SHA. Every gate finished both roads and a clean fixture
 audit. Only the all-green default-thread run wrote a stamp. The 60 Python runner and
 supervisor tests passed, including the release fixture's green and red stamp controls.
+## agy write gate, doctor, promises and release watch (T-1238, 2026-11-21)
+
+Ticket 8 of 8 from T-1225's plan lands the agy write gate, `doctor` and
+`doctor --mcp` disclosures, `docs/agy-compatibility.json` and `mesimon state
+compatibility agy`, `google-antigravity/antigravity-cli` in `ci/release-watch.py`,
+and the Promise 1 wording for `~/.gemini/` and `<state>/agy/<session>/`.
+
+- **Write gate (`mesimon gate --provider agy`)**: `Verdict::to_agy_hook_output`
+  emits `{"decision":"deny","reason":…}` on `Deny` and `None` (0 bytes on stdout,
+  exit 0) on `NoOpinion`, since `{}` or `{"decision":""}` denies in agy 1.5.8+.
+  Inspection of `agy` 1.5.13 (`cli/plugins/claude/tools.go` and live Gemini 4
+  Carbon turns) showed two write-tool families: Cascade models call
+  `write_to_file`, `replace_file_content`, `multi_replace_file_content`
+  (`TargetFile`), `sed_file` (`target_file`), and `notebook_edit`
+  (`NotebookPath`/`notebook_path`/`AbsolutePathUri`), while direct-tool models
+  call `write_file`, `edit_file`, `delete_file` (`Path`), and `edit_notebook`
+  (`AbsolutePathUri`). `GATE_MATCHER` in `agents/agy.rs` and
+  `agy_structured_paths` in `gate.rs` cover both. `--allow` exempts only
+  `<state>/worktrees`, so structured writes into `.mesimon/` or the seat's own
+  `<state>/agy/<session>/` folder deny under `BoardDir` / `StateDir` and log
+  `GateDenied`.
+- **Measurements & refuted claims on agy 1.5.13**:
+  1. *`--dangerously-skip-permissions`*: Refuted the third-party 1.1.x claim that
+     hooks do not run under it. Disassembly of `PreToolHookConverter.ToolCallToCortexStep`
+     and `HookMixinWrapper` shows `PreToolUse` runs inside tool-call conversion
+     before permission confirmation (`store.canAutoApproveWrite`); skipping
+     permissions auto-approves confirmation prompts (including `"ask"`) without
+     bypassing `hooks.json` or overriding `"deny"`. Mesimon never passes the flag.
+  2. *Own session folder (`<state>/agy/<session>`) and sandbox*: `--add-dir`
+     places `<state>/agy/<session>` in `agy`'s active workspaces, giving its
+     standard sandbox read/write access there (not `<state>/agy/<session>.json`
+     or `<state>/sessions.json`). Structured file tools are blocked by the gate;
+     `run_command` remains unhooked (D10), and `prepare()` rewrites
+     `.agents/hooks.json` and `.agents/mcp_config.json` on every wake.
+  3. *`presence/<conversation>.lock` for `external_owner`*: Refuted probing it.
+     `third_party/jetski/presence` holds `flock(fd, LOCK_EX | LOCK_NB)` on an
+     empty `~/.gemini/antigravity-cli/presence/<id>.lock` with no PID. Probing it
+     touches `~/.gemini` (violating Promise 1), races `presence.Acquire`, and
+     cannot distinguish `own_pane` from another process without a PID, while `agy`
+     itself refuses a duplicate `--conversation` writer (`presence: held by
+     another process`). `Agy::external_owner` stays `None`.
+  4. *Subagents and background tasks*: Child subagents inherit `.agents/hooks.json`
+     (including the `PreToolUse` write gate) with their own `conversationId`;
+     T-1332/T-1334 pin the lead `conversationId` unless `AgyTitle` switches it
+     and hold `Running` across `fullyIdle: false`, running `subagents`, and
+     `task_count > 0`.
+  5. *Compaction and Linux*: `agy` 1.5.13 exposes no `PreCompact`/`PostCompact`
+     hook; auto-compaction stays inside an active `Running` turn and manual
+     `/compact` emits no `Stop` (settling via `InferredInterrupt` with no false
+     `EndTurn`/`REVIEW` automove while the `SessionStart` `systemMessage` brief
+     persists in the trajectory). `agy`'s updater ships Linux `<os>_<arch>.json`
+     manifests with headless keyring and userns-sandbox fallbacks, though live
+     interactive `agy` on Linux remains uncaptured.
+- **Release watch & background auto-updater**: `agy` updates itself in the
+  background at launch (`1.5.13` landed locally via `antigravity-cli-auto-updater`
+  while `google-antigravity/antigravity-cli`'s `CHANGELOG.md` stopped at
+  `1.5.12`, and release tags omit `v`). `ci/release-watch.py` matches both bare
+  and `v`-prefixed tags, upgrades 2-provider checkpoints cleanly, prints
+  published notes plus an unpublished-install notice on read-only runs when the
+  auto-updater is ahead of GitHub, and refuses `--mark-read` until the installed
+  version is published.
+- **Keeping `MESIMON_AGY=1`**: The gate, doctor, compatibility manifest, promises,
+  and release watch are in place, so `MESIMON_AGY=1` stays only until T-1235
+  (board/phone answers for agy permission, question, and plan dialogs) and T-1236
+  (adoption) land and T-1380/T-1334 (first-turn eager MCP startup race and
+  worktree `.git` sandbox) settle. `README.md`'s top-level "Claude Code or Codex"
+  lines wait for that switch removal.
+
+Checks: `cargo ut` 3,370 passed, 13 ignored (after one sandbox-denied run where
+tmux/state-dir unit tests hit `Operation not permitted`); `mcp_e2e::` 4/4,
+`doctor_e2e::` 1/1 (after switching its `columns.toml` setup to
+`store::save_columns`, following one `cargo test` multi-filter CLI invocation
+error), `agy_e2e::` 6/6 under `ci/test-run.py`; `ci/release_watch_test.py` 25/25.
+No qualifying post-merge full-suite file (`command.rs`, `mcp.rs`, `authorize.rs`,
+state schema, `server.rs`, `mesimon-backend-tmux`, or `tests/common/mod.rs`) was
+changed.
