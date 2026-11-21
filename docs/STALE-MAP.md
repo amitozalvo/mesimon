@@ -49732,3 +49732,44 @@ checked every key received by each refused call. Mesophon navigation,
 chat and terminal passed on Chromium and WebKit at phone, tablet and
 desktop sizes (18 cases). State and asset tests passed (73). All ran
 under `ci/test-run.py`. The other 84 browser cases were outside these flows.
+
+## agy's sign-in chooser waits for the person (T-1402, 2026-11-21)
+
+A fresh home on installed agy 1.5.14 produced “Welcome to the Antigravity CLI.
+You are currently not signed in.” Under “Select login method:” the rows were
+“1. Google OAuth” and “2. Use a Google Cloud project”, with “↑/↓ Navigate ·
+enter Select” below. The first private-tmux capture lost its pane. The second
+captured both choices. A late shell-history write raced temporary-directory
+cleanup, which was completed afterward.
+
+The startup sampler recognizes that menu as Auth and reaffirms it while it
+stands. The card, ticket page and phone name sign-in. A keyed `get_ticket`
+tells the crown that the person completes it in agy's pane. The sign-in stop
+offers no answer on the board. Both a title for editing and words owed for
+submission wait through the composer timeout and follow the person's sign-in
+when agy's box appears.
+
+An agy `authenticating` title also occurs on ordinary startups, so it cannot
+identify this stop. The chooser is the witness. Starting agy in a fresh home
+created a database, logs and other files. `doctor agents` reads a snapshot
+from the running board to report a witnessed sign-in stop. With no such
+observation it makes no inference from missing files or credentials.
+
+Both supervised `cargo ut` runs passed 3,402 tests (13 ignored). The second
+included the chooser footer match, the ticket-page assertion and the guard
+against sending a prompt into the chooser. The first `agents agy_e2e::` run
+passed 8/10. In the sign-in case, doctor's unrelated provider version stub
+slept until the agy fixture exited. In the existing mid-turn queue case, an
+empty box let the test send Stop before the input had been queued. With fast
+version stubs and an explicit enqueue receipt, the first rerun passed 10/10.
+The final prompt guard was exercised on both launch modes in the second rerun,
+alongside the three folder-trust cases (13/13). Doctor and MCP passed 5/5.
+
+The installed-agy rig captured the chooser and the board's report on a fresh
+home. A live gpt-6.2-astra/high crown read the stopped ticket and told the
+person to open its pane to sign in. Both rigs passed on their first run.
+
+The rig's offline tests passed 46/46. Mesophon passed 73 state and asset
+tests and 102/102 Chromium and WebKit UX cases, including the sign-in notice
+with zero answer buttons. The server change qualifies for the post-merge
+workspace suite on the crown's batch schedule.

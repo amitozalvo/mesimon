@@ -21,18 +21,18 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question", "delegate", "forge", "restart-idle", "read-other", "shell", "file")
+            "identity", "question", "delegate", "forge", "restart-idle", "read-other", "shell", "file", "agy-sign-in")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
          "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1, "restart-idle": 1,
-         "read-other": 1, "shell": 4, "file": 2}
+         "read-other": 1, "shell": 4, "file": 2, "agy-sign-in": 1}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 # T-916: a crowned Codex seat asked one thing by the person, in words a person
 # would use. Everything after that one submission is the crown's own doing and
 # the board's wakes, so these cases also bound the native turns every thread of
 # the fixture takes (children included), and take a longer deadline.
-CROWN = {"delegate", "forge", "restart-idle"}
-NATIVE_TURNS = {"delegate": 20, "forge": 24, "restart-idle": 6}
+CROWN = {"delegate", "forge", "restart-idle", "agy-sign-in"}
+NATIVE_TURNS = {"delegate": 20, "forge": 24, "restart-idle": 6, "agy-sign-in": 2}
 TIMEOUTS = {"delegate": 300, "forge": 300, "restart-idle": 300}
 # Observed tokens, cached input included, one crown case may use. A Codex
 # crown re-sends a ~60k context on every code-mode request, so a forge case's
@@ -665,6 +665,12 @@ def adapter(base):
             home = self.guard.root / "home"
             shell, claude, path = fixture_home(home, stub)
             self.env.update(HOME=str(home), SHELL=str(shell), PATH=path, MESIMON_CLAUDE_BIN=str(claude))
+            if self.args.case == "agy-sign-in":
+                agy = shutil.which("agy")
+                if not agy:
+                    raise Inconclusive("installed agy is required")
+                from agy import signed_out_cli
+                self.env.update(MESIMON_AGY="1", MESIMON_AGY_BIN=signed_out_cli(self.guard.root, agy))
             if stub:
                 self.env.update(MESIMON_FORGE_EVERY_MS="2000", MESIMON_FORGE_BUSY_MS="2000")
             # The board's state follows HOME; it lies inside the fixture root.
@@ -1072,6 +1078,25 @@ def adapter(base):
             self.mark(assertion="delivery follow-through: the crown heard its worker and its turn on that ended, "
                       "nothing of the work its own", passed=True, wake=wake.get("cause"),
                       files=self.manifest["worker_files"], crown_board_calls_on_wake=board_calls(every[len(calls):]))
+
+        def agy_sign_in(self):
+            """A real signed-out agy worker and a crown asked what holds it up."""
+            self.crown_seat()
+            ticket = self.request("create_ticket", column="TODO", title="Inspect the README",
+                                  workspace="shared_checkout", tier="agy")["id"]
+            key = self.board_ticket(ticket)["short_key"]
+            sid = self.request("spawn_session", ticket=ticket, kind="agy", submit_prompt=False)["id"]
+            self.until("agy needs the person to sign in", lambda b:
+                       self.seat(b, sid).get("detail") == "agy asks you to sign in")
+            ask = f"What is {key} waiting for, and who can take the next step?"
+            self.ask(self.crown_sid, ask)
+            self.until("the crown replies", lambda b: (self.crown_turn_on(b, ask) or (None, False))[1])
+            crown = self.seat(self.client.board(), self.crown_sid)
+            reply = json.loads(Path(crown["agent_preview_path"]).read_text()).get("text") or ""
+            if not (re.search(r"sign[ -]?in|log[ -]?in", reply, re.I)
+                    and re.search(r"\b(you|person|human|user|operator)\b", reply, re.I)):
+                raise AssertionError("the crown did not identify the person's sign-in: " + reply)
+            self.mark(assertion="the crown names sign-in as a person's step", passed=True, reply=reply)
 
         def restart_idle(self):
             title = "Reply with the word ready."

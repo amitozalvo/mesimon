@@ -676,6 +676,7 @@ export function Detail({ store, bp }) {
           <div class="detail-scroll">
             <${CrownLine} store=${store} ticket=${ticket} />
             ${store.stopped(ticket) && html`<${StoppedLine} store=${store} ticket=${ticket} />`}
+            ${agent?.startup_notice && html`<p class="agent-line" role="status">${agent.startup_notice}</p>`}
             ${agent?.state === "stopping" && html`<div id="stopping-line" class="agent-line stopping-line" role="status">
               <p><${Icon} name="spinner" size=${15} width=${2.4} cls="spin" /><b>Stopping…</b></p>
               <p class="stopped-why">${agent.provider} is stopping. Words typed below wait here until it has stopped; then Resume or Start fresh takes them.</p>

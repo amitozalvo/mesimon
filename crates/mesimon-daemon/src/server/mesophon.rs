@@ -4829,6 +4829,9 @@ impl Daemon {
             dialog: self.control_dialog_of(s).map(phone_dialog),
             dialog_omitted: false,
             trust: self.control_trust_of(s),
+            startup_notice: s
+                .on_agy_sign_in()
+                .then(|| format!("{} ∙ open its pane", mesimon_core::board::AGY_SIGN_IN)),
             permission: self.control_permission_of(s.id).map(phone_permission),
             permission_refusal: self
                 .control
@@ -8710,6 +8713,7 @@ mod tests {
                     permission: None,
                     dialog: Some(phone.clone()),
                     trust: None,
+                    startup_notice: None,
                     session: uuid::Uuid::nil().to_string(),
                     provider: "claude".into(),
                     state: "needs_you".into(),

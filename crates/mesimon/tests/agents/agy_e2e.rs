@@ -341,7 +341,9 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     // Mid-turn, an Enter queues them under the turn: agy runs them after
     // its `Stop`, and the box reading empty was their receipt.
     assert!(matches!(c.prompt(t, "then the docs"), Response::Ok));
-    wait_until(Duration::from_secs(10), "the words queued", || bed.box_text().is_empty());
+    wait_until(Duration::from_secs(10), "the words queued", || {
+        bed.jsonl::<String>("agy-queued.jsonl") == ["then the docs"]
+    });
     assert_eq!(bed.prompts().len(), 2, "nothing ran yet: {:?}", bed.prompts());
     bed.cue("stop");
     bed.await_prompt(2, "queued", "then the docs");
@@ -601,6 +603,65 @@ fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
     let shown = serde_json::to_string(&c.request(Command::Snapshot)).unwrap();
     assert!(!shown.contains("example.invalid"), "the sign-in is never kept");
     let _ = c.request(Command::SleepSession { id });
+}
+
+#[test]
+fn agy_sign_in_waits_for_the_person_then_delivers_the_launch() {
+    let Some((bed, port)) = Bed::boot_with_relay("agy-sign-in") else { return };
+    bed.h.set_env("MESIMON_COMPOSER_WAIT_MS", "3000");
+    bed.h.restart();
+    let mut c = bed.h.client("agy-sign-in");
+    agy_board(&mut c);
+    let mut phone = TestPhone::pair(&mut c, port);
+
+    for (submit, title) in [(false, "A title to edit"), (true, "A title to submit")] {
+        bed.cue("signed-out");
+        let t = ticket(&mut c, title);
+        let Response::Spawned { id, .. } = start(&mut c, t, submit) else { panic!("spawn agy") };
+        c.await_state(id, "agy at sign-in", |s| {
+            *s == (SessionState::RequiresAction { reason: Reason::Auth })
+        });
+        assert!(c.record(id).on_agy_sign_in());
+        let Response::AgentTicket { ticket: view } =
+            c.send(Principal::Agent { session: id }, Command::AgentGetTicket { full: false })
+        else {
+            panic!("get_ticket")
+        };
+        let stop = view.needs_you.unwrap();
+        assert!(stop.reason.contains("sign in") && stop.reason.contains("only the person"));
+        assert!(stop.request.is_none());
+        let agent = phone.agent(t);
+        assert_eq!(agent.state, "needs attention");
+        assert_eq!(agent.startup_notice.as_deref(), Some("agy asks you to sign in ∙ open its pane"));
+        assert!(agent.dialog.is_none() && agent.trust.is_none() && agent.permission.is_none());
+        assert!(!matches!(c.request(Command::AcceptTrust { ticket: t }), Response::Ok));
+        err_containing(c.prompt(t, "words from the board"), "sign in");
+        let doctor = bed.h.command(&["doctor", "agents"])
+            .env("MESIMON_CLAUDE_BIN", "/bin/echo")
+            .env("MESIMON_CODEX_BIN", "/bin/echo")
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&doctor.stdout).contains("agy is waiting for sign-in"));
+
+        // Both delivery clocks would have expired without the sign-in hold.
+        std::thread::sleep(Duration::from_millis(3500));
+        assert!(bed.prompts().is_empty());
+        assert!(!bed.h.dir.join("agy-sign-in-keys.jsonl").exists());
+        bed.cue("signed-in");
+        if submit {
+            bed.await_prompt(0, "turn", title);
+            c.await_state(id, "submitted title is working", |s| *s == SessionState::Running);
+            assert_eq!(bed.prompts().len(), 1);
+        } else {
+            wait_until(Duration::from_secs(12), "draft title after sign-in", || {
+                bed.box_text() == format!("{title} ")
+            });
+            assert!(bed.prompts().is_empty());
+        }
+        assert!(phone.agent(t).startup_notice.is_none());
+        bed.cue("quit");
+        c.await_state(id, "stand-in exited", |s| !s.has_pane());
+    }
 }
 
 #[test]

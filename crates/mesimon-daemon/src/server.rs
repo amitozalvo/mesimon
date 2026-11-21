@@ -5886,16 +5886,25 @@ impl Daemon {
             .sessions
             .iter()
             .filter(|s| claude_startup_candidate(s))
-            .map(|s| (s.id, s.sid16(), s.state.clone(), s.cwd.clone(), s.kind, s.ticket))
+            .map(|s| {
+                (
+                    s.id,
+                    s.sid16(),
+                    s.on_trust_dialog(),
+                    s.on_agy_sign_in(),
+                    s.cwd.clone(),
+                    s.kind,
+                    s.ticket,
+                )
+            })
             .collect();
         let mut dirty = false;
-        for (id, sid, state, cwd, kind, ticket) in candidates {
+        for (id, sid, at_trust, at_sign_in, cwd, kind, ticket) in candidates {
             let principal = Principal::Automation { rule: "claude_startup".into() };
             if authorize(&principal, &Action::Mutate, &Resource::Session { id }).denied() {
                 continue;
             }
             let Some(screen) = screens.get(&sid) else { continue };
-            let at_trust = state == (SessionState::RequiresAction { reason: Reason::Trust });
             let (signal, detail) = match crate::trust_dialog::read(screen) {
                 Some(dialog) => {
                     let folder = dialog.folder.unwrap_or_else(|| cwd.clone());
@@ -5916,10 +5925,19 @@ impl Daemon {
                     };
                     (Signal::Attention { reason: Reason::Trust }, Some(detail))
                 }
+                None if kind == SessionKind::Agy && crate::agents::agy::sign_in_screen(screen) => {
+                    dirty |= self.control_drop_trust(id);
+                    (
+                        Signal::Attention { reason: Reason::Auth },
+                        Some(mesimon_core::board::AGY_SIGN_IN.into()),
+                    )
+                }
                 // The dialog went and the composer paints: the seat is up. A
                 // projection nothing walks goes with it; one a delivery is
                 // still walking settles the delivery first (`trust_taken`).
-                None if at_trust && crate::agents::read_box(kind, screen) != Composer::Absent => {
+                None if (at_trust || at_sign_in)
+                    && crate::agents::read_box(kind, screen) != Composer::Absent =>
+                {
                     if !self.control_trust_walking(id) {
                         dirty |= self.control_drop_trust(id);
                     }
@@ -7974,7 +7992,7 @@ impl Daemon {
     /// drawn, so the title waits for a sample that shows the box empty, and
     /// goes in then with no Enter, as the person's to edit. A box holding
     /// words is a person's, and the title is dropped; so is one that never
-    /// drew in the composer's wait (its folder trust dialog holds the clock).
+    /// drew in the composer's wait (trust and sign-in hold the clock).
     fn prefill_agy_titles(&mut self, now: u64) -> bool {
         use crate::agents::claude::composer::Composer;
         if self.agy_prefills.is_empty() {
@@ -7987,12 +8005,9 @@ impl Daemon {
                 self.agy_prefills.remove(&id);
                 continue;
             };
-            let (sid, trust) = (
-                rec.sid16(),
-                rec.state == (SessionState::RequiresAction { reason: Reason::Trust }),
-            );
+            let sid = rec.sid16();
             let Some((title, since)) = self.agy_prefills.get(&id).cloned() else { continue };
-            if trust {
+            if rec.on_trust_dialog() || rec.on_agy_sign_in() {
                 self.agy_prefills.insert(id, (title, now));
                 continue;
             }
@@ -8235,14 +8250,10 @@ impl Daemon {
                 self.owed.remove(&id);
                 continue;
             };
-            // The folder trust dialog comes before the session (T-844): the
-            // words are not abandoned on it. They wait, the composer's and
-            // the bridge's clocks held, for the dialog to be answered — in
-            // the pane, from the board or from a phone — and then go in as
-            // any launch's do. A startup modal this did not recognise still
-            // reads SETUP, below, and the words go unsent as before.
+            // A folder trust decision or agy's sign-in can take arbitrarily
+            // long. Keep the launch parked until the composer is visible.
             if crate::agents::pastes(rec.kind)
-                && rec.state == (SessionState::RequiresAction { reason: Reason::Trust })
+                && (rec.on_trust_dialog() || rec.on_agy_sign_in())
                 && self.owed.get(&id).is_some_and(|o| o.parked.is_some())
             {
                 if let Some(owed) = self.owed.get_mut(&id) {
@@ -13080,10 +13091,13 @@ impl Daemon {
             .filter(|text| shown.as_deref() != Some(*text))
             .map(|text| text.len() as u64);
         Some(AgentNeedsYouView {
-            reason: rec.agy_worktree_trust_hint().map_or_else(
-                || agent_reason_word(reason).to_string(),
-                |hint| format!("trust ∙ {}", scrub(hint)),
-            ),
+            reason: if rec.on_agy_sign_in() {
+                "agy asks to sign in ∙ only the person can complete sign-in in its pane".into()
+            } else if let Some(hint) = rec.agy_worktree_trust_hint() {
+                format!("trust ∙ {}", scrub(hint))
+            } else {
+                agent_reason_word(reason).into()
+            },
             request: dialog
                 .map(|(request, _)| request.to_string())
                 .or_else(|| plan.map(|(request, _)| request.to_string())),
@@ -16080,6 +16094,9 @@ impl Daemon {
         };
         if rec.observe_only() {
             return Err("external session — resume it to take over before sending a prompt".into());
+        }
+        if rec.on_agy_sign_in() {
+            return Err(format!("{} ∙ open its pane", mesimon_core::board::AGY_SIGN_IN));
         }
         let sid = rec.sid16();
         let id = rec.id;
@@ -24235,15 +24252,15 @@ fn idle_at_prompt(state: &SessionState) -> bool {
 /// A Claude or agy seat on its way up (T-844, T-1233): its folder trust
 /// dialog is read off its screen, since no hook says it is there. agy's
 /// `StartupModal` is never set (the spawn probe is Claude's), so only its
-/// `Spawning` and `Trust` count.
+/// spawning, folder trust and sign-in states count.
 fn claude_startup_candidate(s: &SessionRecord) -> bool {
     crate::agents::pastes(s.kind)
         && s.state.has_pane()
-        && matches!(
+        && (matches!(
             s.state,
             SessionState::Spawning
                 | SessionState::RequiresAction { reason: Reason::StartupModal | Reason::Trust }
-        )
+        ) || s.on_agy_sign_in())
 }
 
 /// The offer and its bulk action use persisted session states, never snapshot decorations.

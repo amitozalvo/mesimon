@@ -5139,6 +5139,22 @@ fn trust_app() -> App {
 }
 
 #[test]
+fn golden_agy_sign_in_120() {
+    let mut app = trust_app();
+    let rec = app.board_mut().sessions.iter_mut().find(|s| s.on_trust_dialog()).unwrap();
+    rec.kind = SessionKind::Agy;
+    rec.state = SessionState::RequiresAction { reason: mesimon_core::board::Reason::Auth };
+    rec.detail = Some(mesimon_core::board::AGY_SIGN_IN.into());
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|line| line.contains("agy asks you to sign in")));
+    assert!(!lines.iter().any(|line| line.contains("w confirm")));
+    golden("board_agy_sign_in_120x30", &lines);
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let page = render(&app, 120, 30).join("\n");
+    assert!(page.contains("agy asks you to sign in") && !page.contains("w confirm"), "{page}");
+}
+
+#[test]
 fn golden_agy_worktree_trust_open_120() {
     let mut app = trust_app();
     let rec = app.board_mut().sessions.iter_mut().find(|s| s.on_trust_dialog()).unwrap();

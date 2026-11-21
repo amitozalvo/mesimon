@@ -325,6 +325,8 @@ pub enum AgyStop {
 
 pub const CODEX_RESUME_FAILED: &str = "resume failed ∙ no thread selected";
 
+pub const AGY_SIGN_IN: &str = "agy asks you to sign in";
+
 pub const AGY_FOLDER_TRUST: &str = "agy asks to trust this folder";
 
 /// A session record the daemon persists. Mesimon's UUID names its tmux
@@ -957,6 +959,13 @@ impl SessionRecord {
     /// for a person who asked.
     pub fn on_trust_dialog(&self) -> bool {
         self.state == (SessionState::RequiresAction { reason: Reason::Trust })
+    }
+
+    /// agy's measured startup stop, distinct from a turn that failed on authentication.
+    pub fn on_agy_sign_in(&self) -> bool {
+        self.kind == SessionKind::Agy
+            && self.state == (SessionState::RequiresAction { reason: Reason::Auth })
+            && self.detail.as_deref() == Some(AGY_SIGN_IN)
     }
 
     /// The checkout fact appended to agy's folder question on a managed worktree.

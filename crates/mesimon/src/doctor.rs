@@ -671,6 +671,15 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         let binary = mesimon_daemon::agents::cli_bin(provider);
         let path = which(&binary);
         let version = path.as_deref().and_then(|path| tool_version(path, &["--version"]));
+        if provider == AgentProvider::Agy
+            && path.is_some()
+            && paths.as_ref().is_some_and(|p| agy_waits_for_sign_in(&p.orch_sock()))
+        {
+            records.push(
+                rec(Level::Warn, "agy sign-in", "agy is waiting for sign-in on this board")
+                    .advice("Open the agent's pane and sign in."),
+            );
+        }
         records.extend(provider_installation(
             provider,
             selected,
@@ -1263,6 +1272,17 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         );
     }
     Section { name: "git", records }
+}
+
+/// Use agy's observed login screen. Its files may coexist with keyring or
+/// Cloud credentials, and launching agy to check would write to its home.
+fn agy_waits_for_sign_in(sock: &Path) -> bool {
+    use mesimon_core::command::{Command, Envelope, Response};
+    let request =
+        Envelope { principal: mesimon_core::Principal::Local, command: Command::Snapshot };
+    let timeout = Some(std::time::Duration::from_secs(2));
+    matches!(mesimon_daemon::oneshot::one_shot(sock, &request, timeout, timeout),
+        Ok(Response::Board { board, .. }) if board.sessions.iter().any(|s| s.on_agy_sign_in()))
 }
 
 /// One-shot Hello over `orch.sock`. Deliberately not the TUI's client: doctor

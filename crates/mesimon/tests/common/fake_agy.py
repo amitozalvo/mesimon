@@ -241,6 +241,9 @@ def build_question_dialog(spec):
 
 
 def main():
+    if sys.argv[1:] == ["--version"]:
+        print("1.5.14")
+        return
     if sys.argv[1:] == ["models"]:
         return models()
     os.makedirs(CUES, exist_ok=True)
@@ -254,6 +257,7 @@ def main():
     st = {
         "conversation": value("--conversation"),
         "box": "",
+        "sign_in": os.path.exists(os.path.join(CUES, "signed-out")),
         "dialog": not trusted,
         "tool_dialog": None,
         "yes": True,
@@ -355,7 +359,17 @@ def main():
         rule = "─" * width
         rows = []
         cursor = (0, 0)
-        if st["dialog"]:
+        if st["sign_in"]:
+            rows = [
+                "Welcome to the Antigravity CLI. You are currently not signed in.",
+                "",
+                "Select login method:",
+                "> 1. Google OAuth",
+                "  2. Use a Google Cloud project",
+                "",
+                "  ↑/↓ Navigate · enter Select",
+            ]
+        elif st["dialog"]:
             rows = [
                 "Accessing workspace:",
                 "",
@@ -460,6 +474,7 @@ def main():
         st["box"] = ""
         if st["working"]:
             st["queued"].append(words)
+            log("agy-queued.jsonl", words)
             st["footer"] = "  Press up to edit queued messages"
         else:
             begin(words, "turn")
@@ -564,6 +579,9 @@ def main():
 
     def key(data):
         """One read's worth of keys; returns False to exit."""
+        if st["sign_in"]:
+            log("agy-sign-in-keys.jsonl", data.hex())
+            return True
         i = 0
         while i < len(data):
             if data.startswith(PASTE_START, i):
@@ -659,7 +677,7 @@ def main():
         report("authenticating")
         if st["dialog"]:
             report("initializing")
-        else:
+        elif not st["sign_in"]:
             report("idle")
         paint()
         pending = b""
@@ -711,7 +729,10 @@ def main():
                     continue
                 body = open(cue_path).read()
                 os.remove(cue_path)
-                if cue == "ask":
+                if cue == "signed-in":
+                    st["sign_in"] = False
+                    paint()
+                elif cue == "ask":
                     report("tool_use", pending=True)
                 elif cue == "answer":
                     report("working")

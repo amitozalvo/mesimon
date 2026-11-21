@@ -11,6 +11,9 @@ the title alone. It passes when the brief reached the conversation, the
 first call is the eager mesimon get_ticket, and the reply carries the nonce
 without asking the person.
 
+Case `sign-in` launches agy with a disposable HOME, reads the board and
+get_ticket at the login chooser, and sends no keys.
+
 Case `worktree-trust` reads the board and get_ticket while the new seat is
 at its folder dialog. It leaves the decision pending and calls no model.
 """
@@ -18,6 +21,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,7 +29,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ("brief", "worktree-trust", "file")
+CASES = ("brief", "worktree-trust", "sign-in", "file")
 TITLE = "Answer the question on this ticket"
 BRIEF_MARK = "This session was started by mesimon on a ticket."
 
@@ -40,6 +44,17 @@ def module(name, filename):
     loaded = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loaded)
     return loaded
+
+
+def signed_out_cli(root, agy):
+    """Pin the disposable HOME at exec, even through tmux's login shell."""
+    home = root / "agy-home"
+    home.mkdir(mode=0o700)
+    wrapper = root / "agy-signed-out"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/env -i HOME=" + shlex.quote(str(home)) +
+                       ' PATH="$PATH" TERM="$TERM" LANG=en_US.UTF-8 ' + shlex.quote(agy) + ' "$@"\n')
+    wrapper.chmod(0o700)
+    return str(wrapper)
 
 
 def agy_home():
@@ -127,9 +142,10 @@ class Case:
         trust.mkdir(mode=0o700)
         trusted = [] if result["case"] == "worktree-trust" else [str(self.repo.resolve())]
         (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": trusted}))
+        binary = signed_out_cli(guard.root, args.agy) if result["case"] == "sign-in" else args.agy
         env.update(TERM="xterm-256color", MESIMON_AGY="1", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
                    MESIMON_HOOK_BIN=str(args.binary), MESIMON_NO_DAEMON_AUTORESTART="1",
-                   MESIMON_AGY_BIN=args.agy)
+                   MESIMON_AGY_BIN=binary)
         guard.request(op="spawn", argv=[str(args.binary), "daemon", "--repo", str(self.repo)], env=env)
         self.lab.wait_for(lambda: (self.runtime / "orch.sock").exists(), timeout=15)
         self.client = self.lab.Client(self.repo)
@@ -178,6 +194,9 @@ class Case:
         self.request("set_agent_provider", provider="agy")
         self.request("set_mcp_tools", on=True)
         self.request("set_system_prompt", on=True)
+        if self.result["case"] == "sign-in":
+            self.check_sign_in()
+            return
         if self.result["case"] == "worktree-trust":
             self.check_worktree_trust()
             return
@@ -247,6 +266,24 @@ class Case:
             return
         for name, passed, detail in verdict(rows, self.nonce):
             self.mark(name, passed, detail)
+
+    def check_sign_in(self):
+        ticket = self.request("create_ticket", column="TODO", title="Wait for sign-in",
+                              workspace="shared_checkout")["id"]
+        self.sid = self.request("spawn_session", ticket=ticket, kind="agy", submit_prompt=True,
+                                plan=False)["id"]
+        self.pane = None
+        self.pane = self.wait("agy's pane", lambda: self.panes()[:1], 30)[0]
+        self.wait("sign-in stop", lambda: self.session()["state"] ==
+                  {"state": "requires_action", "reason": "auth"}, 60)
+        screen = self.screen()
+        (self.out / "screen.txt").write_text(screen)
+        self.mark("login choices await the person", "Google OAuth" in screen
+                  and "Use a Google Cloud project" in screen)
+        self.mark("card names sign-in", self.session().get("detail") == "agy asks you to sign in")
+        view = self.client.agent(self.sid, "agent_get_ticket", full=False)["ticket"]["needs_you"]
+        self.mark("get_ticket identifies the person's step", "only the person" in view["reason"]
+                  and "sign in" in view["reason"] and not view.get("request"), view["reason"])
 
     def check_worktree_trust(self):
         ticket = self.request("create_ticket", column="TODO", title="Inspect the worktree",

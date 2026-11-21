@@ -133,6 +133,17 @@ fn trusts_checkout(trusted: &[String], checkout: &Path) -> bool {
     trusted.iter().any(|t| same_folder(Path::new(t), checkout))
 }
 
+/// The login-method chooser before agy's first prompt (1.5.14). The welcome
+/// sentence can wrap, and either method can have the menu cursor.
+pub(crate) fn sign_in_screen(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let text = screen.lines.iter().map(|s| s.trim()).collect::<Vec<_>>().join(" ");
+    text.contains("You are currently not signed in.")
+        && text.contains("Select login method:")
+        && text.contains("1. Google OAuth")
+        && text.contains("2. Use a Google Cloud project")
+        && text.trim_end().ends_with("↑/↓ Navigate · enter Select")
+}
+
 /// Read personal trust only on entry to the worktree's own dialog.
 pub(crate) fn trust_detail(
     checkout: &Path,

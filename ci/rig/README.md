@@ -323,6 +323,9 @@ a live brief case leaves one conversation in agy's list. Each fixture provides
 its own trust list through `MESIMON_AGY_HOME`. The brief fixture trusts its
 checkout. The worktree-trust fixture leaves its checkout untrusted and reads
 the checkout path from the board and `get_ticket` while agy awaits a decision.
+The `--only sign-in` fixture gives the installed agy a fresh home and reads
+its login stop without sending a key. The Codex rig's `--only agy-sign-in`
+case asks a live crown who can complete that step.
 An explicit `--model` selects a tier on the disposable board. With no selection agy uses its default.
 The verdict records the model from the transcript.
 

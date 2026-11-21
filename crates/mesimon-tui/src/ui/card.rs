@@ -1260,7 +1260,11 @@ pub(super) fn render(
         sessions.iter().find_map(|s| s.resume_failure()).filter(|_| !(trail || doomed || held));
     let notice = raised
         .map(|r| (r.reason.as_str(), theme.attn_text()))
-        .or_else(|| failure.map(|why| (why, register_style(theme, Register::Err))));
+        .or_else(|| failure.map(|why| (why, register_style(theme, Register::Err))))
+        .or_else(|| {
+            (sessions.iter().any(|s| s.on_agy_sign_in()) && !(trail || doomed || held))
+                .then(|| (mesimon_core::board::AGY_SIGN_IN, theme.attn_text()))
+        });
     if let Some((message, style)) = notice {
         let room = if brief_last { 0 } else { brief_room };
         let words = truncate(message, t_cells.saturating_sub(glyph_cells + room));

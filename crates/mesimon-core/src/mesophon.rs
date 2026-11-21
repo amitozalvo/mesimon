@@ -764,6 +764,9 @@ pub struct Agent {
     /// `dialog` kind would have broken its page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust: Option<Trust>,
+    /// A startup step the person completes in the pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_notice: Option<String>,
     pub session: String,
     pub provider: String,
     pub state: String,
@@ -1600,6 +1603,7 @@ mod tests {
                 permission: None,
                 dialog: None,
                 trust: None,
+                startup_notice: None,
                 session: "s".into(),
                 provider: "claude".into(),
                 state: "working".into(),

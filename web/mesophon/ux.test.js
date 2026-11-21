@@ -5555,6 +5555,13 @@ async function navigationFlow(browser, engineName, size, viewport, fullThemes) {
       ["trust-1", { answer: "accept" }]);
     await page.evaluate(() => {
       fixture.tickets[0].agent.trust = undefined;
+      fixture.tickets[0].agent.startup_notice = "agy asks you to sign in ∙ open its pane";
+      fixture.update();
+    });
+    await page.getByRole("status").filter({ hasText: "agy asks you to sign in" }).waitFor({ state: "visible" });
+    assert.equal(await page.locator("#attention button").count(), 0);
+    await page.evaluate(() => {
+      delete fixture.tickets[0].agent.startup_notice;
       fixture.update();
     });
     // T-568: words queued for the turn never lock the answer. At the

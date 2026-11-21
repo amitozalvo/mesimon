@@ -115,6 +115,7 @@ export function Headline({ agent }) {
   // A Codex agent still stopping (T-1218) says so on its card (T-1219): it
   // is neither idle nor ready for words yet.
   if (agent?.state === "stopping") return html`<span class="headline headline-stopping">Stopping…</span>`;
+  if (agent?.startup_notice) return html`<span class="headline">${agent.startup_notice}</span>`;
   if (agent?.doing) return html`<span class="headline headline-step">› ${agent.doing}</span>`;
   if (agent?.said) return html`<span class="headline" dir="auto">${agent.said}</span>`;
   return null;
