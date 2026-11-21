@@ -10,6 +10,93 @@ A heading whose version ends `unstable.N` is an unstable build's. A stable
 release's notes cover every unstable build before it, and a stable build's
 `Release notes` list stable releases alone.
 
+## v0.1.0-beta.23 — 2026-11-21
+
+Everything from the unstable build since beta.22: agy, Google's Antigravity
+CLI, joins Claude Code and Codex on every board, and ticket prompts can carry
+files. Session files and attached-file records gain optional fields, and the
+crown's wake record gains a version number. Existing files remain readable.
+
+### Added
+
+- **agy, Google's Antigravity CLI, is offered on every board beside Claude
+  Code and Codex.** Choose it under Settings › Agents › Default tier.
+  Trusting the board's checkout once in agy covers every ticket worktree. An
+  agy agent can use the board's ticket tools from its second turn on.
+- **agy's approvals and questions can be answered away from its terminal.**
+  Approve once or Deny on the card answers one command, file or tool call,
+  on the board or in Remote Control; a crown can answer its questions. A
+  multi-line command or a sandbox bypass is answered in agy's terminal, and
+  the card says why.
+- **agy's plans are reviewed from the board and Remote Control.** In the
+  ticket's ask field, Enter on an empty line accepts the plan, and words plus
+  Enter send it back with those words. When several reviews wait at once,
+  decide them in agy's terminal.
+- **agy's sign-in screen reads as your step** on the card, the ticket page
+  and Remote Control. A first prompt waits until you have signed in.
+- **`r` on an agy tier page reads agy's model list again**, so a model your
+  account has just gained can be chosen.
+- **`Ctrl+O` attaches a file to a ticket prompt.** It works in the prompt
+  field and in its expanded editor. The file is stored with the ticket, up to
+  10 MiB, and the agent can open it from your prompt.
+- **Remote Control can send a file with a prompt.** Use + › Choose file. A
+  picture chosen this way is sent as the original file.
+- **A worker whose committed branch is waiting on its own background tasks is
+  told so once.** The message names the running tasks. Edit it or switch it
+  off under Settings › Agent prompts › Background task notice. After 30
+  minutes the card shows needs-you, or the crown is woken on a crowned board.
+- **A crown is woken when one of its workers exits in the middle of a turn.**
+
+### Changed
+
+- **The write allowlist adds one folder per agy session** in mesimon's state
+  directory. mesimon never writes to `~/.gemini/`, and agy's file-writing
+  tools are refused in `.mesimon/` and the state directory, as Claude Code's
+  and Codex's are.
+- **`mesimon doctor` reports agy beside Claude Code and Codex.** A missing
+  agent CLI is a warning, and a failure only when it is the default for new
+  sessions.
+- **Archive in Remote Control's Actions and Details asks for confirmation.**
+  Tap Archive ticket to confirm, or Cancel.
+- **A crown's rename of a ticket shows the old and new titles** in the ticket
+  conversation, on the board and in Remote Control.
+- **A crown hears that a merge has landed when it lands**, instead of after
+  the merged agent's reply to the merge notice.
+- A crown can tell when an agy worker has taken its message.
+- On a pull-request board, a repository with no remote reads as needing your
+  local merge instead of the forge's.
+- A Claude agent whose Stop hook exits quietly reads as finished sooner.
+
+### Fixed
+
+- **A subagent's report no longer appears as your prompt.** The ticket page
+  and Remote Control show one line naming the subagent instead.
+- **A Claude subagent's question marks the card needs-you while its
+  permission request waits.**
+- **Waking a Codex ticket that stopped before its first turn starts a new
+  conversation with the ticket's brief.** Before, every Enter retried a
+  conversation that could not be resumed.
+- **Idle Codex workers stay quiet after the Mac sleeps.** Before, a crown
+  could hear that they had finished again.
+- **A photo taken with Remote Control's camera button reaches the draft.**
+  Before, coming back from the camera dropped it.
+- **A Claude permission request stays marked needs-you when a background
+  task reports back.**
+- **A Codex agent keeps its turn when macOS denies a check on one of its
+  processes.** Before, the agent's turn was lost.
+- **A file attached without an extension, such as a PDF, opens as its own
+  type** for the agent.
+- **`X` puts to sleep every agent its offer counts.** Before, it could answer
+  that nothing had finished.
+- A ticket stacked on another stays unmerged when the one below lands on the
+  forge by squash or rebase.
+- `Shift+Enter` on an empty ask field in the ticket page starts the agent, as
+  `Enter` does.
+- A merge refused for lack of disk space is retried once space is free.
+- A ticket you move back to TODO and start again moves to IN PROGRESS when
+  its agent starts working.
+- A ticket move the board could not save no longer shows on the card.
+
 ## v0.1.0-beta.22.unstable.1 — 2026-11-20
 
 An unstable build that adds files to ticket prompts, on the board and from
