@@ -49665,3 +49665,17 @@ title. The board's field already treated a blank Shift+Enter as Enter (T-1212).
 or "nothing to send"). With words in the field the page still breaks a line and the board still
 opens the composer. Pinned by `shift_enter_on_a_blank_ticket_page_field_is_enter`, which compares
 both presses on an empty seat and a live agent.
+## T-1399: `X` sleeps every agent its offer counts (2026-11-21)
+
+**Fixed; daemon.** The sleep offer ("sleep N agents", `X`) counted agents on
+sleep-safe tickets through `sleep_eligible` (any agent kind, idle or stopped on
+a limit), while `reclaim_all` kept its own `(Claude | Codex, Idle)` filter. An
+agy session or one stopped on a limit (`Throttled`, `QuotaResume`) was offered
+and then skipped without a count, so `X` answered "nothing finished to sleep".
+
+- **One set now.** `reclaim_candidates` is the offer's set; `reclaim_figures`
+  prices it and `reclaim_all` sleeps it. A young idle session is no longer a
+  `skipped` either: the offer never counted it.
+- **Test.** `queued_person_push_tests::x_sleeps_every_agent_the_offer_counts`
+  (an idle Claude, an idle agy and a throttled Claude on DONE: offer 3, `X`
+  sleeps 3; the old filter slept 1).

@@ -14442,21 +14442,27 @@ impl Daemon {
     /// they hold. Which columns are sleep-safe is each column's `reclaim`
     /// setting (T-117).
     fn reclaim_figures(&self) -> (u64, usize) {
+        let ids = self.reclaim_candidates();
+        let bytes = ids.iter().map(|id| self.rss_by.get(id).copied().unwrap_or(0)).sum();
+        (bytes, ids.len())
+    }
+
+    /// The offer's exact candidate set — `reclaim_all` takes THIS, nothing
+    /// broader or narrower (T-1399: the sweep kept its own Claude/Codex-idle
+    /// filter, so an agy session or one stopped on a limit was offered and
+    /// then answered "nothing finished to sleep"). Agents only: a shell's
+    /// sleep is its close (T-366), and a bulk gesture priced in freed memory
+    /// must not silently end shells.
+    fn reclaim_candidates(&self) -> Vec<uuid::Uuid> {
         let safe = self.reclaim_tickets();
         let now = now_ms();
-        let mut bytes = 0u64;
-        let mut n = 0usize;
-        // The set `reclaim_all` takes — agents only, a shell's sleep is its
-        // close (T-366) — priced exactly, so the offer never sells a shell.
-        for rec in
-            self.board.sessions.iter().filter(|r| safe.contains(&r.ticket) && r.kind.is_agent())
-        {
-            if self.sleep_eligible(rec, now, true).is_ok() {
-                bytes += self.rss_by.get(&rec.id).copied().unwrap_or(0);
-                n += 1;
-            }
-        }
-        (bytes, n)
+        self.board
+            .sessions
+            .iter()
+            .filter(|r| safe.contains(&r.ticket) && r.kind.is_agent())
+            .filter(|r| self.sleep_eligible(r, now, true).is_ok())
+            .map(|r| r.id)
+            .collect()
     }
 
     /// The header's archive suggestion: sleep-safe tickets that hold no pane
@@ -23442,22 +23448,7 @@ impl Daemon {
         // The header offer's action: sleep-safe tickets only. Z must sleep
         // exactly the set the suggestion prices, never sessions on tickets
         // still in play (2026-08-30 rescope; the columns' `reclaim`, T-117).
-        let safe = self.reclaim_tickets();
-        let candidates: Vec<uuid::Uuid> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| safe.contains(&r.ticket))
-            // Agents only: a shell's sleep is its close (T-366), and a bulk
-            // gesture priced in freed memory must not silently end shells.
-            .filter(|r| {
-                matches!(
-                    (r.kind, &r.state),
-                    (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. })
-                )
-            })
-            .map(|r| r.id)
-            .collect();
+        let candidates = self.reclaim_candidates();
         let mut slept = 0;
         let mut skipped = 0;
         for id in candidates {
@@ -24981,6 +24972,42 @@ mod queued_person_push_tests {
         assert!(!d.typed_under_a_person(id, &submitted), "a submit is held by no refusal");
         let typed = QueuedAsk { text: "/compact".into(), ..submitted };
         assert!(d.typed_under_a_person(id, &typed), "typed words wait for a fresh read");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-1399: `X` sleeps every agent its offer counted. An agy session and
+    /// a Claude stopped on a limit were offered ("sleep 3 agents") and then
+    /// skipped by the sweep's own Claude/Codex-idle filter, which answered
+    /// "nothing finished to sleep".
+    #[test]
+    fn x_sleeps_every_agent_the_offer_counts() {
+        let dir = std::env::temp_dir().join(format!("msmn-t1399-reclaim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut d, _sid, _rx) = daemon(&dir);
+        let done = ulid::Ulid::new();
+        d.board.tickets.push(worker_ticket(done, "DONE", "a"));
+        let old = now_ms() - 10 * 60 * 1000;
+        let cwd = d.board.sessions[0].cwd.clone();
+        d.board.sessions[0].ticket = done;
+        for (kind, state) in [
+            (SessionKind::Agy, SessionState::Idle { stop_reason: StopReason::EndTurn }),
+            (SessionKind::Claude, SessionState::Throttled),
+        ] {
+            d.board.sessions.push(SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                kind,
+                done,
+                vec!["agent".into()],
+                cwd.clone(),
+                state,
+            ));
+        }
+        for rec in &mut d.board.sessions {
+            rec.state_changed_at = Some(old);
+        }
+        assert_eq!(d.reclaim_figures().1, 3, "the offer counts all three");
+        assert_eq!(d.reclaim_all(), (3, 0), "X sleeps what the offer counted");
+        assert!(d.board.sessions.iter().all(|s| s.state == SessionState::Sleeping));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
