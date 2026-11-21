@@ -225,6 +225,13 @@ pub struct InputScreen {
     pub cursor: Option<(usize, usize)>,
 }
 
+/// Outcome of tmux dispatching an agy artifact-panel key.
+pub enum ReviewKey {
+    Sent,
+    Attached,
+    InMode,
+}
+
 impl TmuxBackend {
     /// `sock` must be short enough for `sun_path` (checked); `conf_dir` holds the
     /// generated tmux.conf (state dir — long paths fine). `pane_died_cmd` (from
@@ -566,9 +573,9 @@ impl TmuxBackend {
         Ok(())
     }
 
-    /// The tmux server checks its own attachment count when dispatching the key.
-    /// An attach after the caller's screen capture still wins.
-    pub fn press_unattached_key(&self, sid: &str, key: &str) -> Result<bool> {
+    /// Check the target at dispatch too: a client can attach or enter a mode
+    /// after the daemon captures the selected row.
+    pub fn press_review_key(&self, sid: &str, key: &str) -> Result<ReviewKey> {
         if sid.len() != 16
             || !sid.bytes().all(|b| b.is_ascii_hexdigit())
             || !matches!(key, "C-r" | "y" | "n")
@@ -579,12 +586,17 @@ impl TmuxBackend {
             "if-shell",
             "-F",
             "-t",
-            sid,
-            "#{session_attached}",
-            "display-message -p attached",
+            &format!("{sid}:"),
+            "#{||:#{session_attached},#{pane_in_mode}}",
+            &format!("display-message -p -t {sid}: '#{{?pane_in_mode,mode,attached}}'"),
             &format!("send-keys -t {sid}: {key}"),
         ])?;
-        Ok(sent.trim().is_empty())
+        match sent.trim() {
+            "" => Ok(ReviewKey::Sent),
+            "mode" => Ok(ReviewKey::InMode),
+            "attached" => Ok(ReviewKey::Attached),
+            _ => bail!("unknown tmux review key result"),
+        }
     }
 
     pub fn dialog_key(&self, sid16: &str, key: DialogKey) -> Result<()> {
@@ -919,6 +931,10 @@ impl TmuxBackend {
     }
 
     pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {
+        self.capture_input_screen_with_mode(sid16).map(|(screen, _)| screen)
+    }
+
+    pub fn capture_input_screen_with_mode(&self, sid16: &str) -> Result<(InputScreen, bool)> {
         // Keep physical rows (no -J and no blank-line filtering): cursor_y
         // indexes this screen. Read screen and cursor in one tmux command queue.
         let format = fields(&["cursor_flag", "cursor_x", "cursor_y", "pane_in_mode", "pane_dead"]);
@@ -946,7 +962,7 @@ impl TmuxBackend {
             [_, _, _, _, _] => None,
             _ => bail!("invalid input cursor metadata"),
         };
-        Ok(InputScreen { lines, cursor })
+        Ok((InputScreen { lines, cursor }, parts[3] != "0"))
     }
 
     /// How long every client attached to this session has been quiet, in
@@ -1474,6 +1490,21 @@ mod tests {
         assert!(be.capture_input_screen("cursor").unwrap().cursor.is_none());
         be.run(&["send-keys", "-t", "cursor", "-X", "cancel"]).unwrap();
         wait(Some((2, 1)));
+        be.kill_server().unwrap();
+    }
+
+    #[test]
+    fn review_key_checks_for_a_mode_entered_after_capture() {
+        let f = fixture("backend-review-mode", "t.sock");
+        let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
+        let sid = "abcdef1234567890";
+        be.spawn(sid, &f.dir, &["sleep".into(), "60".into()]).unwrap();
+        let (_, in_mode) = be.capture_input_screen_with_mode(sid).unwrap();
+        assert!(!in_mode);
+        be.run(&["copy-mode", "-t", sid]).unwrap();
+        for key in ["C-r", "y", "n"] {
+            assert!(matches!(be.press_review_key(sid, key).unwrap(), ReviewKey::InMode));
+        }
         be.kill_server().unwrap();
     }
 

@@ -623,6 +623,12 @@ def main():
                 continue
             if st.get("review") == "panel" and data[i:i+1] in (b"y", b"n"):
                 decision = "Approved" if data[i:i+1] == b"y" else "Rejected"
+                # Leave a board acceptance unconfirmed while a native decision comes in.
+                hold = os.path.join(HERE, "ignore-next-approval")
+                if decision == "Approved" and os.path.exists(hold):
+                    os.unlink(hold)
+                    i += 1
+                    continue
                 name = st["artifacts"].pop(st["review_cursor"])
                 st["review"] = None
                 begin(f"[{decision}] {name}", "turn")

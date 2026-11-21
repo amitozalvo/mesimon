@@ -1236,7 +1236,7 @@ fn narrow_review_ordinary_ask_is_refused() {
 }
 
 #[test]
-fn narrow_review_copy_mode_requires_agy_confirmation() {
+fn review_lifetime_copy_mode_refuses_before_its_binding_runs() {
     let Some(mut f) = ReviewFixture::start("copy-mode") else { return };
     let rec = f.open_panel_request();
     f.bed.keys(&rec, &["C-r"]);
@@ -1246,6 +1246,16 @@ fn narrow_review_copy_mode_requires_agy_confirmation() {
         let out = tmux(&sock).args(["capture-pane", "-p", "-t", &sid]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).contains("Action required (1 left)")
     });
+    assert!(tmux(&sock)
+        .args(["set-window-option", "-t", &sid, "mode-keys", "emacs"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(tmux(&sock)
+        .args(["bind-key", "-T", "copy-mode", "y", "set-option", "-g", "@review-key", "pressed"])
+        .status()
+        .unwrap()
+        .success());
     assert!(tmux(&sock).args(["copy-mode", "-t", &sid]).status().unwrap().success());
     let reply = f.client.request(Command::ReviewPlan {
         ticket: f.ticket,
@@ -1253,9 +1263,103 @@ fn narrow_review_copy_mode_requires_agy_confirmation() {
         request: rec.agy_plan_request.unwrap(),
         feedback: String::new(),
     });
-    assert!(matches!(reply, Response::Err { .. }), "{reply:?}");
+    let binding = tmux(&sock).args(["show-options", "-gqv", "@review-key"]).output().unwrap();
+    assert!(binding.stdout.is_empty(), "the board ran the copy-mode binding");
+    assert!(
+        matches!(reply, Response::Err { ref message } if message.contains("tmux mode")),
+        "{reply:?}"
+    );
     assert!(f.client.record(f.session).on_plan_dialog());
     assert_eq!(f.bed.prompts().len(), 1);
+}
+
+#[test]
+fn review_lifetime_idle_after_an_offline_native_approval_releases_the_next_ask() {
+    let Some(mut f) = ReviewFixture::start("offline-approved") else { return };
+    let rec = f.open_panel_request();
+    f.bed.h.restart_after(|| {
+        f.bed.keys(&rec, &["C-r", "y"]);
+        f.bed.await_prompt(1, "turn", "[Approved] implementation_plan.md");
+        f.bed.cue("stop");
+        wait_until(Duration::from_secs(5), "agy finished while offline", || {
+            std::fs::read_to_string(rec.transcript_path.as_ref().unwrap())
+                .unwrap_or_default()
+                .contains("done: [Approved] implementation_plan.md")
+        });
+    });
+    f.client = f.bed.h.client("after-native-approval");
+    f.hook("AgyTitle", serde_json::json!({"conversation_id": MINTED, "agent_state":"idle"}));
+    wait_until(Duration::from_secs(5), "idle with no outstanding review", || {
+        let rec = f.client.record(f.session);
+        matches!(rec.state, SessionState::Idle { .. })
+            && rec.agy_review_count == 0
+            && rec.agy_plan_request.is_none()
+    });
+    let reply = f.client.request(Command::PromptSession {
+        ticket: f.ticket,
+        text: "Continue after review".into(),
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: vec![],
+    });
+    assert!(matches!(reply, Response::Ok), "{reply:?}");
+    f.bed.await_prompt(2, "turn", "Continue after review");
+}
+
+#[test]
+fn review_lifetime_native_rejection_ends_a_pending_board_accept() {
+    let Some(mut f) = ReviewFixture::start("native-rejection") else { return };
+    let rec = f.open_panel_request();
+    let hold = f.bed.h.dir.join("ignore-next-approval");
+    std::fs::write(&hold, "").unwrap();
+    let mut board = f.bed.h.client("waiting-board");
+    let command = Command::ReviewPlan {
+        ticket: f.ticket,
+        session: f.session,
+        request: rec.agy_plan_request.clone().unwrap(),
+        feedback: String::new(),
+    };
+    let pending = std::thread::spawn(move || board.request(command));
+    wait_until(Duration::from_secs(5), "board key awaiting receipt", || !hold.exists());
+    f.bed.keys(&rec, &["n"]);
+    f.bed.await_prompt(1, "turn", "[Rejected] implementation_plan.md");
+    wait_until(Duration::from_secs(4), "native rejection retired the request", || {
+        let after = f.client.record(f.session);
+        after.agy_plan_request.is_none() && after.agy_review_count == 0
+    });
+    f.hook(
+        "AgyTitle",
+        serde_json::json!({"conversation_id":MINTED,"agent_state":"idle","artifact_count":0}),
+    );
+    assert!(matches!(pending.join().unwrap(), Response::Err { .. }));
+    f.client.await_state(f.session, "native rejection left review", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+}
+
+#[test]
+fn review_lifetime_new_invocation_retires_the_card() {
+    let Some(mut f) = ReviewFixture::start("next-invocation") else { return };
+    for invocation in [0, 1] {
+        let plan = format!("Plan before invocation {invocation}");
+        f.bed.cue_with("plan", &plan);
+        f.await_note(&plan);
+        f.hook(
+            "AgyPreInvocation",
+            serde_json::json!({"conversationId":MINTED,
+            "invocationNum":invocation,"lastUserInput":"A new prompt"}),
+        );
+        wait_until(Duration::from_secs(5), "invocation cleared the review", || {
+            let rec = f.client.record(f.session);
+            rec.agy_plan_request.is_none()
+                && rec.agy_review_count == 0
+                && rec.state == SessionState::Running
+        });
+    }
 }
 
 #[test]

@@ -233,6 +233,7 @@ const PERSON_READ_MS: u64 = 1000;
 /// open (T-943, T-958; `Daemon::person_at_pane`): the receipt's reason and
 /// the feed's outcome.
 const A_PERSON_ATTACHED: &str = "a_person_attached";
+const PANE_IN_MODE: &str = "exit tmux mode in the agent pane and try again";
 /// A `filled` report's Enter not pressed because the agent came to a dialog
 /// while the report was on its way (T-1148): the Enter would answer it.
 const AT_A_DIALOG: &str = "at_a_dialog";
@@ -6526,26 +6527,6 @@ impl Daemon {
         }
         let now = now_ms();
         let agy_lead = self.board.session(id).and_then(|s| s.agy_conversation_id.clone());
-        if self.session_kind(id) == SessionKind::Agy {
-            use crate::agents::agy;
-            if let Some(approved) = self.agy_expected_decision(id) {
-                if frame.event == agy::PRE_INVOCATION
-                    && (agy::frame_conversation(&frame) != agy_lead.as_deref()
-                        || frame.payload["lastUserInput"]
-                            .as_str()
-                            .and_then(agy::artifacts::receipt)
-                            != Some((approved, agy::artifacts::PLAN)))
-                {
-                    return;
-                }
-                if frame.event == agy::TITLE
-                    && frame.payload["agent_state"] == "idle"
-                    && frame.payload["artifact_count"] == 0
-                {
-                    return;
-                }
-            }
-        }
         let mut observation = self
             .board
             .sessions
@@ -18579,10 +18560,13 @@ impl Daemon {
         let sid = rec.sid16();
         let kind = rec.kind;
         let ticket = rec.ticket;
-        let screen = self
-            .backend
-            .capture_input_screen(&sid)
-            .map_err(|_| crate::plan_dialog::NOT_RECOGNISED)?;
+        let screen = if kind == SessionKind::Agy {
+            self.artifact_screen(&sid)?
+        } else {
+            self.backend
+                .capture_input_screen(&sid)
+                .map_err(|_| crate::plan_dialog::NOT_RECOGNISED)?
+        };
         match kind {
             SessionKind::Agy => {
                 use crate::plan_dialog::{artifact_view, ArtifactView, NOT_RECOGNISED};

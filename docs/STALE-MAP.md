@@ -49890,3 +49890,28 @@ plan message. Post-rebase verification passed `cargo ut` (3,405 passed,
 13 ignored), `cargo build --workspace`, all 24 agy end-to-end tests and all
 six navigation cells. Both live board receipts and the follow-up words passed
 again in `target/rig/agy/20261121T141636Z/verdicts.json` with a clean audit.
+
+### T-1236 · End agy's review when the conversation moves on
+
+A lead invocation retires the outstanding review, including a decision made
+in agy's pane while a board answer is in flight. An idle title with zero
+artifacts or no count does the same after a daemon restart. Either clears
+the request and releases queued input through the usual attention transition.
+Only agy's matching decision prompt confirms the caller's answer. A native
+rejection therefore closes the card and fails a competing board accept.
+
+The board, phone and crown check tmux mode on the review screen. Tmux checks
+both mode and attachment again when dispatching the panel key, so entering
+copy mode after capture cannot run a person's binding. Multi-artifact and
+unidentified reviews still belong in agy's pane while they stand.
+
+Four real-daemon regressions failed on 5df2c649. They cover offline approval
+followed by an idle title without a count, a competing native rejection,
+a new invocation, and a copy-mode binding on the review key. The backend
+also exercises a mode entered between capture and dispatch.
+
+The focused rerun passed all four. After rebasing onto cc1ba09a, the unit
+suite passed 3,407 tests (13 ignored), the workspace built, and all 28 agy
+and 26 plan-accept end-to-end tests passed. The live board accept produced
+the matching provider prompt and daemon receipt, and agy continued.
+The rig verdict is in `target/rig/agy/20261121T144336Z/verdicts.json`.

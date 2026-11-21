@@ -110,6 +110,15 @@ pub(crate) fn current(rec: &SessionRecord, request: &str) -> bool {
             == Some(stamp)
 }
 
+/// A new invocation or an empty idle title retires the whole previous review.
+pub(super) fn end_review(rec: &mut SessionRecord) -> bool {
+    let changed = rec.agy_review_count != 0 || rec.agy_plan_request.is_some();
+    rec.agy_review_count = 0;
+    rec.agy_plan_request = None;
+    rec.agy_artifact = AgyArtifact::Unseen;
+    changed
+}
+
 pub(super) fn observe(
     rec: &mut SessionRecord,
     count: u64,

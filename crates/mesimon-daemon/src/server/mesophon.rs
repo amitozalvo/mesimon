@@ -1857,6 +1857,17 @@ impl Daemon {
         Reply::delivery("awaiting_delivery")
     }
 
+    pub(super) fn artifact_screen(
+        &self,
+        sid: &str,
+    ) -> Result<mesimon_backend_tmux::InputScreen, &'static str> {
+        match self.backend.capture_input_screen_with_mode(sid) {
+            Ok((_, true)) => Err(PANE_IN_MODE),
+            Ok((screen, false)) => Ok(screen),
+            Err(_) => Err("pane unreachable"),
+        }
+    }
+
     pub(super) fn press_artifact_key(
         &self,
         id: uuid::Uuid,
@@ -1880,13 +1891,15 @@ impl Daemon {
         }) {
             return Err("ticket plan note changed; review in agy's pane");
         }
-        let screen = self.backend.capture_input_screen(&sid).map_err(|_| "pane unreachable")?;
+        let screen = self.artifact_screen(&sid)?;
         if artifact_view(&screen.lines.join("\n"), request) != Some(expected) {
             return Err("artifact panel changed; check the pane");
         }
-        match self.backend.press_unattached_key(&sid, key) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(A_PERSON_ATTACHED),
+        use mesimon_backend_tmux::ReviewKey;
+        match self.backend.press_review_key(&sid, key) {
+            Ok(ReviewKey::Sent) => Ok(()),
+            Ok(ReviewKey::Attached) => Err(A_PERSON_ATTACHED),
+            Ok(ReviewKey::InMode) => Err(PANE_IN_MODE),
             Err(_) => Err("could not send artifact decision"),
         }
     }
@@ -1959,7 +1972,9 @@ impl Daemon {
                 } else {
                     self.control_settle_dialog(id, pending, "answered", None, "");
                 }
-            } else if Instant::now() >= until {
+            } else if self.control_dialog_edge(id, &pending.request).is_some()
+                || Instant::now() >= until
+            {
                 self.control_settle_dialog(
                     id,
                     pending,
@@ -2301,7 +2316,7 @@ impl Daemon {
                     let (view, accept) = match step {
                         DialogStep::OpenArtifacts => (ArtifactView::Closed, false),
                         DialogStep::ReviewArtifact { accept } => (ArtifactView::Selected, accept),
-                        DialogStep::Wait => return Ok(false),
+                        DialogStep::Wait => return self.artifact_screen(&sid).map(|_| false),
                         _ => return Err("artifact panel changed"),
                     };
                     let board_accept = accept && matches!(pending.by, Deliverer::BoardReview { .. });
@@ -3429,18 +3444,6 @@ impl Daemon {
                 self.control_changed();
             }
         }
-    }
-
-    /// Only the named provider prompt can end a review on behalf of an in-flight key.
-    pub(super) fn agy_expected_decision(&self, id: uuid::Uuid) -> Option<bool> {
-        if self.crown_plan_pressed(id) {
-            return Some(true);
-        }
-        self.control
-            .dialog_deliveries
-            .get(&id)
-            .filter(|p| p.walk.artifacts_opened && p.confirm.is_some() && !p.walk.decision_seen)
-            .map(|p| matches!(p.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Accept)))
     }
 
     pub(super) fn agy_note_changed(&mut self, id: uuid::Uuid) {

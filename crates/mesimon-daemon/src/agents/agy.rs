@@ -670,9 +670,7 @@ impl AgentAdapter for Agy {
                     if frame.event != TITLE {
                         return result;
                     }
-                    record.agy_artifact = AgyArtifact::Unseen;
-                    record.agy_plan_request = None;
-                    record.agy_review_count = 0;
+                    artifacts::end_review(record);
                     record.transcript_path = None;
                     record.agy_stop = AgyStop::None;
                     record.agy_background_running = false;
@@ -695,23 +693,8 @@ impl AgentAdapter for Agy {
             // one is the same turn going on.
             PRE_INVOCATION => {
                 let first = payload.get("invocationNum").and_then(Value::as_u64).unwrap_or(0) == 0;
-                if first {
-                    let receipt = payload["lastUserInput"].as_str().and_then(artifacts::receipt);
-                    if record.agy_review_count > 0 {
-                        let Some((_, file)) = receipt else { return result };
-                        if named.is_none()
-                            || (record.agy_artifact == AgyArtifact::Plan && file != artifacts::PLAN)
-                        {
-                            return result;
-                        }
-                        record.agy_review_count -= 1;
-                        result.metadata_changed = true;
-                    }
-                    result.metadata_changed |= record.agy_plan_request.take().is_some();
-                    record.agy_artifact = AgyArtifact::Unseen;
-                    if record.agy_review_count > 0 {
-                        return result;
-                    }
+                if first || record.agy_review_count > 0 {
+                    result.metadata_changed |= artifacts::end_review(record);
                 }
                 record.agy_stop = AgyStop::None;
                 result.signal =
@@ -775,11 +758,10 @@ impl AgentAdapter for Agy {
                         &mut result,
                     );
                 } else if record.agy_review_count > 0 {
-                    if payload["agent_state"] == "idle" && payload["artifact_count"] == 0 {
-                        record.agy_review_count = 0;
-                        record.agy_artifact = AgyArtifact::Unseen;
-                        record.agy_plan_request = None;
-                        result.metadata_changed = true;
+                    if payload["agent_state"] == "idle"
+                        && payload.get("artifact_count").is_none_or(|n| n.as_u64() == Some(0))
+                    {
+                        result.metadata_changed |= artifacts::end_review(record);
                         result.signal = Some(Signal::TurnEnded { outcome: TurnOutcome::Completed });
                     } else {
                         result.signal = Some(Signal::Attention { reason: Reason::Plan });

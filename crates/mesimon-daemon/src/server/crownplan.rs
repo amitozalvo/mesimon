@@ -196,10 +196,6 @@ impl Daemon {
         self.session_reply(reply, response, told, changes_session);
     }
 
-    pub(super) fn crown_plan_pressed(&self, id: uuid::Uuid) -> bool {
-        self.crown_plans.get(&id).is_some_and(|p| p.pressed.is_some())
-    }
-
     pub(super) fn crown_agy_approved(&mut self, id: uuid::Uuid, request: &str) {
         if let Some(p) =
             self.crown_plans.get_mut(&id).filter(|p| p.pressed.is_some() && p.request == request)
@@ -228,7 +224,10 @@ impl Daemon {
         let mut seen: Vec<String> = Vec::new();
         let mut due: Vec<uuid::Uuid> = Vec::new();
         for (id, plan) in &self.crown_plans {
-            if plan.pressed.is_some() || self.plan_accept.contains_key(id) {
+            if plan.pressed.is_some()
+                || plan.miss == PANE_IN_MODE
+                || self.plan_accept.contains_key(id)
+            {
                 continue;
             }
             if !self.crown_plan_allowed(plan, *id) {
@@ -303,7 +302,7 @@ impl Daemon {
                 if self.session_kind(*id) == SessionKind::Agy {
                     if plan.agy_confirmed {
                         settled.push((*id, "accepted", None));
-                    } else if now >= deadline {
+                    } else if edge.is_some() || now >= deadline {
                         settled.push((
                             *id,
                             "unknown",
@@ -326,6 +325,8 @@ impl Daemon {
                 settled.push((*id, "unknown", Some("a_person_answered".into())));
             } else if !at_plan || edge.is_some() || !self.crown_plan_allowed(plan, *id) {
                 settled.push((*id, "unknown", Some("state_changed".into())));
+            } else if plan.miss == PANE_IN_MODE {
+                settled.push((*id, "unknown", Some(PANE_IN_MODE.into())));
             } else if plan.tries >= PLAN_ACCEPT_TRIES {
                 settled.push((*id, "unknown", Some(miss_word(plan.miss).into())));
             } else if plan.reply.is_some() && now >= plan.asked_at + CROWN_PLAN_WAIT_MS {
