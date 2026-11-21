@@ -906,6 +906,10 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
 
     let (mut sessions, sessions_write_barred) = load_sessions(&paths.sessions_file(), &mut notices);
     for seat in sessions.iter_mut().filter(|s| s.kind == SessionKind::Agy) {
+        if seat.on_plan_dialog() && seat.agy_review_count == 0 {
+            seat.agy_review_count = 1;
+        }
+        seat.agy_plan_request = None;
         crate::agents::agy::repair_saved_transcript(seat);
     }
     board.sessions = sessions.into();

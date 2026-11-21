@@ -1246,6 +1246,7 @@ pub struct Daemon {
     /// answer for (T-569): the writer loop parks that call's reply with the
     /// delivery (`control_park_reply`), which answers it when it settles.
     answer_waits: Option<uuid::Uuid>,
+    column_reviews: Vec<std::sync::mpsc::Receiver<ClientReply>>,
     /// The mod road (T-574): the road decision's cache, the commands queued
     /// for each session's mod and the polls parked for them.
     modroad: bridge::ModRoad,
@@ -2079,6 +2080,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 )
                 .then(Vec::new);
                 let resp = d.handle_compatible(env, protocol, &stream);
+                let reviews = std::mem::take(&mut d.column_reviews);
                 let steers = d.steer_calls.take().unwrap_or_default();
                 if mutates {
                     d.persist_sessions();
@@ -2130,11 +2132,13 @@ pub fn run(paths: Paths) -> Result<()> {
                     } else {
                         let wait = d.session_saves.revision() != before;
                         let (response, told) = d.caller_rules(caller, resp);
-                        if steers.is_empty() {
+                        if steers.is_empty() && reviews.is_empty() {
                             d.session_reply(reply, response, told, wait);
                         } else {
                             d.after_session_save(wait, move |_, saved| {
-                                steer::reply_after_pastes(steers, saved, response, told, reply);
+                                steer::reply_after_pastes(
+                                    steers, reviews, saved, response, told, reply,
+                                );
                             });
                         }
                     }
@@ -2466,6 +2470,7 @@ impl Daemon {
             crown_watched: Default::default(),
             crown_held: Default::default(),
             answer_waits: None,
+            column_reviews: Vec::new(),
             modroad,
             mod_park: None,
             crown_plans: HashMap::new(),
@@ -4085,8 +4090,8 @@ impl Daemon {
                 self.person_woke(parked, &resp);
                 resp
             }
-            Command::PromptColumn { column, text, queued, accept_plan } => {
-                self.prompt_column(&column, text, queued, accept_plan)
+            Command::PromptColumn { column, text, queued, accept_plan, requests } => {
+                self.prompt_column(&column, text, queued, accept_plan, requests)
             }
             Command::DropQueuedAsk { ticket } => self.drop_queued_ask(ticket),
             Command::SendQueuedAsk { ticket } => self.send_queued_ask(ticket),
@@ -6521,6 +6526,26 @@ impl Daemon {
         }
         let now = now_ms();
         let agy_lead = self.board.session(id).and_then(|s| s.agy_conversation_id.clone());
+        if self.session_kind(id) == SessionKind::Agy {
+            use crate::agents::agy;
+            if let Some(approved) = self.agy_expected_decision(id) {
+                if frame.event == agy::PRE_INVOCATION
+                    && (agy::frame_conversation(&frame) != agy_lead.as_deref()
+                        || frame.payload["lastUserInput"]
+                            .as_str()
+                            .and_then(agy::artifacts::receipt)
+                            != Some((approved, agy::artifacts::PLAN)))
+                {
+                    return;
+                }
+                if frame.event == agy::TITLE
+                    && frame.payload["agent_state"] == "idle"
+                    && frame.payload["artifact_count"] == 0
+                {
+                    return;
+                }
+            }
+        }
         let mut observation = self
             .board
             .sessions
@@ -6573,12 +6598,7 @@ impl Daemon {
             self.control_release_permission(id, &frame);
         }
         self.control_observe_dialog(id, &frame);
-        self.control_observe_agy(
-            id,
-            &frame,
-            agy_lead.as_deref(),
-            observation.plan.as_deref().or(observation.review_artifact.as_deref()),
-        );
+        self.control_observe_agy(id, &frame, agy_lead.as_deref(), &mut observation);
         let answered = self.dialog_answered(id, &frame);
         // An answer read against the held call (T-988): a sibling still to be
         // answered re-affirms its dialog, which cancels a leave to `Running`
@@ -6827,6 +6847,13 @@ impl Daemon {
         }
     }
 
+    fn saved_plan(&self, id: uuid::Uuid) -> Option<String> {
+        let rec = self.board.session(id)?;
+        let ticket = self.board.ticket(rec.ticket)?;
+        let note = ticket.note(rec.plan_note?)?;
+        store::read_note(&self.paths, &ticket.short_key, note.id).ok()
+    }
+
     /// Publish the adapter's authoritative plan through normal agent-note
     /// authorization. Claude supplies an approved ExitPlanMode plan; Codex
     /// supplies a completed plan item, which may still await native approval.
@@ -6860,9 +6887,6 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == session) else {
             return false;
         };
-        if rec.plan_note == Some(id) {
-            return false;
-        }
         rec.plan_note = Some(id);
         true
     }
@@ -7923,7 +7947,7 @@ impl Daemon {
         owed.next_press = Some(now + SUBMIT_RETRY_MS);
         owed.ready_by = Some(now + composer_wait_ms());
         if owed.parked.is_none() {
-            if let Some(rec) = self.board.session(id) {
+            if let Some(rec) = self.board.session(id).filter(|s| s.agy_review_count == 0) {
                 let _ = self.backend.send_enter(&rec.sid16());
             }
         }
@@ -8249,6 +8273,9 @@ impl Daemon {
             .map(|(id, _)| *id)
             .collect();
         for id in due {
+            if self.board.session(id).is_some_and(|s| s.agy_review_count > 0) {
+                continue;
+            }
             if self.steering(id) {
                 changed |= self.press_steer(id, now);
                 continue;
@@ -13105,6 +13132,7 @@ impl Daemon {
             } else {
                 agent_reason_word(reason).into()
             },
+            detail: rec.agy_pane_review().then(|| crate::agents::agy::artifacts::IN_PANE.into()),
             request: dialog
                 .map(|(request, _)| request.to_string())
                 .or_else(|| plan.map(|(request, _)| request.to_string())),
@@ -16099,6 +16127,10 @@ impl Daemon {
         let Some(rec) = self.board.pane_target(ticket) else {
             return Err("no live agent session on this ticket — start or wake one first".into());
         };
+        if rec.agy_review_count > 0 {
+            self.refuse_before_keys(rec.id, ticket, crate::agents::agy::artifacts::IN_PANE);
+            return Err(crate::agents::agy::artifacts::IN_PANE.into());
+        }
         if rec.observe_only() {
             return Err("external session — resume it to take over before sending a prompt".into());
         }
@@ -16932,6 +16964,16 @@ impl Daemon {
             }
         };
         if matches!(response, Response::NoteWritten { .. }) {
+            if let Some(rec) = self
+                .board
+                .pane_target(ticket)
+                .filter(|s| s.agy_plan_request.is_some() && s.plan_note == note)
+            {
+                let id = rec.id;
+                if self.control_plan(id).is_some_and(|(_, markdown)| markdown != text) {
+                    self.agy_note_changed(id);
+                }
+            }
             let summary_after = self.summary_prs_of(ticket);
             let same = |a: &[String], b: &[String]| {
                 a.len() == b.len()
@@ -16998,6 +17040,9 @@ impl Daemon {
         plan: bool,
         tier: Option<String>,
     ) -> Response {
+        if self.board.pane_target(ticket).is_some_and(|s| s.agy_review_count > 0) {
+            return Response::Err { message: crate::agents::agy::artifacts::IN_PANE.into() };
+        }
         if self.board.live_agent(ticket).is_some_and(|rec| rec.observe_only()) {
             return Response::Err {
                 message: "external session — resume it to take over before sending a prompt".into(),
@@ -17139,6 +17184,7 @@ impl Daemon {
         text: String,
         queued: bool,
         accept_plan: bool,
+        requests: std::collections::BTreeMap<uuid::Uuid, String>,
     ) -> Response {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
@@ -17188,6 +17234,35 @@ impl Daemon {
             // clock's, one per quiet checkout (`service_plan_accepts`), so
             // the first goes now and the rest follow as each implementation
             // ends. The column's toggle does not reach it.
+            if let QueuedSeat::Pane(session) = seat {
+                if self.session_kind(session) == SessionKind::Agy
+                    && accept_plan
+                    && (accept || requests.contains_key(&session))
+                {
+                    let Some(request) = requests.get(&session) else {
+                        failed += 1;
+                        continue;
+                    };
+                    if matches!(
+                        self.review_agy_plan(ticket, session, request, String::new()),
+                        Response::Ok
+                    ) {
+                        self.answer_waits.take();
+                        let (tx, rx) = channel();
+                        self.control_park_reply(session, tx);
+                        self.column_reviews.push(rx);
+                        if !text.is_empty() {
+                            match self.park_ask(ticket, seat, text, Asker::Person, false, false) {
+                                Ok(()) => parked.push((ticket, word)),
+                                Err(_) => failed += 1,
+                            }
+                        }
+                    } else {
+                        failed += 1;
+                    }
+                    continue;
+                }
+            }
             if accept {
                 match self.park_ask(ticket, seat, text, Asker::Person, true, false) {
                     Ok(()) => accepting += 1,
@@ -18138,7 +18213,9 @@ impl Daemon {
             // takes the checkout's turn from the ask behind it. The same
             // for one the daemon held on a question (T-420). The crown's
             // ask the board lets it send (T-550) goes like a person's.
-            if self.queued[i].held_for_person() {
+            if self.board.pane_target(self.queued[i].ticket).is_some_and(|s| s.agy_review_count > 0)
+                || self.queued[i].held_for_person()
+            {
                 continue;
             }
             let cwd = self.queued[i].cwd.clone();

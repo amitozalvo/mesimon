@@ -109,8 +109,6 @@ pub fn codex_at_default(screen: &mesimon_backend_tmux::InputScreen) -> Result<()
 pub(crate) enum ArtifactView {
     Closed,
     Selected,
-    Above,
-    Below,
 }
 
 pub(crate) fn artifact_view(screen: &str, request: &str) -> Option<ArtifactView> {
@@ -121,7 +119,7 @@ pub(crate) fn artifact_view(screen: &str, request: &str) -> Option<ArtifactView>
     if bottom < 3
         || lines[bottom - 1] != ">"
         || !is_rule(lines[bottom - 2])
-        || !lines[bottom - 3].ends_with("artifact to review")
+        || lines[bottom - 3] != "1 artifact · /artifact to review"
     {
         return None;
     }
@@ -143,40 +141,14 @@ pub(crate) fn artifact_view(screen: &str, request: &str) -> Option<ArtifactView>
     {
         return None;
     }
-    let mut selected = None;
-    let mut target = None;
-    let mut outstanding = 0;
-    for (i, row) in rows[..keys_at].iter().enumerate() {
-        let cursor = row.strip_prefix("› ");
-        let row = cursor.unwrap_or(row);
-        let Some(rest) = row.strip_prefix("□ ") else { return None };
-        outstanding += 1;
-        let (status, rest) = rest.split_once(' ')?;
-        if !matches!(status, "new" | "modified" | "updated") {
-            return None;
-        }
-        if cursor.is_some() && selected.replace(i).is_some() {
-            return None;
-        }
-        if let Some(actions) = rest.strip_prefix(name) {
-            if (actions.is_empty() && cursor.is_none())
-                || (actions.starts_with(char::is_whitespace)
-                    && actions.split_whitespace().eq(["open", "approve", "reject"]))
-            {
-                if target.replace(i).is_some() {
-                    return None;
-                }
-            }
-        }
-    }
-    if count != outstanding {
-        return None;
-    }
-    Some(match target?.cmp(&selected?) {
-        std::cmp::Ordering::Equal => ArtifactView::Selected,
-        std::cmp::Ordering::Less => ArtifactView::Above,
-        std::cmp::Ordering::Greater => ArtifactView::Below,
-    })
+    let [row] = &rows[..keys_at] else { return None };
+    let (status, rest) = row.strip_prefix("› □ ")?.split_once(' ')?;
+    let actions = rest.strip_prefix(name)?;
+    (count == 1
+        && matches!(status, "new" | "modified" | "updated")
+        && actions.starts_with(char::is_whitespace)
+        && actions.split_whitespace().eq(["open", "approve", "reject"]))
+    .then_some(ArtifactView::Selected)
 }
 
 /// The plan dialog's feedback row as Claude Code draws it (measured on
@@ -347,11 +319,7 @@ mod tests {
         );
         let two =
             panel.replace("1 left", "2 left").replace("› □ new", "□ new walkthrough.md\n› □ new");
-        assert_eq!(artifact_view(&two, request), Some(ArtifactView::Selected));
-        assert_eq!(
-            artifact_view(&two, "agy-plan/lead/call/walkthrough.md"),
-            Some(ArtifactView::Above)
-        );
+        assert_eq!(artifact_view(&two, request), None);
         for changed in [
             panel.replace("design.md", "other.md"),
             panel.replace("1 left", "2 left"),

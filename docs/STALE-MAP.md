@@ -49847,3 +49847,46 @@ Verification history for the cold review:
 - Both live TUI cases passed again on the final verification build with agy
   1.5.14, including the continued reply and exact revision text. The run is
   `target/rig/agy/20261121T133344Z/verdicts.json`.
+
+### Narrowed review after the second cold review
+
+The board, Mesophon and the crown can decide a single witnessed
+`implementation_plan.md` only after its complete bytes match the saved ticket
+note. More than one outstanding artifact, a different artifact, an unreadable
+file, an edited or unsaved note, a truncated preview, and an unidentified
+review after restart all belong in agy's pane. These still raise needs-you/plan.
+The daemon no longer reconstructs a decision from files left in the conversation
+folder or navigates between review rows.
+
+The ask field captures its request when opened. A field opened for an ordinary
+ask keeps that meaning if a plan appears. The daemon refuses its paste, holds
+queued input during the review, and returns a refused draft. Column acceptance
+carries the displayed agy requests and counts each provider confirmation. A key,
+a closing panel, a working title and an elapsed timeout cannot confirm one.
+Only the lead's matching approved or rejected prompt for the named file can.
+Send-back waits for the rejection before delivering the person's words.
+
+All six cold-review regressions failed against `8e982fa6`. The initial focused
+rerun passed those six and a confirmed column accept. The daemon fixture
+also covers native approval during downtime, editing the bound note, and a
+paired phone seeing the remaining review without a decision. The live rig
+checks the note byte for byte and waits for both the provider prompt and the
+daemon's confirmed board receipt.
+
+The first live acceptance continued. The first live send-back reached the
+provider's rejected turn with a trailing line break, left the feedback in the
+field and ended inconclusively when the fixture socket went away. The reader
+now accepts provider line endings after the exact filename. A formatting edit
+stopped the first post-rebase unit build at a mismatched delimiter. After that
+correction, 3,404 unit tests passed (13 ignored), followed by 23 agy end-to-end
+tests, one plan-mode test and 26 plan-accept tests. The six Mesophon plan-card
+cells passed first in navigation and again in the full 102-case browser matrix.
+Both live agy 1.5.14 board decisions and their daemon receipts passed with
+clean fixture audits in `target/rig/agy/20261121T141152Z/verdicts.json`.
+
+Main then landed the agy command-approval change. The two Mesophon conflict
+resolutions preserve its permission-refusal message alongside the pane-only
+plan message. Post-rebase verification passed `cargo ut` (3,405 passed,
+13 ignored), `cargo build --workspace`, all 24 agy end-to-end tests and all
+six navigation cells. Both live board receipts and the follow-up words passed
+again in `target/rig/agy/20261121T141636Z/verdicts.json` with a clean audit.

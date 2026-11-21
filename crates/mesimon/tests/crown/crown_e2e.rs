@@ -6814,6 +6814,7 @@ fn the_crown_sends_immediately_into_a_working_turn() {
         // crown's own pane may share the column; it is no one's ask here.)
         let column = c.board().ticket(w).unwrap().column.clone();
         match c.request(Command::PromptColumn {
+            requests: Default::default(),
             column,
             text: "mesimon-probe-80 by column".into(),
             queued: false,

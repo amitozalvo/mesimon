@@ -571,7 +571,7 @@ impl TmuxBackend {
     pub fn press_unattached_key(&self, sid: &str, key: &str) -> Result<bool> {
         if sid.len() != 16
             || !sid.bytes().all(|b| b.is_ascii_hexdigit())
-            || !matches!(key, "C-r" | "Up" | "Down" | "y" | "n")
+            || !matches!(key, "C-r" | "y" | "n")
         {
             bail!("invalid artifact key target");
         }

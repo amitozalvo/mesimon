@@ -301,6 +301,7 @@ function NeedCard({ store, ticket, board, live }) {
           () => send({ op: "dialog", request: dialog.request, response: { answer: "choice", index } })))}</div>
     </div>`}
     ${ticket.agent.permission_refusal && html`<p class="need-note">${ticket.agent.permission_refusal}</p>`}
+    ${ticket.agent.pane_review && html`<p class="need-note">Review in agy's pane.</p>`}
     ${ticket.agent.dialog_omitted && html`<div class="need-body"><p class="need-note">${DIALOG_OMITTED}</p></div>`}
     ${!live
       ? html`<p class="need-note"><${Icon} name="moon" size=${14} /><span>Answer this when your terminal is back.</span></p>`

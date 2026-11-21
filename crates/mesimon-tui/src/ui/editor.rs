@@ -518,7 +518,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                         ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                     }
                 }
-                AskTarget::Column(name) => {
+                AskTarget::Column(name, _) => {
                     let seats = app.column_reach(name);
                     ctx_spans.push(Span::styled(
                         mesimon_core::text::plural(seats, mesimon_core::keymap::AGENT_WORD),
@@ -551,7 +551,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             // `^r` (T-443): the tier the words switch the agent to.
             let ticket = match target {
                 AskTarget::Ticket(t) => Some(*t),
-                AskTarget::Column(_) => None,
+                AskTarget::Column(_, _) => None,
             };
             if let Some(word) = app.field_tier_word(ticket, tier.as_deref()) {
                 ctx_spans.push(Span::styled(format!(" ∙ {word}"), dim1));
@@ -611,13 +611,13 @@ fn heading_word(app: &App, ed: &Editor) -> &'static str {
         {
             "SHELL COMMAND"
         }
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. }
+        EditorPurpose::Ask { target: AskTarget::Column(_, _), .. }
             if App::shell_line(ed.body.as_str()) =>
         {
             "SHELL COMMAND FOR EVERY AGENT"
         }
         EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => "ASK AGENT",
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => "ASK EVERY AGENT",
+        EditorPurpose::Ask { target: AskTarget::Column(_, _), .. } => "ASK EVERY AGENT",
         EditorPurpose::Note { ticket, note } => {
             let t = app.board.ticket(*ticket);
             let exists = note.is_some_and(|id| t.is_some_and(|t| t.note(id).is_some()));
@@ -650,7 +650,7 @@ fn body_hint(app: &App, ed: &Editor) -> &'static str {
             return "accept the plan ∙ words go right after"
         }
         EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => return "ask agent",
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => return "ask every agent",
+        EditorPurpose::Ask { target: AskTarget::Column(_, _), .. } => return "ask every agent",
     };
     if describes {
         "describe it"

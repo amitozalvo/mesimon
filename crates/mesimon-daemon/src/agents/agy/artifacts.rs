@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 
-const PLAN: &str = "implementation_plan.md";
+pub(crate) const PLAN: &str = "implementation_plan.md";
 const FLAGS: OFlags =
     OFlags::RDONLY.union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC).union(OFlags::NONBLOCK);
 
@@ -71,7 +71,7 @@ fn revision(file: &File) -> Option<String> {
     ))
 }
 
-fn read_note(file: &File) -> Option<String> {
+fn read_note(file: &File) -> Option<(String, bool)> {
     use mesimon_core::{
         board::{sanitize_note, NOTE_MAX_BYTES},
         text::cap_bytes,
@@ -85,7 +85,8 @@ fn read_note(file: &File) -> Option<String> {
         text.truncate(cap_bytes(&text, NOTE_MAX_BYTES - marker.len()).len());
         text.push_str(&marker);
     }
-    (!text.trim().is_empty()).then_some(text)
+    let exact = size == bytes.len() as u64 && bytes == text.as_bytes();
+    (!text.trim().is_empty()).then_some((text, exact))
 }
 
 fn parts(request: &str) -> Option<(&str, &str, &str)> {
@@ -99,7 +100,7 @@ fn parts(request: &str) -> Option<(&str, &str, &str)> {
 /// Recheck the actual file even when its next hook or title has not arrived.
 pub(crate) fn current(rec: &SessionRecord, request: &str) -> bool {
     let Some((lead, stamp, name)) = parts(request) else { return false };
-    rec.agy_reviewing
+    rec.agy_review_count > 0
         && rec.agy_plan_request.as_deref() == Some(request)
         && rec.agy_conversation_id.as_deref() == Some(lead)
         && conversation(&home().join("brain"), lead)
@@ -109,105 +110,50 @@ pub(crate) fn current(rec: &SessionRecord, request: &str) -> bool {
             == Some(stamp)
 }
 
-pub(super) fn answered(rec: &mut SessionRecord, input: &str) {
-    let Some(name) =
-        input.strip_prefix("[Approved] ").or_else(|| input.strip_prefix("[Rejected] "))
-    else {
-        return;
-    };
-    if !rec.agy_pending_artifacts.iter().any(|n| n == name) {
-        return;
+pub(super) fn observe(
+    rec: &mut SessionRecord,
+    count: u64,
+    brain: &Path,
+    result: &mut HookObservation,
+) {
+    result.metadata_changed |= rec.agy_review_count != count;
+    rec.agy_review_count = count;
+    result.signal = Some(Signal::Attention { reason: Reason::Plan });
+    if count != 1 {
+        rec.agy_artifact = AgyArtifact::PaneOnly;
     }
-    rec.agy_pending_artifacts.retain(|n| n != name);
-    let stamp = rec
-        .agy_plan_request
-        .as_deref()
-        .and_then(parts)
-        .filter(|(_, _, current)| *current == name)
-        .map(|(_, stamp, _)| stamp.to_owned())
-        .or_else(|| {
-            let dir = conversation(&home().join("brain"), rec.agy_conversation_id.as_deref()?)?;
-            revision(&regular(&dir, name)?)
-        });
-    if let Some(stamp) = stamp {
-        rec.agy_answered_artifacts.insert(name.into(), stamp);
-    }
+    let candidate = (|| {
+        let lead =
+            rec.agy_conversation_id.as_deref().filter(|_| rec.agy_artifact == AgyArtifact::Plan)?;
+        let file = regular(&conversation(brain, lead)?, PLAN)?;
+        let stamp = revision(&file)?;
+        let (note, exact) = read_note(&file)?;
+        if revision(&file)? != stamp {
+            return None;
+        }
+        result.plan = Some(note);
+        if !exact {
+            return None;
+        }
+        let old = rec
+            .agy_plan_request
+            .as_ref()
+            .filter(|r| parts(r) == Some((lead, stamp.as_str(), PLAN)));
+        Some(
+            old.cloned().unwrap_or_else(|| {
+                format!("agy-plan/{lead}/{}:{stamp}/{PLAN}", uuid::Uuid::new_v4())
+            }),
+        )
+    })();
+    result.agy_candidate = candidate;
 }
 
-/// Recover the canonical plan and feedback sidecars agy leaves beside the
-/// other artifacts. Historical, already answered revisions stay answered.
-fn discover(dir: &File) -> Vec<String> {
-    let Ok(entries) = rustix::fs::Dir::read_from(dir) else { return Vec::new() };
-    let mut names = Vec::new();
-    let mut plan_has_sidecar = false;
-    for entry in entries.flatten() {
-        let Ok(sidecar) = entry.file_name().to_str() else { continue };
-        let Some(name) = sidecar.strip_suffix(".md.metadata.json") else { continue };
-        plan_has_sidecar |= sidecar == "implementation_plan.md.metadata.json";
-        let mut bytes = Vec::new();
-        let Some(file) = regular(dir, sidecar) else { continue };
-        if file.take(16 * 1024).read_to_end(&mut bytes).is_err() {
-            continue;
-        }
-        let Ok(meta) = serde_json::from_slice::<Value>(&bytes) else { continue };
-        if meta["userFacing"] == true && meta["requestFeedback"] == true {
-            names.push(format!("{name}.md"));
-        }
-    }
-    names.sort();
-    if !plan_has_sidecar && regular(dir, PLAN).is_some() {
-        names.push(PLAN.into());
-    }
-    names
-}
+pub(crate) const IN_PANE: &str = "review in agy's pane";
 
-pub(super) fn observe(rec: &mut SessionRecord, brain: &Path, result: &mut HookObservation) {
-    let Some(lead) = rec.agy_conversation_id.clone() else { return };
-    let Some(dir) = conversation(brain, &lead) else {
-        rec.agy_reviewing = false;
-        result.metadata_changed |= rec.agy_plan_request.take().is_some();
-        return;
-    };
-    if rec.agy_pending_artifacts.is_empty() {
-        rec.agy_pending_artifacts = discover(&dir)
-            .into_iter()
-            .filter(|name| {
-                let answered = rec.agy_answered_artifacts.get(name);
-                answered.is_none()
-                    || regular(&dir, name).and_then(|file| revision(&file)).as_ref() != answered
-            })
-            .collect();
-    }
-    for name in &rec.agy_pending_artifacts {
-        let Some(file) = regular(&dir, name) else { continue };
-        let Some(stamp) = revision(&file) else { continue };
-        if rec.agy_answered_artifacts.get(name) == Some(&stamp) {
-            continue;
-        }
-        let reason = if name == PLAN { Reason::Plan } else { Reason::Question };
-        if rec.agy_reviewing
-            && rec.agy_plan_request.as_deref().and_then(parts)
-                == Some((lead.as_str(), stamp.as_str(), name.as_str()))
-        {
-            result.signal = Some(Signal::Attention { reason });
-            return;
-        }
-        let Some(text) = read_note(&file) else { continue };
-        if revision(&file).as_ref() != Some(&stamp) {
-            continue;
-        }
-        let nonce = uuid::Uuid::new_v4();
-        rec.agy_plan_request = Some(format!("agy-plan/{lead}/{nonce}:{stamp}/{name}"));
-        rec.agy_reviewing = true;
-        result.metadata_changed = true;
-        if name == PLAN {
-            result.plan = Some(text);
-        } else {
-            result.review_artifact = Some(text);
-        }
-        result.signal = Some(Signal::Attention { reason });
-        return;
-    }
-    rec.agy_reviewing = false;
-    result.metadata_changed |= rec.agy_plan_request.take().is_some();
+pub(crate) fn receipt(input: &str) -> Option<(bool, &str)> {
+    let input = input.trim_end_matches(['\r', '\n']);
+    input
+        .strip_prefix("[Approved] ")
+        .map(|name| (true, name))
+        .or_else(|| input.strip_prefix("[Rejected] ").map(|name| (false, name)))
 }

@@ -1738,7 +1738,7 @@ pub struct PlanReview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AskTarget {
     Ticket(ulid::Ulid),
-    Column(String),
+    Column(String, std::collections::BTreeMap<uuid::Uuid, String>),
 }
 
 /// The `^t` tail's state. Unlike the delete and archive chords this is a
@@ -7971,7 +7971,7 @@ impl App {
     /// not exist yet (`Pending::is_queued_ask`).
     /// The ticket's paned agent sits on its plan dialog (T-420): the `≡`.
     pub(crate) fn ticket_plan_ready(&self, ticket: ulid::Ulid) -> bool {
-        self.board.pane_target(ticket).is_some_and(|s| s.on_plan_dialog())
+        self.board.plan_seat(ticket).is_some_and(|s| s.on_plan_dialog())
     }
 
     fn review_plan(
@@ -8108,7 +8108,7 @@ impl App {
     pub(crate) fn immediate_able(&self, target: &AskTarget) -> bool {
         match target {
             AskTarget::Ticket(t) => self.board.send_now_seat(*t).is_some(),
-            AskTarget::Column(_) => false,
+            AskTarget::Column(_, _) => false,
         }
     }
 
@@ -8135,7 +8135,7 @@ impl App {
                 AskTarget::Ticket(t) => {
                     self.board.send_now_seat(*t).is_some_and(mesimon_core::quiet::is_working)
                 }
-                AskTarget::Column(_) => false,
+                AskTarget::Column(_, _) => false,
             }
     }
 
@@ -8216,7 +8216,7 @@ impl App {
         // the other seats in it can still take the words now or queued.
         let (able, ready) = match target {
             AskTarget::Ticket(t) => (self.ticket_plan_able(*t), self.ticket_plan_ready(*t)),
-            AskTarget::Column(name) => (self.column_plan_able(name), false),
+            AskTarget::Column(name, _) => (self.column_plan_able(name), false),
         };
         if ready {
             *accept_plan = true;
@@ -8327,9 +8327,7 @@ impl App {
         let Some(draft) = self.page_drafts.remove(&id) else { return };
         *buffer = history_field(&draft.text, false);
         *images = draft.images;
-        if draft.review.is_some() {
-            *review = draft.review;
-        }
+        *review = draft.review;
     }
 
     /// The draft `^]` kept for `ticket`'s page (T-1262).
@@ -8368,6 +8366,9 @@ impl App {
         // the dialog asks, the accept key beside it (`w confirm`). The
         // author, on `w trust workspace` in the footer alone: "users won't
         // be able to understand what to do".
+        if self.board.pane_target(ticket).is_some_and(|s| s.agy_pane_review()) {
+            return Some("review in agy's pane".into());
+        }
         if self.ticket_trust_ready(ticket) {
             return Some(TRUST_ROW.to_string());
         }
@@ -9422,7 +9423,7 @@ impl App {
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
                     match target {
                         AskTarget::Ticket(t) => self.ask_queueable(*t),
-                        AskTarget::Column(name) => self.column_ask_queueable(name),
+                        AskTarget::Column(name, _) => self.column_ask_queueable(name),
                     }
                 }
                 _ => false,
@@ -9455,7 +9456,7 @@ impl App {
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
                     match target {
                         AskTarget::Ticket(t) => self.ticket_plan_able(*t),
-                        AskTarget::Column(name) => self.column_plan_able(name),
+                        AskTarget::Column(name, _) => self.column_plan_able(name),
                     }
                 }
                 _ => false,
@@ -9466,7 +9467,7 @@ impl App {
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
                     match target {
                         AskTarget::Ticket(t) => self.ticket_plan_ready(*t),
-                        AskTarget::Column(_) => false,
+                        AskTarget::Column(_, _) => false,
                     }
                 }
                 _ => false,
@@ -11318,7 +11319,9 @@ impl App {
                             purpose: InputPurpose::Prompt {
                                 review: None,
                                 images: Vec::new(),
-                                target: AskTarget::Column(name),
+                                target: AskTarget::Column(name.clone(), self.board.column_tickets(&name).iter()
+                                    .filter_map(|t| self.board.plan_seat(t.id))
+                                    .filter_map(|s| Some((s.id, s.agy_plan_request.clone()?))).collect()),
                                 walk: None,
                                 queued,
                                 immediately: false,
@@ -11332,6 +11335,10 @@ impl App {
                 } else if let Some(id) = self.subject() {
                     if ctx.ticket_unsent {
                         return self.resend_unsent(id);
+                    }
+                    if self.board.pane_target(id).is_some_and(|s| s.agy_pane_review()) {
+                        self.status = "review in agy's pane".into();
+                        return Ok(());
                     }
                     let review = self.board.pane_target(id)
                         .filter(|s| s.kind == SessionKind::Agy && s.on_plan_dialog())
@@ -14976,7 +14983,7 @@ impl App {
                     self.board.ticket(*ticket).map(|t| t.short_key.as_str()).unwrap_or("ticket");
                 format!("ask-{key}.md")
             }
-            EditorPurpose::Ask { target: AskTarget::Column(name), .. } => {
+            EditorPurpose::Ask { target: AskTarget::Column(name, _), .. } => {
                 format!("ask-{}.md", mesimon_core::workspace::slug(name))
             }
             EditorPurpose::Note { ticket, note } => {
@@ -15161,7 +15168,7 @@ impl App {
             AskTarget::Ticket(t) => {
                 self.board.ticket(*t).map(|t| t.title.clone()).unwrap_or_default()
             }
-            AskTarget::Column(name) => name.to_uppercase(),
+            AskTarget::Column(name, _) => name.to_uppercase(),
         };
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
@@ -16910,8 +16917,9 @@ impl App {
             // their own titles (T-405) — the singular's rule, plural — and
             // says nothing to the agents already seated. With no empty seat
             // to take it, the daemon refuses it as it always did.
-            if let InputPurpose::Prompt { target: AskTarget::Column(name), accept_plan, .. } =
-                &purpose
+            if let InputPurpose::Prompt {
+                target: AskTarget::Column(name, _), accept_plan, ..
+            } = &purpose
             {
                 // At `accept plan` (T-429) the blank Enter IS the accept,
                 // for every plan-able seat in the column.
@@ -17195,6 +17203,21 @@ impl App {
         uploads: Vec<ulid::Ulid>,
         retry: Option<Mode>,
     ) -> Result<()> {
+        let recovery = match &purpose {
+            InputPurpose::Prompt { target: AskTarget::Ticket(id), .. }
+                if retry.is_none()
+                    && self.board.pane_target(*id).is_some_and(|s| s.kind == SessionKind::Agy) =>
+            {
+                Some(Mode::Input {
+                    purpose: purpose.clone(),
+                    buffer: EditBuffer::from_text(
+                        text.clone(),
+                        mesimon_core::command::PROMPT_MAX_BYTES,
+                    ),
+                })
+            }
+            _ => None,
+        };
         let InputPurpose::Prompt {
             target,
             queued,
@@ -17213,8 +17236,8 @@ impl App {
         }
         let ticket = match target {
             AskTarget::Ticket(ticket) => ticket,
-            AskTarget::Column(name) => {
-                return self.commit_column_prompt(name, text, queued, accept_plan);
+            AskTarget::Column(name, requests) => {
+                return self.commit_column_prompt(name, text, queued, accept_plan, requests);
             }
         };
         // An accept (T-420) is always a queued entry on the daemon — the
@@ -17333,6 +17356,9 @@ impl App {
                 _ => String::new(),
             };
             if refused {
+                if let Some(mode) = recovery {
+                    app.recover_submission(mode);
+                }
                 app.shake(ticket);
             }
             if let Some(on) = on_tier.filter(|_| !refused && !app.status.is_empty()) {
@@ -17375,11 +17401,13 @@ impl App {
         text: String,
         queued: bool,
         accept_plan: bool,
+        requests: std::collections::BTreeMap<uuid::Uuid, String>,
     ) -> Result<()> {
         // The receipt's `accepts` (T-429) is the plan-able seats parked
         // with the flag; which pressed now and which wait is each card's.
         self.status = "asking".into();
-        self.submit(Command::PromptColumn { column, text, queued, accept_plan }, |app, response| {
+        let command = Command::PromptColumn { column, text, queued, accept_plan, requests };
+        self.submit(command, |app, response| {
             app.status = match response {
                 Response::Asked { sent, woke, started, queued, skipped, failed, accepts } => {
                     let parts: Vec<String> = [
@@ -18584,7 +18612,7 @@ pub(crate) mod test_support {
                 // The column's receipt (T-378), by seat: a pane is asked, a
                 // parked one woken, an empty one started (T-405); queued,
                 // they all park. A BLANK ask reaches the empty seats alone.
-                Command::PromptColumn { column, text, queued, accept_plan } => {
+                Command::PromptColumn { column, text, queued, accept_plan, .. } => {
                     let blank = text.trim().is_empty();
                     let (mut sent, mut woke, mut started, mut parked, mut skipped) =
                         (0, 0, 0, 0, 0);
@@ -26888,7 +26916,7 @@ mod tests {
         let ed = editor(&app);
         assert!(matches!(
             &ed.purpose,
-            EditorPurpose::Ask { target: AskTarget::Column(n), queued: true, .. } if n == "todo"
+            EditorPurpose::Ask { target: AskTarget::Column(n, _), queued: true, .. } if n == "todo"
         ));
         assert_eq!(ed.title.as_str(), "TODO");
         assert!(app.ctx().ask_queueable);
@@ -26921,7 +26949,7 @@ mod tests {
         assert!(
             matches!(
                 &app.mode,
-                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n), .. }, .. }
+                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n, _), .. }, .. }
                     if n == "todo"
             ),
             "the press opens the column's field: {:?}",
@@ -26966,7 +26994,7 @@ mod tests {
         assert!(
             matches!(
                 &app.mode,
-                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n), .. }, .. }
+                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n, _), .. }, .. }
                     if n == "todo"
             ),
             "the press opens the column's field: {:?}",
@@ -27177,7 +27205,7 @@ mod tests {
             &app.mode,
             Mode::Input {
                 purpose: InputPurpose::Prompt {
-                    target: AskTarget::Column(n),
+                    target: AskTarget::Column(n, _),
                     queued: true,
                     immediately: false,
                     accept_plan: true,
@@ -27514,6 +27542,25 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
         assert_eq!(app.status, "asked in plan mode");
+    }
+
+    #[test]
+    fn ordinary_agy_ask_keeps_its_words_when_a_review_arrives() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.board_mut().sessions[0].kind = SessionKind::Agy;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for ch in "Keep this draft".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        }
+        let hold = hold_background(&mut app);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "PromptSession"));
+        let (_, reply) = hold.borrow_mut().replies.pop_front().unwrap();
+        reply.send(Ok(Response::Err { message: "review in agy's pane".into() })).unwrap();
+        app.poll_submission().unwrap();
+        assert_eq!(field_text(&app), "Keep this draft");
+        assert_eq!(app.status, "review in agy's pane");
     }
 
     #[test]

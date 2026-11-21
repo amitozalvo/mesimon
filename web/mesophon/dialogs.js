@@ -143,6 +143,7 @@ export function Attention({ store, ticket, entry, live }) {
   const trust = ticket?.agent?.trust;
   const omitted = ticket?.agent?.dialog_omitted;
   const refusal = ticket?.agent?.permission_refusal;
+  if (ticket?.agent?.pane_review) return html`<section id="attention" class="attention" aria-label="Plan review"><p class="attention-note">Review in agy's pane.</p></section>`;
   if (!permission && !dialog && !trust && !omitted && !refusal) return html`<section id="attention" hidden></section>`;
   // An answer on its way, never a prompt queued for the turn (T-568).
   const busy = answerBusy(entry);

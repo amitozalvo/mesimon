@@ -338,25 +338,30 @@ class Case:
         reply = self.request("read_note", ticket=ticket, note=rec["plan_note"])
         text = reply["text"]
         artifact = agy_home() / "brain" / rec["agy_conversation_id"] / rec["agy_plan_request"].split("/")[-1]
-        self.mark("ticket note matches the artifact", text.strip() == artifact.read_text().strip())
+        self.mark("ticket note matches the artifact", text.encode() == artifact.read_bytes())
         path = transcript_path(rec["agy_conversation_id"])
         turn_start = len(read_transcript(path))
-        if self.result["case"] == "plan-revision":
-            feedback = "Use the greeting " + self.nonce + " in the revision."
-            self.enter_plan_decision(feedback)
-            def rejected_with_feedback():
-                rows = read_transcript(path)[turn_start:]
-                return (any("[Rejected]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")
-                        and any(feedback in r.get("content", "") for r in rows))
-            self.wait("rejection and feedback in the conversation", rejected_with_feedback, self.args.timeout)
-            self.mark("board rejected the artifact and delivered the feedback", True)
+        revision = self.result["case"] == "plan-revision"
+        feedback = "Use the greeting " + self.nonce + " in the revision." if revision else ""
+        self.enter_plan_decision(feedback)
+        decision = "[Rejected]" if revision else "[Approved]"
+        expected = f"{decision} implementation_plan.md"
+        def decision_taken():
+            return any(expected in row.get("content", "") for row in read_transcript(path)[turn_start:]
+                       if row.get("type") == "USER_INPUT")
+        self.wait(expected, decision_taken, self.args.timeout)
+        event = "plan_rejected" if revision else "plan_accepted"
+        def board_receipt():
+            feed = self.state / "activity.jsonl"
+            return any(row.get("cmd") == event and row.get("ticket") == ticket and row.get("outcome") == "answered"
+                       for row in (json.loads(line) for line in feed.read_text().splitlines()))
+        self.wait("confirmed board receipt", board_receipt, 15)
+        self.mark("agy and the board confirmed " + expected, True)
+        if revision:
+            self.wait("feedback in the conversation", lambda: any(
+                feedback in row.get("content", "") for row in read_transcript(path)[turn_start:]), self.args.timeout)
+            self.mark("board delivered the revision words", True)
             return
-        self.enter_plan_decision("")
-        def accepted():
-            rows = read_transcript(path)[turn_start:]
-            return any("[Approved]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")
-        self.wait("approval in the conversation", accepted, 60)
-        self.mark("board accepted the artifact", True)
         self.wait("reply after approval", lambda: any(self.nonce in r.get("content", "")
                   for r in read_transcript(path)[turn_start:] if r.get("type") == "PLANNER_RESPONSE"), self.args.timeout)
         self.mark("agy continued after approval", True)

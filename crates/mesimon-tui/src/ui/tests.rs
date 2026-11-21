@@ -4672,7 +4672,7 @@ fn golden_column_prompt_field_120() {
         purpose: crate::app::InputPurpose::Prompt {
             review: None,
             images: Vec::new(),
-            target: crate::app::AskTarget::Column("in progress".into()),
+            target: crate::app::AskTarget::Column("in progress".into(), Default::default()),
             walk: None,
             queued: true,
             immediately: false,
@@ -4712,7 +4712,7 @@ fn golden_column_prompt_field_now_120() {
         purpose: crate::app::InputPurpose::Prompt {
             review: None,
             images: Vec::new(),
-            target: crate::app::AskTarget::Column("in progress".into()),
+            target: crate::app::AskTarget::Column("in progress".into(), Default::default()),
             walk: None,
             queued: false,
             immediately: false,
@@ -4753,7 +4753,7 @@ fn golden_column_prompt_field_start_120() {
         purpose: crate::app::InputPurpose::Prompt {
             review: None,
             images: Vec::new(),
-            target: crate::app::AskTarget::Column("todo".into()),
+            target: crate::app::AskTarget::Column("todo".into(), Default::default()),
             walk: None,
             queued: true,
             immediately: false,
@@ -8938,7 +8938,7 @@ fn golden_editor_ask_column_120() {
     let mut ed = editor_on(
         crate::app::EditorPurpose::Ask {
             review: None,
-            target: crate::app::AskTarget::Column("in progress".into()),
+            target: crate::app::AskTarget::Column("in progress".into(), Default::default()),
             queued: true,
             immediately: false,
             accept_plan: false,

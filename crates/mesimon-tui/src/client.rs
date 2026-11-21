@@ -311,7 +311,10 @@ impl Transport for Client {
         std::thread::spawn(move || {
             // A named artifact decision parks this RPC for the key walk
             // (up to 8s) and the provider's acknowledgement (up to 5s).
-            let wait = if matches!(command, Command::ReviewPlan { .. }) {
+            let wait = if matches!(
+                command,
+                Command::ReviewPlan { .. } | Command::PromptColumn { accept_plan: true, .. }
+            ) {
                 Duration::from_secs(20)
             } else {
                 RESPONSE_WAIT

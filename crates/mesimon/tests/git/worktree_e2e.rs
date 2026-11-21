@@ -556,6 +556,7 @@ fn barred_bindings_refuse_a_queued_start_and_cut_no_tree() {
     // seat starts now whatever the toggle says, so both roads reach `deliver`.
     for queued in [false, true] {
         match c.request(Command::PromptColumn {
+            requests: Default::default(),
             column: "TODO".into(),
             text: "go".into(),
             queued,

@@ -1251,7 +1251,7 @@ fn column_ask_rows(
     name: &str,
     editing: Option<(&InputPurpose, &EditBuffer)>,
 ) -> Option<(Vec<Line<'static>>, u16)> {
-    let (InputPurpose::Prompt { target: AskTarget::Column(n), queued, accept_plan, .. }, buf) =
+    let (InputPurpose::Prompt { target: AskTarget::Column(n, _), queued, accept_plan, .. }, buf) =
         editing?
     else {
         return None;

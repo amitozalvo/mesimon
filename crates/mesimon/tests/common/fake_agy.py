@@ -433,7 +433,8 @@ def main():
             for words in st["queued"]:
                 rows.append("▸ " + words.replace("\n", " ") + " (alt+m to send immediately)")
             if st.get("review"):
-                rows.append(f'{len(st["artifacts"])} artifacts · /artifact to review')
+                count = len(st["artifacts"])
+                rows.append(f"{count} {'artifact' if count == 1 else 'artifacts'} · /artifact to review")
             rows.append(rule)
             lines = st["box"].split("\n") if st["box"] else [""]
             top = len(rows)
@@ -479,7 +480,9 @@ def main():
                                   "<ADDITIONAL_METADATA>\nfake\n</ADDITIONAL_METADATA>"})
         st["steps"] += 1
         st["words"] = words
-        hook("PreInvocation", {"invocationNum": 0, "initialNumSteps": 1, "lastUserInput": words})
+        # Artifact decisions carry a trailing line break in the real provider hook.
+        user_input = words + "\n" if words.startswith(("[Approved] ", "[Rejected] ")) else words
+        hook("PreInvocation", {"invocationNum": 0, "initialNumSteps": 1, "lastUserInput": user_input})
         report("working")
 
     def submit():

@@ -309,6 +309,15 @@ pub struct ShellCloseRequest {
     pub expires_ms: u64,
 }
 
+/// Which feedback writes this daemon witnessed in the current turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgyArtifact {
+    #[default]
+    Unseen,
+    Plan,
+    PaneOnly,
+}
+
 /// The lead agy conversation's stop, kept between its hooks and title reports.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgyStop {
@@ -457,14 +466,12 @@ pub struct SessionRecord {
     /// The feedback artifact written by this turn. The request ends in its basename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agy_plan_request: Option<String>,
-    /// Feedback requests in this conversation, newest first. Decisions remove only their row.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agy_pending_artifacts: Vec<String>,
-    /// Revisions already answered. A reviewing title can rediscover files left on disk.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub agy_answered_artifacts: std::collections::BTreeMap<String, String>,
+    /// Only writes witnessed by this daemon can identify a review after a title report.
     #[serde(skip)]
-    pub agy_reviewing: bool,
+    pub agy_artifact: AgyArtifact,
+    /// agy's last count of outstanding reviews. Only fresh writes identify a row.
+    #[serde(default, skip_serializing_if = "crate::board::zero_reviews")]
+    pub agy_review_count: u64,
     /// Ephemeral observations of agy's lead turn and the work its title lists.
     #[serde(skip)]
     pub agy_stop: AgyStop,
@@ -719,6 +726,10 @@ pub struct HookWait {
     pub since_ms: u64,
 }
 
+fn zero_reviews(count: &u64) -> bool {
+    *count == 0
+}
+
 impl SessionRecord {
     /// Whether this record's pane reports through the mod (T-577): a mod
     /// launch from a build that passes no hook set, or a native one (T-658),
@@ -815,9 +826,8 @@ impl SessionRecord {
             codex_thread_id: None,
             agy_conversation_id: None,
             agy_plan_request: None,
-            agy_pending_artifacts: Vec::new(),
-            agy_answered_artifacts: Default::default(),
-            agy_reviewing: false,
+            agy_artifact: AgyArtifact::Unseen,
+            agy_review_count: 0,
             agy_stop: AgyStop::None,
             agy_background_running: false,
             codex_generation: None,
@@ -890,6 +900,11 @@ impl SessionRecord {
     /// departure, a park, a death or a supervisor's loss as much as the
     /// machine's, goes through here.
     pub fn set_state(&mut self, state: SessionState) {
+        if self.kind == SessionKind::Agy && (!state.has_pane() || state == SessionState::Spawning) {
+            self.agy_review_count = 0;
+            self.agy_artifact = AgyArtifact::Unseen;
+            self.agy_plan_request = None;
+        }
         if !matches!(
             state,
             SessionState::RequiresAction { reason: Reason::Plan | Reason::Question }
@@ -967,6 +982,10 @@ impl SessionRecord {
     /// On the plan dialog (T-420): the card's `≡`.
     pub fn on_plan_dialog(&self) -> bool {
         self.state == (SessionState::RequiresAction { reason: Reason::Plan })
+    }
+
+    pub fn agy_pane_review(&self) -> bool {
+        self.kind == SessionKind::Agy && self.on_plan_dialog() && self.agy_plan_request.is_none()
     }
 
     /// On the harness's folder trust dialog (T-844): TRUST on the card, a
@@ -4144,8 +4163,13 @@ impl Board {
     /// dialog, or launched planning. The daemon's column press and the
     /// TUI's ask field read this one answer.
     pub fn plan_seat(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.pane_target(ticket)
-            .filter(|s| s.on_plan_dialog() || (s.kind != SessionKind::Agy && s.launched_in_plan()))
+        self.pane_target(ticket).filter(|s| {
+            if s.kind == SessionKind::Agy {
+                s.on_plan_dialog() && s.agy_plan_request.is_some()
+            } else {
+                s.on_plan_dialog() || s.launched_in_plan()
+            }
+        })
     }
 
     /// The pane seat Claude Code's send-now can reach (T-601, T-685): the

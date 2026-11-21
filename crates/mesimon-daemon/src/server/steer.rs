@@ -218,12 +218,22 @@ impl Daemon {
 
 pub(super) fn reply_after_pastes(
     calls: Vec<Receiver<Result<(), String>>>,
+    reviews: Vec<Receiver<ClientReply>>,
     saved: Result<(), String>,
     mut response: Response,
     told: Option<(uuid::Uuid, u64)>,
     reply: Sender<ClientReply>,
 ) {
     std::thread::spawn(move || {
+        if let Response::Asked { accepts, failed, .. } = &mut response {
+            for review in reviews {
+                if review.recv().is_ok_and(|reply| matches!(reply.response, Response::Ok)) {
+                    *accepts += 1;
+                } else {
+                    *failed += 1;
+                }
+            }
+        }
         for call in calls {
             if let Err(message) = call.recv().unwrap_or_else(|_| Err("daemon gone".into())) {
                 let body = match &mut response {

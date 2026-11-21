@@ -45,6 +45,7 @@ pub(super) struct CrownPlan {
     asked_at: u64,
     /// The deadline for the hook edge, once the Enter went in.
     pressed: Option<u64>,
+    agy_confirmed: bool,
     /// Passes that found no dialog to press, and the last reason.
     tries: u8,
     miss: &'static str,
@@ -79,6 +80,7 @@ impl Daemon {
                 reply: None,
                 asked_at: now_ms(),
                 pressed: None,
+                agy_confirmed: false,
                 tries: 0,
                 miss: "",
                 prior: None,
@@ -194,6 +196,18 @@ impl Daemon {
         self.session_reply(reply, response, told, changes_session);
     }
 
+    pub(super) fn crown_plan_pressed(&self, id: uuid::Uuid) -> bool {
+        self.crown_plans.get(&id).is_some_and(|p| p.pressed.is_some())
+    }
+
+    pub(super) fn crown_agy_approved(&mut self, id: uuid::Uuid, request: &str) {
+        if let Some(p) =
+            self.crown_plans.get_mut(&id).filter(|p| p.pressed.is_some() && p.request == request)
+        {
+            p.agy_confirmed = true;
+        }
+    }
+
     /// Whether the crown's press may still go (T-582): what allowed it at
     /// the call holds — the crown on its ticket, the board's mode, a
     /// claude the crown started on that ticket at its plan, and the crown's
@@ -286,6 +300,18 @@ impl Daemon {
             let at_plan = self.session_at_plan(*id);
             let edge = self.control_dialog_edge(*id, &plan.request);
             if let Some(deadline) = plan.pressed {
+                if self.session_kind(*id) == SessionKind::Agy {
+                    if plan.agy_confirmed {
+                        settled.push((*id, "accepted", None));
+                    } else if now >= deadline {
+                        settled.push((
+                            *id,
+                            "unknown",
+                            Some("agy did not confirm the plan decision".into()),
+                        ));
+                    }
+                    continue;
+                }
                 match edge {
                     Some(mesophon::DialogEdge::Answered) => settled.push((*id, "accepted", None)),
                     Some(_) => settled.push((*id, "input_sent", None)),
@@ -347,7 +373,7 @@ impl Daemon {
         // after the `PostToolUse` that accepted it.
         let edge = self.control_dialog_edge(id, &plan.request);
         let standing = edge.is_none() && self.session_at_plan(id);
-        if plan.pressed.is_some() && standing {
+        if plan.pressed.is_some() && (standing || status == "unknown") {
             if let Some(prior) = plan.prior {
                 match prior {
                     Some(ask) => self.turn_asks.insert(plan.ticket, ask),

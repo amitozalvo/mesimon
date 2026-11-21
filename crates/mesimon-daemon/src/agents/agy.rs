@@ -54,8 +54,8 @@ use std::path::{Path, PathBuf};
 
 use mesimon_core::attention::{Signal, TurnOutcome};
 use mesimon_core::board::{
-    AgentProvider, AgentTools, AgyStop, FailReason, Reason, SessionRecord, SessionState,
-    UnknownReason,
+    AgentProvider, AgentTools, AgyArtifact, AgyStop, FailReason, Reason, SessionRecord,
+    SessionState, UnknownReason,
 };
 use serde_json::{json, Value};
 
@@ -670,10 +670,9 @@ impl AgentAdapter for Agy {
                     if frame.event != TITLE {
                         return result;
                     }
-                    record.agy_pending_artifacts.clear();
-                    record.agy_answered_artifacts.clear();
+                    record.agy_artifact = AgyArtifact::Unseen;
                     record.agy_plan_request = None;
-                    record.agy_reviewing = false;
+                    record.agy_review_count = 0;
                     record.transcript_path = None;
                     record.agy_stop = AgyStop::None;
                     record.agy_background_running = false;
@@ -697,13 +696,22 @@ impl AgentAdapter for Agy {
             PRE_INVOCATION => {
                 let first = payload.get("invocationNum").and_then(Value::as_u64).unwrap_or(0) == 0;
                 if first {
-                    artifacts::answered(
-                        record,
-                        payload["lastUserInput"].as_str().unwrap_or_default().trim(),
-                    );
-                    result.metadata_changed |= record.agy_plan_request.take().is_some()
-                        || !record.agy_pending_artifacts.is_empty();
-                    record.agy_reviewing = false;
+                    let receipt = payload["lastUserInput"].as_str().and_then(artifacts::receipt);
+                    if record.agy_review_count > 0 {
+                        let Some((_, file)) = receipt else { return result };
+                        if named.is_none()
+                            || (record.agy_artifact == AgyArtifact::Plan && file != artifacts::PLAN)
+                        {
+                            return result;
+                        }
+                        record.agy_review_count -= 1;
+                        result.metadata_changed = true;
+                    }
+                    result.metadata_changed |= record.agy_plan_request.take().is_some();
+                    record.agy_artifact = AgyArtifact::Unseen;
+                    if record.agy_review_count > 0 {
+                        return result;
+                    }
                 }
                 record.agy_stop = AgyStop::None;
                 result.signal =
@@ -719,17 +727,20 @@ impl AgentAdapter for Agy {
             }
             POST_TOOL_USE => {
                 if let Some(name) = artifacts::written(frame, record) {
-                    record.agy_pending_artifacts.retain(|n| n != &name);
-                    record.agy_answered_artifacts.remove(&name);
-                    record.agy_pending_artifacts.insert(0, name);
+                    record.agy_artifact = if name == artifacts::PLAN
+                        && record.agy_artifact != AgyArtifact::PaneOnly
+                    {
+                        AgyArtifact::Plan
+                    } else {
+                        AgyArtifact::PaneOnly
+                    };
                     record.agy_plan_request = None;
-                    record.agy_reviewing = false;
                     result.metadata_changed = true;
                 }
             }
-            STOP if record.agy_reviewing && payload["terminationReason"] == "NO_TOOL_CALL" => {}
+            STOP if record.agy_review_count > 0 => {}
             STOP => {
-                record.agy_reviewing = false;
+                record.agy_review_count = 0;
                 result.signal = stop_signal(payload, record);
                 if matches!(
                     result.signal,
@@ -757,12 +768,22 @@ impl AgentAdapter for Agy {
                     && named.is_some()
                     && payload["tool_confirmation_pending"] != true;
                 if reviewing {
-                    artifacts::observe(record, &home().join("brain"), &mut result);
-                } else if record.agy_reviewing && payload["agent_state"] == "idle" {
-                    result.signal = Some(Signal::TurnEnded { outcome: TurnOutcome::Completed });
-                }
-                if !reviewing {
-                    record.agy_reviewing = false;
+                    artifacts::observe(
+                        record,
+                        payload["artifact_count"].as_u64().unwrap_or(0),
+                        &home().join("brain"),
+                        &mut result,
+                    );
+                } else if record.agy_review_count > 0 {
+                    if payload["agent_state"] == "idle" && payload["artifact_count"] == 0 {
+                        record.agy_review_count = 0;
+                        record.agy_artifact = AgyArtifact::Unseen;
+                        record.agy_plan_request = None;
+                        result.metadata_changed = true;
+                        result.signal = Some(Signal::TurnEnded { outcome: TurnOutcome::Completed });
+                    } else {
+                        result.signal = Some(Signal::Attention { reason: Reason::Plan });
+                    }
                 }
             }
             _ => {}
@@ -858,10 +879,10 @@ mod tests {
         let mut rec = record(SessionState::Running);
         rec.agy_conversation_id = Some(ID.into());
         rec.agy_plan_request = Some(format!("agy-plan/{ID}/call/plan.md"));
-        rec.agy_pending_artifacts.push("implementation_plan.md".into());
+        rec.agy_artifact = AgyArtifact::Plan;
         let read = |rec: &mut SessionRecord| {
             let mut observation = HookObservation::default();
-            artifacts::observe(rec, &brain, &mut observation);
+            artifacts::observe(rec, 1, &brain, &mut observation);
             observation.plan
         };
         let file = dir.join("implementation_plan.md");

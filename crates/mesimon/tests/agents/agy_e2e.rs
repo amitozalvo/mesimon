@@ -1037,7 +1037,7 @@ fn board_and_phone_review_the_artifact_file_and_send_changes_after_rejection() {
                 request: dialog.request.clone(),
                 response,
             });
-            assert!(matches!(status.as_str(), "answered" | "input_sent"), "{status}: {reason:?}");
+            assert_eq!(status, "answered", "{reason:?}");
         }
         let decision = if feedback.is_empty() { "Approved" } else { "Rejected" };
         bed.await_prompt(1 + index * 2, "turn", &format!("[{decision}] implementation_plan.md"));
@@ -1068,54 +1068,18 @@ fn board_and_phone_review_the_artifact_file_and_send_changes_after_rejection() {
     let rec = c.record(id);
     assert!(rec.launched_in_plan());
     assert_eq!(pair(&rec.argv, "--conversation"), [MINTED]);
-}
-
-#[test]
-fn the_phone_can_decide_both_artifacts_and_only_the_implementation_plan_becomes_a_note() {
-    let Some((bed, port)) = Bed::boot_with_relay("agy-two-artifacts") else { return };
-    let mut c = bed.h.client("two-artifacts");
-    agy_board(&mut c);
-    let mut phone = TestPhone::pair(&mut c, port);
-    let t = ticket(&mut c, "Write two artifacts");
-    let Response::Spawned { id, .. } = c.request(Command::SpawnSession {
-        ticket: t,
-        kind: SessionKind::Agy,
-        submit_prompt: true,
-        plan: true,
-    }) else {
-        panic!("spawn")
-    };
-    c.await_state(id, "opening turn", |s| *s == SessionState::Running);
-    bed.cue_with("plan-pair", "Implementation steps");
-    for (index, (name, answer)) in [
-        ("implementation_plan.md", DialogAnswer::Accept),
-        ("walkthrough.md", DialogAnswer::Choice { index: 0 }),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let dialog = phone.await_dialog(t, name);
-        assert!(dialog.request.ends_with(name), "{dialog:?}");
-        match dialog.content {
-            api::DialogContent::Plan { markdown } => assert_eq!(markdown, "Implementation steps"),
-            api::DialogContent::Questions { questions } => {
-                assert!(questions[0].question.contains("Walkthrough text"))
-            }
-            _ => panic!("wrong artifact card"),
-        }
-        let (status, reason) = phone.settle(api::Request::Dialog {
-            ticket: t.to_string(),
-            session: id.to_string(),
-            request: dialog.request,
-            response: answer,
-        });
-        assert!(matches!(status.as_str(), "answered" | "input_sent"), "{status}: {reason:?}");
-        bed.await_prompt(index + 1, "turn", &format!("[Approved] {name}"));
-    }
-    let note = c.record(id).plan_note.unwrap();
-    assert!(
-        matches!(c.request(Command::ReadNote {ticket:t,note}),Response::Note {text,..} if text == "Implementation steps")
-    );
+    bed.cue_with("plan-pair", "Review these in the pane");
+    wait_until(Duration::from_secs(5), "phone's pane-only plan card", || {
+        let agent = phone.agent(t);
+        agent.pane_review && agent.dialog.is_none() && agent.card_answers.is_none()
+    });
+    let (_, stale) = phone.call(api::Request::Dialog {
+        ticket: t.to_string(),
+        session: id.to_string(),
+        request: old,
+        response: DialogAnswer::Accept,
+    });
+    assert!(matches!(stale, Reply::Rejected { .. }));
 }
 
 const PLAN_FILE: &str = "implementation_plan.md";
@@ -1204,6 +1168,173 @@ impl ReviewFixture {
     }
 }
 
+fn assert_pane_only(f: &mut ReviewFixture) {
+    wait_until(Duration::from_secs(5), "review in agy's pane", || {
+        let s = f.client.record(f.session);
+        s.on_plan_dialog()
+            && s.agy_plan_request.is_none()
+            && s.detail.as_deref().is_some_and(|d| d.contains("agy's pane"))
+    });
+}
+
+#[test]
+fn narrow_review_note_write_must_succeed() {
+    let Some(mut f) = ReviewFixture::start("blocked-note") else { return };
+    let rec = f.open_panel_request();
+    let id = rec.plan_note.unwrap();
+    let board = f.client.board();
+    let key = &board.ticket(f.ticket).unwrap().short_key;
+    let notes = f.bed.h.paths.board_dir.join("board/tickets").join(key).join("notes");
+    let blocked = notes.join(format!("{id}.tmp"));
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::write(f.dir.join(PLAN_FILE), "Replacement").unwrap();
+    f.written(PLAN_FILE);
+    f.reviewing();
+    assert_pane_only(&mut f);
+    assert_eq!(f.note().as_deref(), Some("Visible plan"));
+    assert!(matches!(f.decide(rec.agy_plan_request.unwrap()), Response::Err { .. }));
+    std::fs::remove_dir(blocked).unwrap();
+    f.reviewing();
+    f.await_note("Replacement");
+}
+
+#[test]
+fn changing_the_saved_plan_note_withdraws_the_decision() {
+    let Some(mut f) = ReviewFixture::start("edited-note") else { return };
+    let rec = f.open_panel_request();
+    let response = f.client.request(Command::WriteNote {
+        ticket: f.ticket,
+        note: rec.plan_note,
+        text: "My annotation".into(),
+        rev: None,
+    });
+    assert!(matches!(response, Response::NoteWritten { .. }));
+    assert_pane_only(&mut f);
+    f.reviewing();
+    assert!(matches!(f.decide(rec.agy_plan_request.unwrap()), Response::Err { .. }));
+    assert_eq!(f.note().as_deref(), Some("My annotation"));
+}
+
+#[test]
+fn narrow_review_ordinary_ask_is_refused() {
+    let Some(mut f) = ReviewFixture::start("ordinary-ask") else { return };
+    let cmd = Command::PromptSession {
+        ticket: f.ticket,
+        text: "Draft begun before review".into(),
+        queued: false,
+        immediately: false,
+        accept_plan: false,
+        plan: false,
+        tier: None,
+        resend: false,
+        uploads: vec![],
+    };
+    f.open_panel_request();
+    assert!(matches!(f.client.request(cmd), Response::Err {message} if message.contains("review")));
+    assert_eq!(f.bed.prompts().len(), 1);
+    assert!(f.client.record(f.session).on_plan_dialog());
+}
+
+#[test]
+fn narrow_review_copy_mode_requires_agy_confirmation() {
+    let Some(mut f) = ReviewFixture::start("copy-mode") else { return };
+    let rec = f.open_panel_request();
+    f.bed.keys(&rec, &["C-r"]);
+    let sock = f.bed.h.paths.tmux_sock();
+    let sid = rec.sid16();
+    wait_until(Duration::from_secs(4), "selected row", || {
+        let out = tmux(&sock).args(["capture-pane", "-p", "-t", &sid]).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).contains("Action required (1 left)")
+    });
+    assert!(tmux(&sock).args(["copy-mode", "-t", &sid]).status().unwrap().success());
+    let reply = f.client.request(Command::ReviewPlan {
+        ticket: f.ticket,
+        session: f.session,
+        request: rec.agy_plan_request.unwrap(),
+        feedback: String::new(),
+    });
+    assert!(matches!(reply, Response::Err { .. }), "{reply:?}");
+    assert!(f.client.record(f.session).on_plan_dialog());
+    assert_eq!(f.bed.prompts().len(), 1);
+}
+
+#[test]
+fn narrow_review_two_artifacts_stay_in_the_pane() {
+    let Some(mut f) = ReviewFixture::start("two-artifacts") else { return };
+    f.bed.cue_with("plan-pair", "Implementation steps");
+    assert_pane_only(&mut f);
+    assert_eq!(f.bed.prompts().len(), 1);
+}
+
+#[test]
+fn narrow_review_restart_cannot_name_remaining_artifact() {
+    let Some(mut f) = ReviewFixture::start("review-restart") else { return };
+    let stale = f.open_panel_request().agy_plan_request.unwrap();
+    let rec = f.client.record(f.session);
+    f.bed.h.restart_after(|| {
+        f.bed.cue_with("plan-pair", "New review while offline");
+        let capture = || {
+            let output = tmux(&f.bed.h.paths.tmux_sock())
+                .args(["capture-pane", "-p", "-t", &rec.sid16()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        wait_until(Duration::from_secs(6), "two artifacts in offline pane", || {
+            capture().contains("2 artifacts")
+        });
+        f.bed.keys(&rec, &["C-r", "Down", "y"]);
+        f.bed.await_prompt(1, "turn", "[Approved] implementation_plan.md");
+        wait_until(Duration::from_secs(5), "one artifact remains", || {
+            capture().contains("1 artifact")
+        });
+    });
+    f.client = f.bed.h.client("review-restart");
+    f.reviewing();
+    assert_pane_only(&mut f);
+    assert!(matches!(f.decide(stale), Response::Err { .. }));
+}
+
+#[test]
+fn narrow_review_column_without_named_plans_counts_no_acceptance() {
+    let Some(mut f) = ReviewFixture::start("column-review") else { return };
+    f.open_panel_request();
+    let column = f.client.board().ticket(f.ticket).unwrap().column.clone();
+    let reply = f.client.request(Command::PromptColumn {
+        requests: Default::default(),
+        column,
+        text: String::new(),
+        queued: true,
+        accept_plan: true,
+    });
+    assert!(
+        matches!(reply, Response::Err { .. } | Response::Asked { accepts: 0, .. }),
+        "{reply:?}"
+    );
+    assert_eq!(f.bed.prompts().len(), 1);
+}
+
+#[test]
+fn column_counts_the_named_plan_when_agy_confirms_it() {
+    let Some(mut f) = ReviewFixture::start("confirmed-column") else { return };
+    let req = f.open_panel_request().agy_plan_request.unwrap();
+    let column = f.client.board().ticket(f.ticket).unwrap().column.clone();
+    let ask = |request| Command::PromptColumn {
+        column: column.clone(),
+        text: String::new(),
+        queued: true,
+        accept_plan: true,
+        requests: [(f.session, request)].into(),
+    };
+    assert!(matches!(
+        f.client.request(ask("stale".into())),
+        Response::Asked { accepts: 0, failed: 1, .. }
+    ));
+    let response = f.client.request(ask(req));
+    assert!(matches!(response, Response::Asked { accepts: 1, failed: 0, .. }), "{response:?}");
+    f.bed.await_prompt(1, "turn", "[Approved] implementation_plan.md");
+}
+
 #[test]
 fn review_refuses_an_attached_person() {
     let Some(mut f) = ReviewFixture::start("attached") else { return };
@@ -1240,52 +1371,28 @@ fn review_refuses_a_composer_draft() {
     assert_eq!(f.bed.prompts().len(), 1);
 }
 
-fn rewritten_plan(restart: bool) {
+#[test]
+fn review_regression_rewrite() {
     let Some(mut f) = ReviewFixture::start("rewrite") else { return };
     let file = f.dir.join(PLAN_FILE);
     std::fs::write(&file, "First plan").unwrap();
     f.written(PLAN_FILE);
     f.reviewing();
     let old = f.await_note("First plan");
-    if restart {
-        f.bed.h.restart_after(|| std::fs::write(&file, "Second plan").unwrap());
-        f.client = f.bed.h.client("resumed");
-    } else {
-        std::fs::write(&file, "Second plan").unwrap();
-        f.written(PLAN_FILE);
-    }
+    std::fs::write(&file, "Second plan").unwrap();
+    f.written(PLAN_FILE);
     f.reviewing();
     let new = f.await_note("Second plan");
     assert_ne!(old, new);
     assert!(matches!(f.decide(old), Response::Err {message} if message.contains("changed")));
-    if restart {
-        f.bed.h.restart();
-        f.client = f.bed.h.client("same-file-new-daemon");
-        f.reviewing();
-        wait_until(
-            Duration::from_secs(5),
-            "new request for unchanged content after restart",
-            || f.client.record(f.session).agy_plan_request.is_some_and(|request| request != new),
-        );
-    }
-}
-
-#[test]
-fn review_regression_restart() {
-    rewritten_plan(true);
-}
-
-#[test]
-fn review_regression_rewrite() {
-    rewritten_plan(false);
 }
 
 #[test]
 fn review_regression_missed_write() {
     let Some(mut f) = ReviewFixture::start("missed-write") else { return };
-    std::fs::write(f.dir.join(PLAN_FILE), "Recovered").unwrap();
+    std::fs::write(f.dir.join(PLAN_FILE), "Unwitnessed").unwrap();
     f.reviewing();
-    f.await_note("Recovered");
+    assert_pane_only(&mut f);
 }
 
 #[test]
@@ -1732,6 +1839,26 @@ fn an_autonomous_crown_answers_agy_questions_and_never_approvals() {
     };
     assert_eq!(outcome, "answered");
     c.await_state(worker_id, "worker running after batch", |s| *s == SessionState::Running);
+
+    // A plan decision from the crown uses agy's receipt as well.
+    bed.cue_with("plan", "Keep the parser public");
+    c.await_state(worker_id, "worker plan", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Plan }
+    });
+    let view = c.agent_read(crown_session, &worker_key).unwrap();
+    let request = view.needs_you.unwrap().request.unwrap();
+    let reply = c.send(
+        crown.clone(),
+        Command::AgentAcceptPlan { key: worker_key.clone(), seen: view.seen, request },
+    );
+    assert!(
+        matches!(reply, Response::AgentPlanAccepted { ref outcome, .. } if outcome == "accepted"),
+        "{reply:?}"
+    );
+    assert!(bed.prompts().iter().any(|(_, p)| p == "[Approved] implementation_plan.md"));
+    c.await_state(worker_id, "running after confirmed crown decision", |s| {
+        *s == SessionState::Running
+    });
 
     // 3. Permission stop (`run_command`) is never the crown's to answer.
     bed.cue_dialog(serde_json::json!({

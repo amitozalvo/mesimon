@@ -327,6 +327,7 @@ fn accepts_go_one_per_quiet_checkout_and_a_column_accepts_every_plan() {
         Response::Ok
     ));
     match c.request(Command::PromptColumn {
+        requests: Default::default(),
         column: column.clone(),
         text: String::new(),
         queued: true,

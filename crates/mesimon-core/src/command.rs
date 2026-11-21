@@ -386,6 +386,9 @@ pub enum Command {
     /// Promise 3 holds as it does there: `sanitize_prompt` runs once, only
     /// ever removes or refuses, and nothing is appended per ticket.
     PromptColumn {
+        /// The agy reviews displayed when the column field opened.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        requests: std::collections::BTreeMap<uuid::Uuid, String>,
         column: String,
         text: String,
         /// Wait for each session to become idle and its checkout to be quiet.
@@ -1951,6 +1954,7 @@ mod meta_tests {
         // A column's ask names no single ticket, so the handler logs per
         // ticket itself (T-378) and the chokepoint logs nothing.
         let m = Command::PromptColumn {
+            requests: Default::default(),
             column: "TODO".into(),
             text: "x".into(),
             queued: true,
@@ -3081,6 +3085,8 @@ pub struct AgentBackgroundView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentNeedsYouView {
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

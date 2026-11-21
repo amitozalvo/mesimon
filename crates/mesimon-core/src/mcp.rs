@@ -4460,6 +4460,7 @@ mod tests {
                 uploads: Vec::new(),
             },
             Command::PromptColumn {
+                requests: Default::default(),
                 column: "TODO".into(),
                 text: "do the thing".into(),
                 queued: true,

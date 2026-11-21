@@ -123,6 +123,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     // The refusal that survives T-405: a column that is not there.
     err_containing(
         c.request(Command::PromptColumn {
+            requests: Default::default(),
             column: "NOWHERE".into(),
             text: "x".into(),
             queued: false,
@@ -134,6 +135,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     // (1) Sent now: the pane is pasted into, the sleeper is woken with the
     // words held, and the bare ticket is STARTED on them.
     match c.request(Command::PromptColumn {
+        requests: Default::default(),
         column: column.clone(),
         text: "mesimon-probe-81 commit what you have".into(),
         queued: false,
@@ -195,6 +197,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     // nothing lands before that.
     start(&mut c, sh);
     match c.request(Command::PromptColumn {
+        requests: Default::default(),
         column: column.clone(),
         text: "mesimon-probe-82 rebase onto main".into(),
         queued: true,
@@ -255,6 +258,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     ));
     let fresh = c.board().tickets.into_iter().find(|t| t.title == "mesimon-probe-83").unwrap().id;
     match c.request(Command::PromptColumn {
+        requests: Default::default(),
         column: "TODO".into(),
         text: "   ".into(),
         queued: false,
@@ -275,6 +279,7 @@ fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     // was: there is nobody it could reach.
     err_containing(
         c.request(Command::PromptColumn {
+            requests: Default::default(),
             column: "TODO".into(),
             text: "  ".into(),
             queued: false,
