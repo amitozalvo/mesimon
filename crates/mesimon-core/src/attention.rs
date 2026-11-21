@@ -4,7 +4,7 @@
 //! owns one `Machine` per session and applies `Signal`s from the hook stream;
 //! debounce rules are 11 §11.7.4.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -244,6 +244,17 @@ pub enum TurnOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
+    /// A Claude child reported a frame. Its lead signal still accounts for
+    /// background tasks, even when its question owns the visible attention.
+    ChildFrame {
+        child: ChildHook,
+        lead: Option<Box<Signal>>,
+    },
+    /// A result in this child's transcript, read independently of hooks.
+    ChildResult {
+        agent: String,
+        call: String,
+    },
     /// Native input is ready, with no turn or unresolved attention request.
     /// An empty prompt is not evidence of a successfully completed turn.
     Ready,
@@ -514,11 +525,42 @@ pub struct Decision {
     pub after: MachineView,
 }
 
+/// PreToolUse identifies the call. The subsequent PermissionRequest can
+/// lack its id, so correlate the two by owner and input fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildHook {
+    pub agent: String,
+    pub event: ChildEvent,
+}
+
+impl ChildHook {
+    pub fn scoped(self, signal: Option<Signal>) -> Signal {
+        Signal::ChildFrame { child: self, lead: signal.map(Box::new) }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildEvent {
+    QuestionStarted { call: String, fingerprint: String },
+    QuestionRequested { call: Option<String>, fingerprint: String },
+    Progress,
+}
+
+#[derive(Debug, Clone)]
+struct ChildQuestion {
+    call: Option<String>,
+    fingerprint: String,
+    waiting: bool,
+}
+
+const CHILD_QUESTION: SessionState = SessionState::RequiresAction { reason: Reason::Question };
+
 /// Per-session machine. `apply` handles a signal (enters are immediate, leaves
 /// are scheduled); `tick` fires scheduled work. All times are epoch ms,
 /// injected by the caller.
 #[derive(Debug, Clone)]
 pub struct Machine {
+    child_questions: BTreeMap<String, ChildQuestion>,
     state: SessionState,
     confidence: Confidence,
     entered_at: u64,
@@ -637,6 +679,7 @@ impl Machine {
             StopReason::EndTurn
         };
         Self {
+            child_questions: BTreeMap::new(),
             state,
             confidence,
             entered_at: now,
@@ -656,11 +699,41 @@ impl Machine {
     }
 
     pub fn state(&self) -> &SessionState {
+        if self.showing_child_question() {
+            &CHILD_QUESTION
+        } else {
+            &self.state
+        }
+    }
+
+    /// The lead continues its own settle and park clocks behind a child.
+    pub fn lead_state(&self) -> &SessionState {
         &self.state
     }
 
+    pub fn showing_child_question(&self) -> bool {
+        matches!(
+            self.state,
+            SessionState::Running
+                | SessionState::Idle { .. }
+                | SessionState::Unknown { .. }
+                | SessionState::Spawning
+        ) && self.child_questions.values().any(|q| q.waiting)
+    }
+
+    pub fn child_question_calls(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.child_questions
+            .iter()
+            .filter(|(_, q)| q.waiting)
+            .filter_map(|(agent, q)| Some((agent.as_str(), q.call.as_deref()?)))
+    }
+
     pub fn confidence(&self) -> Confidence {
-        self.confidence
+        if self.showing_child_question() {
+            Confidence::High
+        } else {
+            self.confidence
+        }
     }
 
     /// The dialog this session was last stated to be on, when nothing has
@@ -695,16 +768,14 @@ impl Machine {
 
     pub fn view(&self) -> MachineView {
         MachineView {
-            state: self.state.clone(),
-            confidence: self.confidence,
+            state: self.state().clone(),
+            confidence: self.confidence(),
             entered_at: self.entered_at,
             pinned_until: self.pinned_until,
             idle_teammates: self.idle_teammates.len(),
             compacting: self.compacting_since.is_some(),
-            pending: self.pending.as_ref().map(|p| PendingView {
-                state: p.to.clone(),
-                confidence: p.confidence,
-                deadline: p.deadline,
+            pending: self.pending.as_ref().filter(|_| !self.showing_child_question()).map(|p| {
+                PendingView { state: p.to.clone(), confidence: p.confidence, deadline: p.deadline }
             }),
         }
     }
@@ -757,7 +828,120 @@ impl Machine {
         (change, Decision { signal, outcome, before, after })
     }
 
+    fn observe_child(&mut self, agent: &str, event: &ChildEvent) {
+        // The transport is untrusted. Keep the same bound as the task
+        // registry, and always accept progress for an owner already known.
+        if self.child_questions.len() >= 1024 && !self.child_questions.contains_key(agent) {
+            return;
+        }
+        match event {
+            ChildEvent::QuestionStarted { call, fingerprint } => {
+                self.child_questions.insert(
+                    agent.to_owned(),
+                    ChildQuestion {
+                        call: Some(call.clone()),
+                        fingerprint: fingerprint.clone(),
+                        waiting: false,
+                    },
+                );
+            }
+            ChildEvent::QuestionRequested { call, fingerprint } => {
+                let previous = self.child_questions.remove(agent);
+                let call = call
+                    .clone()
+                    .or_else(|| previous.filter(|q| q.fingerprint == *fingerprint)?.call);
+                self.child_questions.insert(
+                    agent.to_owned(),
+                    ChildQuestion { call, fingerprint: fingerprint.clone(), waiting: true },
+                );
+            }
+            ChildEvent::Progress => {
+                self.child_questions.remove(agent);
+            }
+        }
+    }
+
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
+        self.project_change(now, |m| match sig {
+            Signal::ChildFrame { child, lead } => {
+                if matches!(m.state, SessionState::Sleeping | SessionState::Exited { .. }) {
+                    return None;
+                }
+                m.observe_child(&child.agent, &child.event);
+                lead.as_deref().and_then(|signal| {
+                    if matches!(signal, Signal::PermissionRequest | Signal::PermissionDenied)
+                        && matches!(
+                            m.state,
+                            SessionState::RequiresAction {
+                                reason: Reason::Question | Reason::Plan
+                            }
+                        )
+                    {
+                        return None;
+                    }
+                    m.apply_lead(signal, now)
+                })
+            }
+            Signal::ChildResult { agent, call } => {
+                if m.child_questions
+                    .get(agent)
+                    .is_some_and(|q| q.waiting && q.call.as_ref() == Some(call))
+                {
+                    m.child_questions.remove(agent);
+                }
+                None
+            }
+            Signal::Notification { kind: NotificationKind::PermissionPrompt }
+                if m.child_questions.values().any(|q| q.waiting) =>
+            {
+                None
+            }
+            _ => {
+                if matches!(
+                    sig,
+                    Signal::PaneDied { .. }
+                        | Signal::SessionEnd { .. }
+                        | Signal::SessionStart {
+                            source: StartSource::Clear | StartSource::Resume | StartSource::Startup
+                        }
+                ) {
+                    m.child_questions.clear();
+                }
+                m.apply_lead(sig, now)
+            }
+        })
+    }
+
+    /// Publish one visible edge even if the same frame both ends a child's
+    /// dialog and changes the lead's background ledger.
+    fn project_change(
+        &mut self,
+        now: u64,
+        reduce: impl FnOnce(&mut Self) -> Option<Change>,
+    ) -> Option<Change> {
+        let child_before = self.showing_child_question();
+        let from = self.state().clone();
+        let before = self.confidence();
+        let change = reduce(self);
+        let child_after = self.showing_child_question();
+        if !child_before && !child_after {
+            return change;
+        }
+        let to = self.state().clone();
+        let confidence = self.confidence();
+        if child_before == child_after && from == to && before == confidence {
+            return None;
+        }
+        if from != to {
+            if let SessionState::RequiresAction { reason } = from {
+                self.recent_left = Some((reason, now));
+            }
+        }
+        let attention_added = from != to && self.announce(&to, confidence, now);
+        Some(Change { from, to, confidence, attention_added })
+    }
+
+    fn apply_lead(&mut self, sig: &Signal, now: u64) -> Option<Change> {
         // Teammate bookkeeping happens in every state, including the latched
         // ones: a teammate going idle while the lead sleeps is still a fact
         // the next Stop has to weigh.
@@ -930,8 +1114,12 @@ impl Machine {
     /// `MESIMON_PARK_STALE_MS` seam, so an e2e reaches a demoted park in
     /// seconds. Everything else in the tick is the same.
     pub fn tick_parked(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
+        self.project_change(now, |m| m.tick_lead(now, park_stale_ms))
+    }
+
+    fn tick_lead(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
         if self.pending.as_ref().is_some_and(|p| now >= p.deadline) {
-            return self.flush(now);
+            return self.flush_lead(now);
         }
         // Stale demotion: never latch red (11 §11.7.4) — but never drop a
         // wait the evidence keeps affirming either (T-363).
@@ -971,6 +1159,10 @@ impl Machine {
     /// nothing left to absorb. Stale demotion is not flushed: it is a clock,
     /// not a signal.
     pub fn flush(&mut self, now: u64) -> Option<Change> {
+        self.project_change(now, |m| m.flush_lead(now))
+    }
+
+    fn flush_lead(&mut self, now: u64) -> Option<Change> {
         let p = self.pending.take()?;
         Some(self.commit(p.to, p.confidence, now))
     }
@@ -1004,24 +1196,16 @@ impl Machine {
         }
         self.confidence = confidence;
 
-        let suppressed = match (&to, &self.recent_left) {
-            (SessionState::RequiresAction { reason }, Some((left, at))) => {
-                reason == left && now.saturating_sub(*at) < REEMIT_SUPPRESS_MS
-            }
-            _ => false,
-        };
-        let newly = match (&from, &to) {
-            (
-                SessionState::RequiresAction { reason: a },
-                SessionState::RequiresAction { reason: b },
-            ) => a != b,
-            (_, SessionState::RequiresAction { .. }) => true,
-            _ => false,
-        };
-        let attention_added =
-            newly && !suppressed && matches!(confidence, Confidence::High | Confidence::Medium);
-
+        let attention_added = from != to && self.announce(&to, confidence, now);
         Change { from, to, attention_added, confidence }
+    }
+
+    fn announce(&self, to: &SessionState, confidence: Confidence, now: u64) -> bool {
+        let SessionState::RequiresAction { reason } = to else { return false };
+        matches!(confidence, Confidence::High | Confidence::Medium)
+            && !self.recent_left.is_some_and(|(left, at)| {
+                left == *reason && now.saturating_sub(at) < REEMIT_SUPPRESS_MS
+            })
     }
 
     /// Whether the lead's own tool frame re-asserts a `Running` it is in
@@ -1037,6 +1221,8 @@ impl Machine {
         use SessionState as S;
         let t = |s: S| Some((s, Confidence::High));
         match sig {
+            Signal::ChildFrame { lead, .. } => lead.as_deref().and_then(|s| self.target(s)),
+            Signal::ChildResult { .. } => None,
             Signal::Ready => t(S::Idle { stop_reason: StopReason::Unknown }),
             Signal::TurnStarted => t(S::Running),
             Signal::TurnEnded { outcome } => match outcome {
@@ -1439,6 +1625,36 @@ mod tests {
     }
 
     const RA_PERM: SessionState = SessionState::RequiresAction { reason: Reason::Permission };
+
+    #[test]
+    fn a_forks_result_is_scoped_to_its_question_and_the_lead_keeps_its_own() {
+        let mut m = m(SessionState::Running);
+        let child = |event| ChildHook { agent: "fork".into(), event }.scoped(None);
+        let request = |fingerprint: &str| {
+            child(ChildEvent::QuestionRequested { call: None, fingerprint: fingerprint.into() })
+        };
+        let pre =
+            child(ChildEvent::QuestionStarted { call: "a".into(), fingerprint: "amber".into() });
+        let result = Signal::ChildResult { agent: "fork".into(), call: "a".into() };
+        assert!(m.apply(&pre, 0).is_none());
+        m.apply(&request("azure"), 1).unwrap();
+        assert!(m.apply(&result, 2).is_none(), "a differently worded request has no known call");
+        assert!(m.showing_child_question());
+        m.apply(&child(ChildEvent::Progress), 3).unwrap();
+        m.apply(&pre, 4);
+        m.apply(&request("amber"), 5).unwrap();
+        assert_eq!(m.child_question_calls().collect::<Vec<_>>(), [("fork", "a")]);
+
+        // Ownership crosses even though the public reason is unchanged.
+        let question = Signal::PreToolUse { tool: AttentionTool::AskUserQuestion };
+        let changed = m.apply(&question, 6).unwrap();
+        assert_eq!(changed.from, changed.to);
+        assert!(!changed.attention_added);
+        assert!(!m.showing_child_question());
+        assert!(m.apply(&result, 7).is_none());
+        assert_eq!(m.state(), &CHILD_QUESTION);
+        assert!(m.view().pending.is_none());
+    }
 
     #[test]
     fn normalized_turns_preserve_settle_and_only_success_moves_to_done() {

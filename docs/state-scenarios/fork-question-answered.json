@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "id": "fork-question-answered",
+  "title": "The lead parks behind a fork’s question and resumes after its answer",
+  "provenance": {
+    "kind": "capture_derived",
+    "source": "Lead-dispatched forks on Claude Code 2.1.330, hook and mod captures, 2026-11-21. Times and identifiers normalized."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {"at_ms": 1, "input": {"source": "hook", "event": "PreToolUse", "payload": {"tool_input": {"questions": [{"question": "Which palette?"}]}, "agent_id": "fork", "tool_name": "AskUserQuestion", "tool_use_id": "call1"}}, "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}},
+    {"at_ms": 2, "input": {"source": "hook", "event": "PermissionRequest", "payload": {"tool_input": {"questions": [{"question": "Which palette?"}]}, "agent_id": "fork", "tool_name": "AskUserQuestion"}}, "expect": {"state": {"state": "requires_action", "reason": "question"}, "column": "IN PROGRESS"}},
+    {"at_ms": 200, "input": {"source": "hook", "event": "Stop", "payload": {"background_tasks": [{"id": "fork", "type": "agent", "status": "running"}]}}, "expect": {"state": {"state": "requires_action", "reason": "question"}, "column": "IN PROGRESS"}},
+    {"at_ms": 2000, "input": {"source": "tick"}, "expect": {"state": {"state": "requires_action", "reason": "question"}, "column": "IN PROGRESS"}},
+    {"at_ms": 6200, "input": {"source": "hook", "event": "Notification", "payload": {"notification_type": "permission_prompt"}}, "expect": {"state": {"state": "requires_action", "reason": "question"}, "column": "IN PROGRESS"}},
+    {"at_ms": 7000, "input": {"source": "hook", "event": "PostToolUse", "payload": {"agent_id": "fork", "tool_name": "AskUserQuestion", "tool_use_id": "call1", "tool_response": {"answers": {"Which palette?": "Amber"}}}}, "expect": {"state": {"state": "idle", "stop_reason": "background"}, "column": "IN PROGRESS"}},
+    {"at_ms": 7100, "input": {"source": "hook", "event": "SubagentStop", "payload": {"agent_id": "fork"}}, "expect": {"state": {"state": "idle", "stop_reason": "unknown"}, "column": "IN PROGRESS"}},
+    {"at_ms": 7200, "input": {"source": "hook", "event": "UserPromptSubmit", "payload": {}}, "expect": {"state": {"state": "running"}, "column": "IN PROGRESS"}}
+  ]
+}

@@ -301,6 +301,7 @@ impl LaunchSpec {
 
 #[derive(Default)]
 pub struct HookObservation {
+    pub child: Option<mesimon_core::attention::ChildHook>,
     pub signal: Option<mesimon_core::attention::Signal>,
     pub detail: Option<String>,
     pub plan: Option<String>,

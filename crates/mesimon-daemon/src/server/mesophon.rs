@@ -1,5 +1,6 @@
 //! Owner control is authenticated and applied here, on the board's single writer.
 use super::*;
+use crate::agents::claude::hooks::interaction_print;
 use crate::team::control_io::{self, Event as NetEvent};
 use mesimon_core::attention::AttentionTool;
 use mesimon_core::mesophon::{self as api, Answer, Info, LocalAction, Reply};
@@ -1671,6 +1672,9 @@ impl Daemon {
                 else {
                     return None;
                 };
+                if s.child_question {
+                    return None;
+                }
                 let spell = s.state_changed_at.unwrap_or_default();
                 let read = self.control.dialogs_read.get(&s.id);
                 if read == Some(&(spell, GIVEN)) {
@@ -7933,15 +7937,6 @@ fn dialog_edge(frame: &HookFrame, dialog: &api::Dialog) -> Option<DialogEdge> {
     }
 }
 
-/// A plan's or a question's print (T-957 round 12): the tool and the first
-/// 128 bits of a SHA-256 of its whole input, as `serde_json` writes it (keys
-/// sorted), whatever its size. Bounded, so it rides the session record.
-fn interaction_print(tool: &str, input: &serde_json::Value) -> String {
-    use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(input).unwrap_or_default();
-    format!("{tool}:{}", hex::encode(&Sha256::digest(&bytes)[..16]))
-}
-
 /// Whether this frame ends `dialog` with no answer to confirm: the turn or
 /// the session ending, or its own call failing or denied. Another tool's
 /// end never does (T-595): a model sends a question beside other tools in
@@ -8247,13 +8242,17 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
             let (id, _, q) = held_question(&mut d);
-            d.on_hook(question_frame(
-                id,
-                "PostToolUse",
-                serde_json::json!({
-                    "agent_id":"child", "tool_name":tool, "tool_use_id":"child-call"
-                }),
-            ));
+            for event in ["PreToolUse", "PermissionRequest", "PostToolUse"] {
+                d.on_hook(question_frame(
+                    id,
+                    event,
+                    serde_json::json!({
+                        "agent_id":"child", "tool_name":tool, "tool_use_id":"child-call"
+                    }),
+                ));
+                assert_eq!(d.board.sessions[0].dialog_call.as_deref(), Some(q.request.as_str()));
+                assert!(!d.board.sessions[0].child_question);
+            }
             assert_eq!(
                 d.control.dialogs.get(&id).map(|d| (&d.request, &d.content)),
                 Some((&q.request, &q.content))
@@ -8263,7 +8262,7 @@ mod tests {
     }
 
     #[test]
-    fn t1217_a_nested_interaction_start_and_end_leave_the_lead_working() {
+    fn only_a_childs_question_permission_request_holds_attention() {
         for start in ["PreToolUse", "PermissionRequest"] {
             for tool in ["AskUserQuestion", "ExitPlanMode"] {
                 let dir = tempfile::tempdir().unwrap();
@@ -8280,12 +8279,51 @@ mod tests {
                             "agent_id":"child", "tool_name":tool, "tool_use_id":"child-call"
                         }),
                     ));
-                    assert_eq!(d.board.sessions[0].state, SessionState::Running, "{event} {tool}");
+                    let child_wait = event == "PermissionRequest" && tool == "AskUserQuestion";
+                    let expected = if child_wait {
+                        SessionState::RequiresAction { reason: Reason::Question }
+                    } else {
+                        SessionState::Running
+                    };
+                    assert_eq!(d.board.sessions[0].child_question, child_wait);
+                    assert_eq!(d.board.sessions[0].state, expected, "{event} {tool}");
                     assert!(d.machines[&id].view().pending.is_none());
                     assert!(!d.control.dialogs.contains_key(&id));
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_childs_denied_result_releases_only_its_own_call_without_a_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, _, _rx) = super::super::queued_person_push_tests::daemon(dir.path());
+        d.queued.clear();
+        let rec = &mut d.board.sessions[0];
+        rec.kind = SessionKind::Claude;
+        let id = rec.id;
+        let path = dir.path().join(format!("{id}.jsonl"));
+        std::fs::write(&path, "").unwrap();
+        rec.transcript_path = Some(path.to_str().unwrap().to_owned());
+        rec.state = SessionState::Running;
+        d.machines.insert(id, Machine::new(SessionState::Running, now_ms()));
+        let input = serde_json::json!({"questions":[{"question":"Which palette?"}]});
+        for (event, call) in [("PreToolUse", Some("amber")), ("PermissionRequest", None)] {
+            d.on_hook(question_frame(id, event, serde_json::json!({
+                "agent_id":"fork", "tool_name":"AskUserQuestion", "tool_input":input, "tool_use_id":call
+            })));
+        }
+        let sub = path.with_extension("").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        for call in ["other", "amber"] {
+            let result = serde_json::json!({"type":"user", "message":{"content":[{
+                "type":"tool_result", "is_error":true, "tool_use_id":call, "content":"Permission for this tool use was denied."
+            }]}});
+            std::fs::write(sub.join("agent-fork.jsonl"), format!("{result}\n")).unwrap();
+            d.poll_agent_recovery(RecoveryChannel::Transcript);
+            assert_eq!(d.board.sessions[0].child_question, call == "other");
+        }
+        assert_eq!(d.board.sessions[0].state, SessionState::Running);
     }
 
     /// T-936: a plan is kept whole, however long, and each reader cuts it

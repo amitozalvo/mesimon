@@ -11,6 +11,16 @@ use mesimon_core::adopt::{
     classify_tail_record, record_ms, turn_edge, TailEvent, TailTool, ToolLedger, TurnEdge,
 };
 
+/// A fork's result lives beside the lead transcript. Only use an agent id
+/// as a single file component, and only close the named tool call.
+pub fn child_answered(lead: &Path, agent: &str, call: &str) -> bool {
+    if !agent.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
+        return false;
+    }
+    let path = lead.with_extension("").join("subagents").join(format!("agent-{agent}.jsonl"));
+    tail_records(&path).is_some_and(|mut records| records.any(|v| carries_result_of(&v, call)))
+}
+
 /// The last uuid-bearing record's classification — how a transcript nobody
 /// is streaming RESTED (daemon-restart recovery). Reads at most the final
 /// 64 KiB. Trailing uuid-less latch records are skipped, but the walk STOPS

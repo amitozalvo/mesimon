@@ -29,7 +29,7 @@ use mesimon_core::command::{
 };
 use mesimon_core::crown;
 use mesimon_core::mcp;
-use mesimon_core::reconcile::{reconcile, state_for};
+use mesimon_core::reconcile::{reconcile, restored_state};
 use mesimon_core::road::{self, ModCommand, Road};
 use mesimon_core::tracked::Tracked;
 use mesimon_core::usage::{Provider, Wants};
@@ -1480,7 +1480,12 @@ pub fn run(paths: Paths) -> Result<()> {
             let in_turn = r.observed_in_turn();
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
-            r.set_state(state_for(link, &r.state, r.kind.is_agent()));
+            if r.child_question && matches!(link, mesimon_core::reconcile::Link::Live { .. }) {
+                r.confidence = Confidence::Low;
+                r.waiting_since = None;
+                r.detail = None;
+            }
+            r.set_state(restored_state(link, r));
             if had_pane
                 && matches!(r.state, SessionState::Exited { .. })
                 && crate::agents::codex::failed_resume_selection(&paths, r)
@@ -4656,6 +4661,21 @@ impl Daemon {
         self.poll_agent_recovery(RecoveryChannel::Status)
     }
 
+    /// Recovery reads the lead transcript and status file. A child's
+    /// question can be the public state while the lead is working or parked.
+    fn recovery_record<'a>(
+        record: &'a SessionRecord,
+        machine: Option<&Machine>,
+    ) -> std::borrow::Cow<'a, SessionRecord> {
+        if let Some(m) = machine.filter(|_| record.child_question) {
+            let mut lead = record.clone();
+            lead.state = m.lead_state().clone();
+            std::borrow::Cow::Owned(lead)
+        } else {
+            std::borrow::Cow::Borrowed(record)
+        }
+    }
+
     /// The records a channel's probe should sample now, each with its pane's
     /// name: the writer's half of a probe. `needs_poll` is the adapter's own
     /// cursor (the startup probe's stage advances when it says yes, so a
@@ -4676,7 +4696,14 @@ impl Daemon {
         for record in &self.board.sessions {
             let Some(adapter) = crate::agents::adapter(record.kind) else { continue };
             let recovery = self.recovery.entry(record.id).or_insert_with(|| adapter.recovery());
-            if recovery.needs_poll(record, channel, now) {
+            let child_transcript = channel == RecoveryChannel::Transcript && record.child_question;
+            if child_transcript
+                || recovery.needs_poll(
+                    &Self::recovery_record(record, self.machines.get(&record.id)),
+                    channel,
+                    now,
+                )
+            {
                 candidates.push((record.id, record.sid16()));
             }
         }
@@ -4776,13 +4803,40 @@ impl Daemon {
             return false;
         };
         let Some(recovery) = self.recovery.get_mut(&id) else { return false };
-        let observations = recovery.poll(record, sample, now);
+        let machine = self.machines.get(&id);
+        let mut observations = Vec::new();
+        if matches!(sample, RecoverySample::Transcript) {
+            if let (Some(m), Some(path)) = (machine, record.transcript_path.as_deref()) {
+                for (agent, call) in m.child_question_calls() {
+                    if crate::agents::claude::tail::child_answered(
+                        std::path::Path::new(path),
+                        agent,
+                        call,
+                    ) {
+                        observations.push(crate::agents::RecoveryObservation {
+                            signal: Signal::ChildResult { agent: agent.into(), call: call.into() },
+                            source: "child_dialog_result",
+                            preview: None,
+                            dialog: None,
+                        });
+                    }
+                }
+            }
+        }
+        let child_transcript =
+            record.child_question && matches!(sample, RecoverySample::Transcript);
+        let lead = Self::recovery_record(record, machine);
+        if !child_transcript || recovery.needs_poll(&lead, RecoveryChannel::Transcript, now) {
+            observations.extend(recovery.poll(&lead, sample, now));
+        }
         let mut changed = false;
         for observation in observations {
             // Keep the adapter's cursor current while a Stop is held. Only
             // its state claims wait: dropping the whole sample would lose
             // dialog results and leave the next turn on an old cursor.
-            if self.async_stop_pending(id) {
+            if self.async_stop_pending(id)
+                && !matches!(observation.signal, Signal::ChildResult { .. })
+            {
                 let ticket = self.board.session(id).map(|r| r.ticket);
                 self.feed.board_outcome(
                     "automation",
@@ -6499,7 +6553,11 @@ impl Daemon {
         }
         let mut dirty = observation.metadata_changed;
         let quota_moved = self.on_agy_report(id, &frame, now);
-        let signal = observation.signal;
+        // Bookkeeping sees the original hook signal. Only the attention
+        // reducer needs its child owner. Even a frame with no lead signal
+        // can end that child's wait.
+        let mut child = observation.child;
+        let signal = observation.signal.or_else(|| child.take().map(|child| child.scoped(None)));
         if let Some(sig) = signal {
             let held = self.async_stop_pending(id);
             let (sig, lifted) =
@@ -6602,7 +6660,9 @@ impl Daemon {
             } else {
                 &sig
             };
-            let (change, decision) = machine.apply_explained(attention_signal, now);
+            let scoped = child.map(|child| child.scoped(Some(attention_signal.clone())));
+            let (change, decision) =
+                machine.apply_explained(scoped.as_ref().unwrap_or(attention_signal), now);
             self.feed.state_decision(id, &frame.event, &decision);
             let crashed = SessionState::Exited { reason: ExitReason::Crashed };
             let crashed_now = change.as_ref().is_some_and(|c| c.to == crashed && c.from != c.to);
@@ -8583,6 +8643,11 @@ impl Daemon {
             }
         }
         // A record off its dialog holds no call (T-957 rounds 9, 10).
+        rec.child_question = self.machines.get(&id).is_some_and(Machine::showing_child_question);
+        if rec.child_question {
+            rec.dialog_call = None;
+            rec.dialog_print = None;
+        }
         rec.set_state(change.to.clone());
         rec.confidence = change.confidence;
         let stop_words = detail.is_some();

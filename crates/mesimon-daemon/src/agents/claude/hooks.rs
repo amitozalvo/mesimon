@@ -14,6 +14,40 @@ use serde_json::Value;
 use crate::ingest::parse_frame;
 use crate::ingest::HookFrame;
 
+/// Keep the owning child beside the ordinary signal. A child may continue
+/// after declining a question without a PostToolUse for that question.
+pub fn child_hook(frame: &HookFrame) -> Option<mesimon_core::attention::ChildHook> {
+    use mesimon_core::attention::ChildEvent;
+    let Some(agent) =
+        frame.payload["agent_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128)
+    else {
+        return None;
+    };
+    let question = interaction_tool(frame) == Some(AttentionTool::AskUserQuestion);
+    let call = frame.payload["tool_use_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 256);
+    let fingerprint = || interaction_print("AskUserQuestion", &frame.payload["tool_input"]);
+    let event = match (frame.event.as_str(), question, call) {
+        ("PreToolUse", true, Some(call)) => {
+            ChildEvent::QuestionStarted { call: call.into(), fingerprint: fingerprint() }
+        }
+        ("PermissionRequest", true, call) => ChildEvent::QuestionRequested {
+            call: call.map(str::to_owned),
+            fingerprint: fingerprint(),
+        },
+        _ => ChildEvent::Progress,
+    };
+    Some(mesimon_core::attention::ChildHook { agent: agent.to_owned(), event })
+}
+
+/// A plan's or a question's print (T-957 round 12): the tool and the first
+/// 128 bits of a SHA-256 of its whole input, as `serde_json` writes it (keys
+/// sorted), whatever its size. Bounded, so it rides the session record.
+pub(crate) fn interaction_print(tool: &str, input: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(input).unwrap_or_default();
+    format!("{tool}:{}", mesimon_team::hex::encode(&Sha256::digest(&bytes)[..16]))
+}
+
 /// Stateful task evidence is shared by live ingestion and offline replay.
 /// This registry is deliberately absent from persisted session records.
 pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option<Signal> {

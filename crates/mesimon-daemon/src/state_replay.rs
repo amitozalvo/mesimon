@@ -8,7 +8,8 @@ use mesimon_core::board::{template_settings, Confidence, Reason, SessionState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::ingest::{signal_with_background, HookFrame};
+use crate::agents::claude::hooks::{child_hook, signal_with_background};
+use crate::ingest::HookFrame;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,17 +179,21 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
                 Input::AgentTurnEnded { outcome } => Some(Signal::TurnEnded { outcome: *outcome }),
                 Input::AgentAttention { reason } => Some(Signal::Attention { reason: *reason }),
                 Input::AgentObservationLost => Some(Signal::ObservationLost),
-                Input::Hook { event, reason, payload } => signal_with_background(
-                    &HookFrame {
+                Input::Hook { event, reason, payload } => {
+                    let frame = HookFrame {
                         session: "lab-session".into(),
                         event: event.clone(),
                         reason: reason.clone(),
                         pane: None,
                         road: mesimon_core::road::Road::Hooks,
                         payload: payload.clone(),
-                    },
-                    &mut tasks,
-                ),
+                    };
+                    let signal = signal_with_background(&frame, &mut tasks);
+                    match child_hook(&frame) {
+                        Some(child) => Some(child.scoped(signal)),
+                        None => signal,
+                    }
+                }
                 Input::Transcript { record } => {
                     tools.observe(record);
                     tail_signal(record)

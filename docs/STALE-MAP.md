@@ -49441,3 +49441,36 @@ The paired-branch test exercises a two-commit squash and a per-commit replay. Th
 that recorded the commits keeps the landing OID in each case. Its stacked sibling stays
 untouched and unmerged on the next sample. An incomplete reflog supplies no proof for a
 patch-based re-cut. T-740's local ancestry fallback still applies on its original terms.
+## A fork’s question needs a person as soon as its permission request arrives (T-1224, 2026-11-21)
+
+Six live captures on Claude Code 2.1.330 settled T-1217’s open question.
+Both transports drew the fork’s native question in the lead pane. At the
+first visible sample the lead read Running or Idle/Background. The first
+needs-you came 5.79–6.08 seconds later, when an unowned permission-prompt
+notification changed the reason to Permission. Enter produced a child
+PostToolUse. Escape produced a denied tool_result in the child’s transcript
+and no closing question hook. The ticket’s research note has the six timings
+and frame inventory.
+
+On both roads PermissionRequest carries the child’s agent_id and omits the
+call ID. On the mod road raw classic.PreToolUse omits the owner, tool.call
+supplies it, and the relayed PreToolUse carries both owner and call. The
+attention machine now records the child’s call at PreToolUse and shows
+needs-you/Question at PermissionRequest. Matching the child and question
+input recovers the call ID for transcript evidence. The native pane owns
+the answer. A lead question or plan keeps its request and card throughout.
+
+The lead still settles and parks behind a child’s question. A matching
+result in that child’s transcript or its next hook frame releases its wait,
+including a new tool after Escape. A sibling can answer or stop while the
+other child still needs a person. Once the last wait closes the board shows
+the state the lead has reached. The persisted record marks a visible
+child-owned question. After daemon downtime a live pane with that marker
+starts at Unknown/DaemonRestarted, low confidence, because Escape or progress
+could have gone unobserved. Older records and lead-owned dialogs retain
+their existing restart behavior.
+
+Replays cover the lead parking before an answer, Escape followed by another
+tool, and two children asking concurrently. Daemon tests check the lead’s
+original card and call and the matching denied result. Restart reconciliation
+is tested through a serialized session record, including the older shape.

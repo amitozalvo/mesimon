@@ -209,6 +209,7 @@ impl AgentAdapter for Claude {
             }
         }
         let tasks = record.background_tasks.count();
+        result.child = hooks::child_hook(frame);
         result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         // A count the card says (`idle ∙ 2 tasks`) moved with no state of
         // its own: a kill of one task of two (T-1313).
