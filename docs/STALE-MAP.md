@@ -49619,3 +49619,36 @@ That transition called `turn_ended(false)` with the merge mark still present.
 `unproven_step` cleared the held landing's `finished` flag, producing
 `delivered (merge_state merged)`. Each later `finished` wake followed a new
 prompt and its own end-turn Stop.
+
+## Typing `/mcp` before agy's first prompt is shelved (T-1381, 2026-11-21)
+
+**Shelved; docs only.** Follow-up on the `/mcp` lead from T-1381's earlier
+measurement above.
+
+- **Measured on agy 1.5.13.** Typing `/mcp` + `Enter` at an empty box spawns
+  `mesimon mcp` in about 70 ms (`70.6 ms` in the zero-model-call probe,
+  `70.0 ms` in a live `gemini-4-neon-high` turn), answers `tools/list`, and
+  closes on `Escape` in `77.8–113.7 ms` — about 0.2 s total (`149.1 ms` probe,
+  `199.0 ms` live), leaving an empty box with zero lifecycle hooks fired. With
+  `/mcp` before the first prompt, the first model request (`conversations/<id>.db`
+  `gen_metadata`) declares all 14 built-in tools plus the 4 MCP tools
+  (`mcp_mesimon_get_ticket`, `call_mcp_tool`, `list_resources`, `read_resource`)
+  and `# mesimon` `<mcp_servers>`, and a title-only `gemini-4-neon-high` turn
+  called `mcp_mesimon_get_ticket` first. Without `/mcp`, the first request
+  declares only the 14 built-ins and 0 MCP tools.
+- **Built and reviewed over three rounds.** A daemon `/mcp` warm-up was built
+  and reviewed across three rounds that found 8, then 4, then 3 defects. The
+  final three defects on `a4c33874`: (1) a daemon reload before agy's first idle
+  report loses a plain start's title and leaves a composed brief unsent;
+  (2) mesimon Escapes a `/mcp` panel the person opened while mesimon's own was
+  waiting; (3) the abandon path runs `tmux list-clients` on the board writer
+  each tick, breaking "the tick forks nothing on the writer" (T-857).
+- **Why it is shelved.** Typing a command into a box a person may be using
+  cannot be made safe at this size: about 1,900 added lines for a 0.2 s
+  warm-up.
+- **What stands today.** agy's first turn has its `SessionStart` brief, and the
+  board's tools arrive from the second turn onward.
+- **Where the code is.** Local branch `shelved/T-1381-agy-mcp-warmup` at
+  `a4c33874`.
+- **What would reopen it.** agy starting workspace MCP servers before the first
+  prompt, or a launch flag that does.
