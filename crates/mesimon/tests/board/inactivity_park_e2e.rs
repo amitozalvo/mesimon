@@ -58,6 +58,21 @@ fn finish(h: &Harness, c: &mut TestClient, id: uuid::Uuid) {
     });
 }
 
+fn wake(c: &mut TestClient, id: uuid::Uuid, conversation: uuid::Uuid) {
+    // Sleeping is visible before the park worker finishes signalling the old
+    // pane. A wake accepted in that window resumes once the worker returns.
+    match c.request(Command::WakeSession { id }) {
+        Response::Spawned { id: resumed, fresh: false } => assert_eq!(resumed, id),
+        Response::Provisioning => {
+            c.await_state(id, "queued wake to spawn its pane", SessionState::has_pane);
+        }
+        other => panic!("wake: {other:?}"),
+    }
+    let rec = c.record(id);
+    assert_eq!(rec.claude_session_id, Some(conversation));
+    assert!(rec.argv.windows(2).any(|a| a == ["--resume", &conversation.to_string()]));
+}
+
 /// Every column's minutes (T-543), the board's only idle timer since
 /// T-610: the automoves carry these tickets between columns.
 fn sleep_every_column(c: &mut TestClient, minutes: u32) {
@@ -152,14 +167,7 @@ fn inactivity_parks_only_idle_resumable_agents_and_wakes_the_same_conversation()
     }
     let rec = board.sessions.iter().find(|s| s.id == idle).unwrap();
     assert_eq!(rec.claude_session_id, Some(conversation));
-    assert!(matches!(
-        c.request(Command::WakeSession { id: idle }),
-        Response::Spawned { fresh: false, .. }
-    ));
-    let board = c.board();
-    let rec = board.sessions.iter().find(|s| s.id == idle).unwrap();
-    assert_eq!(rec.claude_session_id, Some(conversation));
-    assert!(rec.argv.windows(2).any(|a| a == ["--resume", &conversation.to_string()]));
+    wake(&mut c, idle, conversation);
     assert!(!h.paths.state_dir.join("transcripts").try_exists().unwrap());
     sleep_every_column(&mut c, 0);
 }
@@ -251,10 +259,7 @@ fn a_column_parks_its_idle_agents_and_spares_the_rest() {
     // The author's T-534: woken in DONE, it sits at its prompt with no
     // finished turn (`Idle{Unknown}` off the resume's SessionStart). The
     // column's timer sleeps it anyway.
-    assert!(matches!(
-        c.request(Command::WakeSession { id: parked }),
-        Response::Spawned { fresh: false, .. }
-    ));
+    wake(&mut c, parked, conversation);
     let path = h.dir.join(format!("{conversation}.jsonl"));
     hook_send(
         &h.paths.hook_sock(),

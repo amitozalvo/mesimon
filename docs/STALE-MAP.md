@@ -49403,3 +49403,22 @@ parent directory. Committing the already tracked setting by name passed the
 isolated promotion rerun. Parked squash merge, workspace count and archive
 also passed on mod. The first sandboxed workspace and unit attempts lacked
 local socket access and were rerun with that access.
+
+## A column wake can be accepted while the old pane is stopping (T-1388, 2026-11-21)
+
+The two inactivity e2es assumed that waking a session observed as
+`Sleeping` immediately returns `Spawned`. Four concurrent copies of the
+column test reproduced the failure on hooks. Both copies with a 500 ms
+delay on tmux's pane PID lookup returned `Provisioning` and failed the
+old assertion. Both copies at ordinary tmux speed passed.
+
+Inactivity parking publishes `Sleeping` and the autosleep feed entry while
+a worker signals the old pane. A wake during that operation queues the
+resume so the signal cannot hit its replacement. Both tests now issue
+one wake, wait for the same session to have a pane if the wake was queued,
+and check its Claude conversation ID and `--resume` argument. The column
+test sends the resume's `SessionStart` only after that check.
+
+The fixed column test passed 20/20 on hooks with four copies in parallel.
+Ten used the same 500 ms delay. Both inactivity tests also passed on each
+of the hooks and mod roads at ordinary tmux speed.
