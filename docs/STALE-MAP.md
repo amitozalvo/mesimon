@@ -49422,3 +49422,22 @@ test sends the resume's `SessionStart` only after that check.
 The fixed column test passed 20/20 on hooks with four copies in parallel.
 Ten used the same 500 ms delay. Both inactivity tests also passed on each
 of the hooks and mod roads at ordinary tmux speed.
+
+## A stacked ticket stays unmerged when its dependency lands by squash or rebase-merge (T-1324, 2026-11-21)
+
+A patch match identifies the upstream commit carrying the work. Two ticket branches can
+share the exact same tip and patch while only one recorded the commits. T-1321's ancestry
+restriction on the reflog check let both tickets claim that delivery.
+
+When a previously readable, unmerged leg reads merged by patch, the sampler now walks its
+branch reflog from the sampled tip back to the cut, just as for an ancestry match. A walk
+consisting only of moves lets the fold record the **stacked branch's sampled tip** as its
+new `base_oid`. This is the commit the worker is building on. Recording the upstream
+squash or replay commit would leave the two OIDs different, so the next sample would see
+a touched leg and rediscover the same patch. The existing fold persists the cut, clears
+the content memo and keeps the rebase flag from the Git counts. No branch ref moves.
+
+The paired-branch test exercises a two-commit squash and a per-commit replay. The branch
+that recorded the commits keeps the landing OID in each case. Its stacked sibling stays
+untouched and unmerged on the next sample. An incomplete reflog supplies no proof for a
+patch-based re-cut. T-740's local ancestry fallback still applies on its original terms.
