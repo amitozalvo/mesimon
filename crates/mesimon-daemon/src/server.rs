@@ -1480,7 +1480,7 @@ pub fn run(paths: Paths) -> Result<()> {
             let in_turn = r.observed_in_turn();
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
-            if r.child_question && matches!(link, mesimon_core::reconcile::Link::Live { .. }) {
+            if r.child_dialog && matches!(link, mesimon_core::reconcile::Link::Live { .. }) {
                 r.confidence = Confidence::Low;
                 r.waiting_since = None;
                 r.detail = None;
@@ -4667,7 +4667,7 @@ impl Daemon {
         record: &'a SessionRecord,
         machine: Option<&Machine>,
     ) -> std::borrow::Cow<'a, SessionRecord> {
-        if let Some(m) = machine.filter(|_| record.child_question) {
+        if let Some(m) = machine.filter(|_| record.child_dialog) {
             let mut lead = record.clone();
             lead.state = m.lead_state().clone();
             std::borrow::Cow::Owned(lead)
@@ -4696,13 +4696,11 @@ impl Daemon {
         for record in &self.board.sessions {
             let Some(adapter) = crate::agents::adapter(record.kind) else { continue };
             let recovery = self.recovery.entry(record.id).or_insert_with(|| adapter.recovery());
-            let child_transcript = channel == RecoveryChannel::Transcript && record.child_question;
+            let machine = self.machines.get(&record.id);
+            let child_transcript = channel == RecoveryChannel::Transcript
+                && machine.is_some_and(|m| m.child_waits().next().is_some());
             if child_transcript
-                || recovery.needs_poll(
-                    &Self::recovery_record(record, self.machines.get(&record.id)),
-                    channel,
-                    now,
-                )
+                || recovery.needs_poll(&Self::recovery_record(record, machine), channel, now)
             {
                 candidates.push((record.id, record.sid16()));
             }
@@ -4807,14 +4805,14 @@ impl Daemon {
         let mut observations = Vec::new();
         if matches!(sample, RecoverySample::Transcript) {
             if let (Some(m), Some(path)) = (machine, record.transcript_path.as_deref()) {
-                for (agent, call) in m.child_question_calls() {
-                    if crate::agents::claude::tail::child_answered(
-                        std::path::Path::new(path),
-                        agent,
-                        call,
-                    ) {
+                for wait in m.child_waits() {
+                    if crate::agents::claude::tail::child_answered(std::path::Path::new(path), wait)
+                    {
                         observations.push(crate::agents::RecoveryObservation {
-                            signal: Signal::ChildResult { agent: agent.into(), call: call.into() },
+                            signal: Signal::ChildResult {
+                                agent: wait.agent.clone(),
+                                key: wait.key.clone(),
+                            },
                             source: "child_dialog_result",
                             preview: None,
                             dialog: None,
@@ -4823,8 +4821,8 @@ impl Daemon {
                 }
             }
         }
-        let child_transcript =
-            record.child_question && matches!(sample, RecoverySample::Transcript);
+        let child_transcript = matches!(sample, RecoverySample::Transcript)
+            && machine.is_some_and(|m| m.child_waits().next().is_some());
         let lead = Self::recovery_record(record, machine);
         if !child_transcript || recovery.needs_poll(&lead, RecoveryChannel::Transcript, now) {
             observations.extend(recovery.poll(&lead, sample, now));
@@ -8643,8 +8641,9 @@ impl Daemon {
             }
         }
         // A record off its dialog holds no call (T-957 rounds 9, 10).
-        rec.child_question = self.machines.get(&id).is_some_and(Machine::showing_child_question);
-        if rec.child_question {
+        let was_child_dialog = rec.child_dialog;
+        rec.child_dialog = self.machines.get(&id).is_some_and(Machine::showing_child_dialog);
+        if rec.child_dialog {
             rec.dialog_call = None;
             rec.dialog_print = None;
         }
@@ -8687,6 +8686,9 @@ impl Daemon {
             }
         }
         let snapshot = rec.clone();
+        if snapshot.child_dialog && !was_child_dialog {
+            self.retire_lead_dialog(id);
+        }
         // A seat that exited takes no words (T-1220): what was owed to it
         // goes at its death, or it reads as words on their way to the
         // ticket (`pending_on`) and mutes the next seat's finished turn. A
@@ -8726,12 +8728,16 @@ impl Daemon {
         // as one) or T-447's refusal road, the agent's next own call — and
         // only High, for the same reason as above. A shell's state is not the
         // agent's, and a quota or a startup modal is not a person's answer.
-        let dialog_left = matches!(
-            change.from,
-            SessionState::RequiresAction {
-                reason: Reason::Question | Reason::Plan | Reason::Permission | Reason::Elicitation
-            }
-        );
+        let dialog_left = !was_child_dialog
+            && matches!(
+                change.from,
+                SessionState::RequiresAction {
+                    reason: Reason::Question
+                        | Reason::Plan
+                        | Reason::Permission
+                        | Reason::Elicitation
+                }
+            );
         // A turn a background task's notification began (T-1287) is nobody's
         // answer: the agent woke on its own work, and the hand stays up.
         let notified =

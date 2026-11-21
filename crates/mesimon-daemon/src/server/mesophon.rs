@@ -1672,7 +1672,7 @@ impl Daemon {
                 else {
                     return None;
                 };
-                if s.child_question {
+                if s.child_dialog {
                     return None;
                 }
                 let spell = s.state_changed_at.unwrap_or_default();
@@ -1747,6 +1747,16 @@ impl Daemon {
         match &dialog.content {
             api::DialogContent::Questions { questions } => Some((&dialog.request, questions)),
             api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => None,
+        }
+    }
+
+    /// A transcript-only refusal can settle straight onto a fork's wait,
+    /// without a closing hook to retire the lead's answerable projection.
+    pub(super) fn retire_lead_dialog(&mut self, id: uuid::Uuid) {
+        self.dialog_open.remove(&id);
+        if let Some(dialog) = self.control.dialogs.remove(&id) {
+            self.control.dialog_edges.insert(id, (dialog.request, DialogEdge::Closed));
+            self.control_changed();
         }
     }
 
@@ -8251,7 +8261,7 @@ mod tests {
                     }),
                 ));
                 assert_eq!(d.board.sessions[0].dialog_call.as_deref(), Some(q.request.as_str()));
-                assert!(!d.board.sessions[0].child_question);
+                assert!(!d.board.sessions[0].child_dialog);
             }
             assert_eq!(
                 d.control.dialogs.get(&id).map(|d| (&d.request, &d.content)),
@@ -8285,12 +8295,208 @@ mod tests {
                     } else {
                         SessionState::Running
                     };
-                    assert_eq!(d.board.sessions[0].child_question, child_wait);
+                    assert_eq!(d.board.sessions[0].child_dialog, child_wait);
                     assert_eq!(d.board.sessions[0].state, expected, "{event} {tool}");
                     assert!(d.machines[&id].view().pending.is_none());
                     assert!(!d.control.dialogs.contains_key(&id));
                 }
             }
+        }
+    }
+
+    mod fork_review {
+        use super::*;
+        use serde_json::{json, Value};
+
+        fn run(check: impl FnOnce(&mut Daemon, uuid::Uuid)) {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut d, _, _rx) = super::super::super::queued_person_push_tests::daemon(dir.path());
+            d.queued.clear();
+            let rec = &mut d.board.sessions[0];
+            let id = rec.id;
+            rec.state = SessionState::Running;
+            d.machines.insert(id, Machine::new(SessionState::Running, now_ms()));
+            check(&mut d, id);
+        }
+
+        fn send(d: &mut Daemon, id: uuid::Uuid, event: &str, payload: Value) {
+            let mut frame = question_frame(id, event, payload);
+            frame.road = d.board.session(id).unwrap().road;
+            d.on_hook(frame);
+        }
+
+        fn ask(d: &mut Daemon, id: uuid::Uuid, event: &str, name: &str, call: Option<&str>) {
+            let body = json!({"agent_id":"fork","tool_name":"AskUserQuestion","tool_use_id":call,
+                              "tool_input":{"questions":[{"question":name}]}});
+            send(d, id, event, body);
+        }
+
+        fn tick(d: &mut Daemon, id: uuid::Uuid, elapsed: u64) {
+            if let Some(change) = d.machines.get_mut(&id).unwrap().tick(now_ms() + elapsed) {
+                d.apply_change(id, &change, None, None);
+            }
+        }
+
+        const QUESTION: SessionState = SessionState::RequiresAction { reason: Reason::Question };
+
+        #[test]
+        fn lead_escape_retires_its_cached_options_and_request() {
+            run(|d, id| {
+                let (_, _, old) = held_question(d);
+                ask(d, id, "PermissionRequest", "B", Some("b"));
+                assert_eq!(d.control_dialog_request(id), Some(old.request.as_str()));
+                // Escape has no closing hook. Recovery saw A’s own denied tool_result.
+                d.observe_signal(
+                    id,
+                    &Signal::DialogEnded { interrupted: true },
+                    now_ms(),
+                    "transcript",
+                );
+                tick(d, id, 2000);
+                let rec = d.board.session(id).unwrap();
+                assert_eq!(rec.state, QUESTION);
+                assert!(rec.dialog_call.is_none());
+                assert!(d.control_dialog_of(rec).is_none(), "phone still offers A");
+                assert!(d.control_dialog_request(id).is_none(), "ticket still names A");
+            });
+        }
+
+        #[test]
+        fn parallel_questions_close_by_call() {
+            run(|d, id| {
+                for name in ["a", "b"] {
+                    ask(d, id, "PreToolUse", name, Some(name));
+                }
+                for name in ["a", "b"] {
+                    ask(d, id, "PermissionRequest", name, None);
+                }
+                ask(d, id, "PostToolUse", "a", Some("a"));
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                ask(d, id, "PostToolUse", "b", Some("b"));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+            });
+        }
+
+        #[test]
+        fn bash_wait_survives_the_leads_answer() {
+            run(|d, id| {
+                let (_, _, old) = held_question(d);
+                let bash =
+                    json!({"agent_id":"fork","tool_name":"Bash","tool_input":{"command":"date"}});
+                send(d, id, "PermissionRequest", bash.clone());
+                assert_eq!(d.control_dialog_request(id), Some(old.request.as_str()));
+                send(
+                    d,
+                    id,
+                    "PostToolUse",
+                    json!({"tool_name":"AskUserQuestion","tool_use_id":old.request}),
+                );
+                tick(d, id, 2000);
+                assert_eq!(
+                    d.board.session(id).unwrap().state,
+                    SessionState::RequiresAction { reason: Reason::Permission }
+                );
+                send(d, id, "PostToolUse", bash);
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+            });
+        }
+
+        #[test]
+        fn late_pre_identifies_the_standing_request() {
+            run(|d, id| {
+                d.board.sessions[0].road = Road::Mod;
+                ask(d, id, "PermissionRequest", "A", None);
+                ask(d, id, "PreToolUse", "A", Some("a"));
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                ask(d, id, "PostToolUse", "A", Some("a"));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+            });
+        }
+
+        #[test]
+        fn restart_between_pre_and_request_still_recognizes_the_denied_result() {
+            run(|d, id| {
+                let lead = d.paths.state_dir.join("session.jsonl");
+                let folder = lead.with_extension("").join("subagents");
+                std::fs::create_dir_all(&folder).unwrap();
+                let child = folder.join("agent-fork.jsonl");
+                d.board.sessions[0].transcript_path = Some(lead.display().to_string());
+                ask(d, id, "PreToolUse", "A", Some("a"));
+                let fresh = Machine::restore(SessionState::unknown(), Confidence::Low, now_ms());
+                d.board.sessions[0].set_state(fresh.state().clone());
+                d.machines.insert(id, fresh);
+                ask(d, id, "PermissionRequest", "A", None);
+                let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use",
+                    "id":"a","name":"AskUserQuestion","input":{"questions":[{"question":"A"}]}}]}});
+                let denied = |call, stamp| {
+                    json!({"type":"user","timestamp":stamp,"message":{"content":[
+                    {"type":"tool_result","is_error":true,"tool_use_id":call}]}})
+                };
+                for (result, open) in [
+                    (denied("a", "2020-01-01T00:00:00Z"), true),
+                    (denied("other", "2099-01-01T00:00:00Z"), true),
+                    (denied("a", "2099-01-01T00:00:00Z"), false),
+                ] {
+                    std::fs::write(&child, format!("{call}\n{result}\n")).unwrap();
+                    d.poll_agent_recovery(RecoveryChannel::Transcript);
+                    assert_eq!(d.board.session(id).unwrap().state == QUESTION, open);
+                }
+            });
+        }
+
+        #[test]
+        fn a_missing_call_and_unreadable_transcript_cannot_hold_red_forever() {
+            run(|d, id| {
+                ask(d, id, "PermissionRequest", "A", None);
+                tick(d, id, attention::STALE_DEMOTE_MS + 1);
+                assert_ne!(d.board.session(id).unwrap().state, QUESTION);
+            });
+        }
+
+        #[test]
+        fn killing_the_waiting_task_ends_its_question() {
+            run(|d, id| {
+                send(d, id, "Stop", json!({"background_tasks":[{"id":"fork","type":"subagent"}]}));
+                tick(d, id, 2000);
+                ask(d, id, "PermissionRequest", "A", None);
+                send(d, id, "ModTasksKilled", json!({"task_ids":["other"]}));
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                send(d, id, "ModTasksKilled", json!({"task_ids":["fork"]}));
+                assert_eq!(
+                    d.board.session(id).unwrap().state,
+                    SessionState::Idle { stop_reason: StopReason::EndTurn }
+                );
+            });
+        }
+
+        #[test]
+        fn throttling_is_revealed_when_the_question_closes() {
+            run(|d, id| {
+                ask(d, id, "PermissionRequest", "A", Some("a"));
+                send(d, id, "StopFailure", json!({"error":"overloaded"}));
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                send(d, id, "SubagentStop", json!({"agent_id":"fork"}));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Throttled);
+            });
+        }
+
+        #[test]
+        fn closing_the_childs_question_leaves_the_leads_hand_up() {
+            run(|d, id| {
+                let mut t = super::super::board_fit_tests::ticket(1, "IN PROGRESS");
+                t.id = d.board.session(id).unwrap().ticket;
+                t.raised = Some(mesimon_core::board::Raised {
+                    at: now_iso(),
+                    by: format!("agent:{id}"),
+                    reason: "Review the branch".into(),
+                });
+                let tid = t.id;
+                d.board.tickets.push(t);
+                ask(d, id, "PermissionRequest", "A", Some("a"));
+                send(d, id, "SubagentStop", json!({"agent_id":"fork"}));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+                assert!(d.board.ticket(tid).unwrap().raised.is_some());
+            });
         }
     }
 
@@ -8321,7 +8527,7 @@ mod tests {
             }]}});
             std::fs::write(sub.join("agent-fork.jsonl"), format!("{result}\n")).unwrap();
             d.poll_agent_recovery(RecoveryChannel::Transcript);
-            assert_eq!(d.board.sessions[0].child_question, call == "other");
+            assert_eq!(d.board.sessions[0].child_dialog, call == "other");
         }
         assert_eq!(d.board.sessions[0].state, SessionState::Running);
     }
@@ -10993,7 +11199,7 @@ mod board_fit_tests {
         assert_eq!(phone_hand(&t, &other), None, "another agent's hand");
     }
 
-    fn ticket(n: u128, column: &str) -> Ticket {
+    pub(super) fn ticket(n: u128, column: &str) -> Ticket {
         Ticket {
             id: ulid::Ulid(n),
             short_key: format!("T-{n}"),

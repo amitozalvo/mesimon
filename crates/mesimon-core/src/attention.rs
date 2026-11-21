@@ -4,7 +4,7 @@
 //! owns one `Machine` per session and applies `Signal`s from the hook stream;
 //! debounce rules are 11 §11.7.4.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -253,7 +253,7 @@ pub enum Signal {
     /// A result in this child's transcript, read independently of hooks.
     ChildResult {
         agent: String,
-        call: String,
+        key: ChildCall,
     },
     /// Native input is ready, with no turn or unresolved attention request.
     /// An empty prompt is not evidence of a successfully completed turn.
@@ -529,8 +529,8 @@ pub struct Decision {
 /// lack its id, so correlate the two by owner and input fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildHook {
-    pub agent: String,
-    pub event: ChildEvent,
+    pub frame: Option<(String, ChildEvent)>,
+    pub ended: Vec<String>,
 }
 
 impl ChildHook {
@@ -541,26 +541,39 @@ impl ChildHook {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildEvent {
-    QuestionStarted { call: String, fingerprint: String },
-    QuestionRequested { call: Option<String>, fingerprint: String },
+    Started { call: String, fingerprint: String, question: bool },
+    Requested { call: Option<String>, fingerprint: String, reason: Reason },
+    Finished { call: Option<String>, fingerprint: String, question: bool },
     Progress,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildCall {
+    Id(String),
+    Input(String),
+}
+
+/// Before PermissionRequest a question is only a candidate. The timestamp
+/// fences old transcript results when the transport could not name the call.
 #[derive(Debug, Clone)]
-struct ChildQuestion {
-    call: Option<String>,
-    fingerprint: String,
+pub struct ChildWait {
+    pub agent: String,
+    pub key: ChildCall,
+    pub fingerprint: String,
+    pub observed_at: u64,
+    reason: Reason,
     waiting: bool,
 }
 
 const CHILD_QUESTION: SessionState = SessionState::RequiresAction { reason: Reason::Question };
+const CHILD_PERMISSION: SessionState = SessionState::RequiresAction { reason: Reason::Permission };
 
 /// Per-session machine. `apply` handles a signal (enters are immediate, leaves
 /// are scheduled); `tick` fires scheduled work. All times are epoch ms,
 /// injected by the caller.
 #[derive(Debug, Clone)]
 pub struct Machine {
-    child_questions: BTreeMap<String, ChildQuestion>,
+    child_waits: Vec<ChildWait>,
     state: SessionState,
     confidence: Confidence,
     entered_at: u64,
@@ -679,7 +692,7 @@ impl Machine {
             StopReason::EndTurn
         };
         Self {
-            child_questions: BTreeMap::new(),
+            child_waits: Vec::new(),
             state,
             confidence,
             entered_at: now,
@@ -699,37 +712,43 @@ impl Machine {
     }
 
     pub fn state(&self) -> &SessionState {
-        if self.showing_child_question() {
-            &CHILD_QUESTION
-        } else {
-            &self.state
-        }
+        self.visible_child_dialog().unwrap_or(&self.state)
     }
 
-    /// The lead continues its own settle and park clocks behind a child.
     pub fn lead_state(&self) -> &SessionState {
         &self.state
     }
 
-    pub fn showing_child_question(&self) -> bool {
-        matches!(
+    pub fn showing_child_dialog(&self) -> bool {
+        self.visible_child_dialog().is_some()
+    }
+
+    fn visible_child_dialog(&self) -> Option<&'static SessionState> {
+        if !matches!(
             self.state,
             SessionState::Running
                 | SessionState::Idle { .. }
                 | SessionState::Unknown { .. }
                 | SessionState::Spawning
-        ) && self.child_questions.values().any(|q| q.waiting)
+                | SessionState::Throttled
+        ) {
+            return None;
+        }
+        let mut waits = self.child_waits();
+        let first = waits.next()?;
+        if first.reason == Reason::Question || waits.any(|w| w.reason == Reason::Question) {
+            Some(&CHILD_QUESTION)
+        } else {
+            Some(&CHILD_PERMISSION)
+        }
     }
 
-    pub fn child_question_calls(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.child_questions
-            .iter()
-            .filter(|(_, q)| q.waiting)
-            .filter_map(|(agent, q)| Some((agent.as_str(), q.call.as_deref()?)))
+    pub fn child_waits(&self) -> impl Iterator<Item = &ChildWait> {
+        self.child_waits.iter().filter(|w| w.waiting)
     }
 
     pub fn confidence(&self) -> Confidence {
-        if self.showing_child_question() {
+        if self.showing_child_dialog() {
             Confidence::High
         } else {
             self.confidence
@@ -774,7 +793,7 @@ impl Machine {
             pinned_until: self.pinned_until,
             idle_teammates: self.idle_teammates.len(),
             compacting: self.compacting_since.is_some(),
-            pending: self.pending.as_ref().filter(|_| !self.showing_child_question()).map(|p| {
+            pending: self.pending.as_ref().filter(|_| !self.showing_child_dialog()).map(|p| {
                 PendingView { state: p.to.clone(), confidence: p.confidence, deadline: p.deadline }
             }),
         }
@@ -828,37 +847,88 @@ impl Machine {
         (change, Decision { signal, outcome, before, after })
     }
 
-    fn observe_child(&mut self, agent: &str, event: &ChildEvent) {
-        // The transport is untrusted. Keep the same bound as the task
-        // registry, and always accept progress for an owner already known.
-        if self.child_questions.len() >= 1024 && !self.child_questions.contains_key(agent) {
-            return;
-        }
-        match event {
-            ChildEvent::QuestionStarted { call, fingerprint } => {
-                self.child_questions.insert(
-                    agent.to_owned(),
-                    ChildQuestion {
-                        call: Some(call.clone()),
-                        fingerprint: fingerprint.clone(),
-                        waiting: false,
-                    },
-                );
+    fn observe_child(&mut self, agent: &str, event: &ChildEvent, now: u64) {
+        let (call, fingerprint, reason, request) = match event {
+            ChildEvent::Started { call, fingerprint, question } => {
+                let reason = if *question { Reason::Question } else { Reason::Permission };
+                (Some(call), fingerprint, reason, false)
             }
-            ChildEvent::QuestionRequested { call, fingerprint } => {
-                let previous = self.child_questions.remove(agent);
-                let call = call
-                    .clone()
-                    .or_else(|| previous.filter(|q| q.fingerprint == *fingerprint)?.call);
-                self.child_questions.insert(
-                    agent.to_owned(),
-                    ChildQuestion { call, fingerprint: fingerprint.clone(), waiting: true },
-                );
+            ChildEvent::Requested { call, fingerprint, reason } => {
+                (call.as_ref(), fingerprint, *reason, true)
+            }
+            ChildEvent::Finished { call, fingerprint, question } => {
+                let found = self.child_waits.iter().position(|w| {
+                    w.agent == agent
+                        && match &w.key {
+                            ChildCall::Id(id) => call.as_ref() == Some(id),
+                            ChildCall::Input(input) => input == fingerprint,
+                        }
+                });
+                if let Some(index) = found {
+                    self.child_waits.remove(index);
+                } else if !question {
+                    self.child_progress(agent);
+                }
+                return;
             }
             ChildEvent::Progress => {
-                self.child_questions.remove(agent);
+                self.child_progress(agent);
+                return;
             }
+        };
+
+        // A known call id wins. Join an id-less request to a candidate of
+        // the same input, or a late PreToolUse to the unidentified request.
+        let same_input = |w: &ChildWait| w.agent == agent && w.fingerprint == *fingerprint;
+        let found = match call {
+            Some(id) => self
+                .child_waits
+                .iter()
+                .position(|w| {
+                    w.agent == agent && matches!(&w.key, ChildCall::Id(known) if known == id)
+                })
+                .or_else(|| {
+                    self.child_waits
+                        .iter()
+                        .position(|w| same_input(w) && matches!(w.key, ChildCall::Input(_)))
+                }),
+            None => self
+                .child_waits
+                .iter()
+                .position(|w| same_input(w) && !w.waiting)
+                .or_else(|| self.child_waits.iter().position(same_input)),
+        };
+        if let Some(i) = found {
+            let w = &mut self.child_waits[i];
+            if let Some(id) = call {
+                w.key = ChildCall::Id(id.clone());
+            }
+            w.waiting |= request;
+            w.observed_at = now;
+        } else if !request && reason == Reason::Permission {
+            // An ordinary tool starting after Escape is the child's progress.
+            self.child_progress(agent);
+        } else if self.child_waits.len() < 1024 {
+            let key = call
+                .cloned()
+                .map(ChildCall::Id)
+                .unwrap_or_else(|| ChildCall::Input(fingerprint.clone()));
+            self.child_waits.push(ChildWait {
+                agent: agent.into(),
+                key,
+                fingerprint: fingerprint.clone(),
+                observed_at: now,
+                reason,
+                waiting: request,
+            });
         }
+    }
+
+    fn child_progress(&mut self, agent: &str) {
+        // A different tool after Escape closes a lone wait. With simultaneous
+        // dialogs only a named result or the end of the owner identifies what closed.
+        let parallel = self.child_waits().filter(|w| w.agent == agent).nth(1).is_some();
+        self.child_waits.retain(|w| w.agent != agent || (parallel && w.waiting));
     }
 
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
@@ -867,32 +937,25 @@ impl Machine {
                 if matches!(m.state, SessionState::Sleeping | SessionState::Exited { .. }) {
                     return None;
                 }
-                m.observe_child(&child.agent, &child.event);
+                m.child_waits.retain(|w| !child.ended.contains(&w.agent));
+                if let Some((agent, event)) = &child.frame {
+                    m.observe_child(agent, event, now);
+                }
                 lead.as_deref().and_then(|signal| {
-                    if matches!(signal, Signal::PermissionRequest | Signal::PermissionDenied)
-                        && matches!(
-                            m.state,
-                            SessionState::RequiresAction {
-                                reason: Reason::Question | Reason::Plan
-                            }
-                        )
+                    if child.frame.is_some()
+                        && matches!(signal, Signal::PermissionRequest | Signal::PermissionDenied)
                     {
                         return None;
                     }
                     m.apply_lead(signal, now)
                 })
             }
-            Signal::ChildResult { agent, call } => {
-                if m.child_questions
-                    .get(agent)
-                    .is_some_and(|q| q.waiting && q.call.as_ref() == Some(call))
-                {
-                    m.child_questions.remove(agent);
-                }
+            Signal::ChildResult { agent, key } => {
+                m.child_waits.retain(|w| !(w.waiting && w.agent == *agent && w.key == *key));
                 None
             }
             Signal::Notification { kind: NotificationKind::PermissionPrompt }
-                if m.child_questions.values().any(|q| q.waiting) =>
+                if m.child_waits().next().is_some() =>
             {
                 None
             }
@@ -905,7 +968,7 @@ impl Machine {
                             source: StartSource::Clear | StartSource::Resume | StartSource::Startup
                         }
                 ) {
-                    m.child_questions.clear();
+                    m.child_waits.clear();
                 }
                 m.apply_lead(sig, now)
             }
@@ -919,11 +982,11 @@ impl Machine {
         now: u64,
         reduce: impl FnOnce(&mut Self) -> Option<Change>,
     ) -> Option<Change> {
-        let child_before = self.showing_child_question();
+        let child_before = self.showing_child_dialog();
         let from = self.state().clone();
         let before = self.confidence();
         let change = reduce(self);
-        let child_after = self.showing_child_question();
+        let child_after = self.showing_child_dialog();
         if !child_before && !child_after {
             return change;
         }
@@ -1114,7 +1177,15 @@ impl Machine {
     /// `MESIMON_PARK_STALE_MS` seam, so an e2e reaches a demoted park in
     /// seconds. Everything else in the tick is the same.
     pub fn tick_parked(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
-        self.project_change(now, |m| m.tick_lead(now, park_stale_ms))
+        self.project_change(now, |m| {
+            // A lost PreToolUse can leave no call to probe. Without fresh
+            // evidence the anonymous wait has the ordinary attention deadline.
+            m.child_waits.retain(|w| {
+                (w.waiting && matches!(w.key, ChildCall::Id(_)))
+                    || now.saturating_sub(w.observed_at) < STALE_DEMOTE_MS
+            });
+            m.tick_lead(now, park_stale_ms)
+        })
     }
 
     fn tick_lead(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
@@ -1629,28 +1700,36 @@ mod tests {
     #[test]
     fn a_forks_result_is_scoped_to_its_question_and_the_lead_keeps_its_own() {
         let mut m = m(SessionState::Running);
-        let child = |event| ChildHook { agent: "fork".into(), event }.scoped(None);
+        let child =
+            |event| ChildHook { frame: Some(("fork".into(), event)), ended: vec![] }.scoped(None);
         let request = |fingerprint: &str| {
-            child(ChildEvent::QuestionRequested { call: None, fingerprint: fingerprint.into() })
+            child(ChildEvent::Requested {
+                call: None,
+                fingerprint: fingerprint.into(),
+                reason: Reason::Question,
+            })
         };
-        let pre =
-            child(ChildEvent::QuestionStarted { call: "a".into(), fingerprint: "amber".into() });
-        let result = Signal::ChildResult { agent: "fork".into(), call: "a".into() };
+        let pre = child(ChildEvent::Started {
+            call: "a".into(),
+            fingerprint: "amber".into(),
+            question: true,
+        });
+        let result = Signal::ChildResult { agent: "fork".into(), key: ChildCall::Id("a".into()) };
         assert!(m.apply(&pre, 0).is_none());
         m.apply(&request("azure"), 1).unwrap();
         assert!(m.apply(&result, 2).is_none(), "a differently worded request has no known call");
-        assert!(m.showing_child_question());
+        assert!(m.showing_child_dialog());
         m.apply(&child(ChildEvent::Progress), 3).unwrap();
         m.apply(&pre, 4);
         m.apply(&request("amber"), 5).unwrap();
-        assert_eq!(m.child_question_calls().collect::<Vec<_>>(), [("fork", "a")]);
+        assert_eq!(m.child_waits().next().unwrap().key, ChildCall::Id("a".into()));
 
         // Ownership crosses even though the public reason is unchanged.
         let question = Signal::PreToolUse { tool: AttentionTool::AskUserQuestion };
         let changed = m.apply(&question, 6).unwrap();
         assert_eq!(changed.from, changed.to);
         assert!(!changed.attention_added);
-        assert!(!m.showing_child_question());
+        assert!(!m.showing_child_dialog());
         assert!(m.apply(&result, 7).is_none());
         assert_eq!(m.state(), &CHILD_QUESTION);
         assert!(m.view().pending.is_none());

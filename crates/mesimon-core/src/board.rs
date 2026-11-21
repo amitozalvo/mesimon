@@ -530,10 +530,10 @@ pub struct SessionRecord {
     /// next finished turn for good. Sorted, deduplicated.
     #[serde(default)]
     pub idle_teammates: Vec<String>,
-    /// The visible question belongs to a child. Its next frame may arrive
+    /// The visible question or permission prompt belongs to a child. Its next frame may arrive
     /// during daemon downtime, so a restart must re-observe this wait.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub child_question: bool,
+    #[serde(default, skip_serializing_if = "is_false", alias = "child_question")]
+    pub child_dialog: bool,
     /// Where a park on tasks lands when the park clock runs out, as the last
     /// top-level `Stop` said (`attention::Machine::park_fallback`, T-483):
     /// `Monitoring` beside a live shell or watch, `EndTurn` beside teammates
@@ -819,7 +819,7 @@ impl SessionRecord {
             codex_plan_dismissed_turn: None,
             codex_plan_owed: false,
             idle_teammates: Vec::new(),
-            child_question: false,
+            child_dialog: false,
             park_fallback: None,
             background_tasks: Default::default(),
             plan_note: None,
@@ -883,7 +883,10 @@ impl SessionRecord {
         self.lost_during_turn = self.kind.is_agent()
             && matches!(state, SessionState::Unknown { .. })
             && self.observed_in_turn();
-        self.child_question &= state == (SessionState::RequiresAction { reason: Reason::Question });
+        self.child_dialog &= matches!(
+            state,
+            SessionState::RequiresAction { reason: Reason::Question | Reason::Permission }
+        );
         self.tasks_need_you &= state.on_tasks();
         self.state = state;
     }

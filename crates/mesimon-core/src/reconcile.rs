@@ -39,7 +39,7 @@ pub struct Reconciled {
 
 /// A child's dialog may have closed without a hook during downtime.
 pub fn restored_state(link: &Link, record: &SessionRecord) -> SessionState {
-    if record.child_question && matches!(link, Link::Live { .. }) {
+    if record.child_dialog && matches!(link, Link::Live { .. }) {
         return SessionState::Unknown { reason: UnknownReason::DaemonRestarted };
     }
     state_for(link, &record.state, record.kind.is_agent())
@@ -179,7 +179,7 @@ mod tests {
     fn restart_forgets_only_the_child_owned_question_in_a_live_pane() {
         let question = SessionState::RequiresAction { reason: crate::board::Reason::Question };
         let mut r = rec(question.clone());
-        r.child_question = true;
+        r.child_dialog = true;
         let bytes = serde_json::to_vec(&r).unwrap();
         let mut restored: SessionRecord = serde_json::from_slice(&bytes).unwrap();
         let link = Link::Live { session_name: r.sid16(), pane_pid: 42 };
@@ -188,9 +188,9 @@ mod tests {
             restored.state,
             SessionState::Unknown { reason: UnknownReason::DaemonRestarted }
         );
-        assert!(!restored.child_question);
+        assert!(!restored.child_dialog);
         let mut older = serde_json::to_value(r).unwrap();
-        older.as_object_mut().unwrap().remove("child_question");
+        older.as_object_mut().unwrap().remove("child_dialog");
         let lead: SessionRecord = serde_json::from_value(older).unwrap();
         assert_eq!(restored_state(&link, &lead), question);
     }

@@ -49460,12 +49460,12 @@ needs-you/Question at PermissionRequest. Matching the child and question
 input recovers the call ID for transcript evidence. The native pane owns
 the answer. A lead question or plan keeps its request and card throughout.
 
-The lead still settles and parks behind a child’s question. A matching
-result in that child’s transcript or its next hook frame releases its wait,
-including a new tool after Escape. A sibling can answer or stop while the
-other child still needs a person. Once the last wait closes the board shows
+The lead still settles and parks behind a child’s question. Its next ordinary
+tool after Escape releases a lone wait. Parallel dialogs close by call, and
+a child’s stop closes that child’s waits. A sibling can answer or stop while
+the other child still needs a person. Once the last wait closes the board shows
 the state the lead has reached. The persisted record marks a visible
-child-owned question. After daemon downtime a live pane with that marker
+child-owned question or tool permission. After daemon downtime a live pane with that marker
 starts at Unknown/DaemonRestarted, low confidence, because Escape or progress
 could have gone unobserved. Older records and lead-owned dialogs retain
 their existing restart behavior.
@@ -49474,3 +49474,37 @@ Replays cover the lead parking before an answer, Escape followed by another
 tool, and two children asking concurrently. Daemon tests check the lead’s
 original card and call and the matching denied result. Restart reconciliation
 is tested through a serialized session record, including the older shape.
+
+### Cold review of bcc74828
+
+Nine daemon regressions cover the eight findings. All eight reproduced
+against the original implementation. The card-cache case required Escape’s
+transcript result. A subsequent lead PreToolUse already retired the cache.
+
+1. When the lead’s refusal settles onto a fork’s question, the daemon closes
+   the cached lead request. The phone and ticket lose its options and ID
+   together. The lead retains both for as long as its own dialog stands.
+2. Each child can have several outstanding calls. An id-less request takes
+   its matching input from the pending calls. Answering A leaves B open.
+3. A fork’s Bash permission waits behind a lead question or plan. Answering
+   the lead reveals Permission, and the fork’s own completion releases it.
+4. A late PreToolUse identifies a standing request without reopening or
+   downgrading it. The regression sends the frames on the mod road.
+5. A restart may lose the PreToolUse. In the child transcript an exact
+   tool/input match identifies the call, and a result for that ID dated
+   since the request closes it. An old result or another call’s result
+   leaves it open. Without identifiable evidence an anonymous wait expires
+   at the ordinary 15-minute stale deadline.
+6. A task kill or terminal report retires the waits of the children it names.
+   Killing the final parked child can expose Idle/EndTurn immediately.
+7. A fork’s question stays visible while the lead is throttled. Its answer
+   or stop reveals the throttle if it still stands.
+8. Leaving a child-owned dialog preserves the hand the lead raised for
+   something else. The daemon judges the hand against the departing owner.
+
+Verification passed with 83 attention tests, 3,385 workspace unit tests
+(13 ignored), 122 focused e2es and 26 further e2es on mod transport. Both
+fixture audits were clean. The first regression build needed a shared test
+helper made visible. The first cache test took the later-tool hook path and
+passed before the fix. Replaying the transcript-only departure exposed the
+stale request, and all nine regressions passed after the fixes.

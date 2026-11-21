@@ -17,26 +17,79 @@ use crate::ingest::HookFrame;
 /// Keep the owning child beside the ordinary signal. A child may continue
 /// after declining a question without a PostToolUse for that question.
 pub fn child_hook(frame: &HookFrame) -> Option<mesimon_core::attention::ChildHook> {
-    use mesimon_core::attention::ChildEvent;
-    let Some(agent) =
-        frame.payload["agent_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128)
-    else {
-        return None;
-    };
-    let question = interaction_tool(frame) == Some(AttentionTool::AskUserQuestion);
-    let call = frame.payload["tool_use_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 256);
-    let fingerprint = || interaction_print("AskUserQuestion", &frame.payload["tool_input"]);
-    let event = match (frame.event.as_str(), question, call) {
-        ("PreToolUse", true, Some(call)) => {
-            ChildEvent::QuestionStarted { call: call.into(), fingerprint: fingerprint() }
+    use mesimon_core::{attention::ChildEvent, board::Reason};
+    let p = &frame.payload;
+    let owner = p["agent_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 128);
+    let event = frame.event.as_str();
+    let child = owner.map(|agent| {
+        let tool = p["tool_name"].as_str().filter(|s| s.len() <= 256).unwrap_or("");
+        let question = tool == "AskUserQuestion";
+        let call = p["tool_use_id"].as_str().filter(|s| !s.is_empty() && s.len() <= 256);
+        let fingerprint = || interaction_print(tool, &p["tool_input"]);
+        let step = match (event, call) {
+            ("PreToolUse", Some(call)) => {
+                ChildEvent::Started { call: call.into(), fingerprint: fingerprint(), question }
+            }
+            ("PermissionRequest", _) if tool != "ExitPlanMode" => ChildEvent::Requested {
+                call: call.map(str::to_owned),
+                fingerprint: fingerprint(),
+                reason: if question { Reason::Question } else { Reason::Permission },
+            },
+            ("PostToolUse" | "PostToolUseFailure" | "PermissionDenied", _) => {
+                ChildEvent::Finished {
+                    call: call.map(str::to_owned),
+                    fingerprint: fingerprint(),
+                    question,
+                }
+            }
+            _ => ChildEvent::Progress,
+        };
+        (agent.to_owned(), step)
+    });
+
+    // Task lifecycle reports can name a different child from the sender,
+    // including a panel kill which has no sender agent_id at all.
+    let mut ended = Vec::new();
+    let mut end = |id: Option<&str>| {
+        if let Some(id) = id.filter(|s| !s.is_empty() && s.len() <= 128) {
+            ended.push(id.to_owned());
         }
-        ("PermissionRequest", true, call) => ChildEvent::QuestionRequested {
-            call: call.map(str::to_owned),
-            fingerprint: fingerprint(),
-        },
-        _ => ChildEvent::Progress,
     };
-    Some(mesimon_core::attention::ChildHook { agent: agent.to_owned(), event })
+    match event {
+        "SubagentStop" => end(owner),
+        mesimon_core::road::MOD_TASKS_KILLED if p["agent_id"].as_str().is_none() => {
+            for id in killed_tasks(frame) {
+                end(Some(id));
+            }
+        }
+        "PostToolUse" => {
+            let result = &p["tool_response"];
+            match p["tool_name"].as_str() {
+                Some("TaskStop") => end(p["tool_input"]["task_id"].as_str()),
+                Some("Task" | "Agent") if terminal_task(result) => end(result["agentId"].as_str()),
+                Some("TaskOutput") if terminal_task(&result["task"]) => {
+                    end(result["task"]["task_id"].as_str())
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    if matches!(event, "Stop" | "SubagentStop") {
+        for task in background_tasks(frame).filter(|t| terminal_task(t)) {
+            end(task["id"].as_str());
+        }
+    }
+    (child.is_some() || !ended.is_empty())
+        .then_some(mesimon_core::attention::ChildHook { frame: child, ended })
+}
+
+fn terminal_task(task: &Value) -> bool {
+    task["status"].as_str().is_some_and(|s| !is_live_status(s))
+}
+
+fn killed_tasks(frame: &HookFrame) -> impl Iterator<Item = &str> {
+    frame.payload["task_ids"].as_array().into_iter().flatten().filter_map(Value::as_str).take(64)
 }
 
 /// A plan's or a question's print (T-957 round 12): the tool and the first
@@ -157,8 +210,7 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
     // follows, so the lead's own ids end here. The last one gone from a
     // registry that held work is the park's end.
     if frame.event == mesimon_core::road::MOD_TASKS_KILLED && owner.is_none() {
-        let ids = frame.payload.get("task_ids").and_then(Value::as_array);
-        for id in ids.into_iter().flatten().filter_map(Value::as_str).take(64) {
+        for id in killed_tasks(frame) {
             tasks.record(id, None, None, Transition::Completed, None);
         }
         return (before != Liveness::None && tasks.liveness() == Liveness::None)
