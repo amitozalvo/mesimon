@@ -381,9 +381,10 @@ that every fixture reported `cleaned`. `--jobs N` caps build jobs and test threa
 default, so the plain cargo commands stay the inner loop at their usual speed. Checks run once by
 default; release verification uses `--both-roads` to add the full mod pass, which runs **beside**
 the first pass (T-1101): it waits on cargo's lock while the suite builds, then both roads run
-their tests at once, each at `--jobs N` threads, the mod road's lines prefixed `mod | `. A
+their tests at once, with the mod road's lines prefixed `mod | `. A
 single-road stamp does not satisfy the release gate. `ci/release-prepare.sh` wraps the gate for
-a release and warms the release builds beside it (the release skill has the order).
+a release and warms the release builds beside it (the release skill has the order). It uses
+Cargo and nextest's default parallelism unless invoked with `--jobs N`.
 
 For a long check, start the runner in the background and keep the path on its first
 `Completion record` line. Read it after the background notification, or wait for a bounded

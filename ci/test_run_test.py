@@ -427,6 +427,8 @@ fn audited() {
             red = run("bash", "ci/release-prepare.sh", check=False)
             log = (pkg / "target/release-prepare/gate.log").read_text()
             self.assertNotEqual(red.returncode, 0, red.stdout)
+            self.assertIn("(ci/test-run.py --both-roads --exclusive)", red.stdout)
+            self.assertNotIn("build/test workers", log)
             self.assertTrue((root / "mod-finished").exists(), log)
             for name in ("audited-hooks", "new-mod", "other-mod"):
                 self.assertTrue((root / name).exists(), name)
@@ -454,8 +456,10 @@ fn audited() {
             # A fresh full green gate at the same SHA still earns its stamp.
             for name in ("hooks-neighbor", "mod-neighbor"):
                 (root / name).unlink()
-            green = run("bash", "ci/release-prepare.sh", check=False)
+            green = run("bash", "ci/release-prepare.sh", "--jobs", "2", check=False)
             self.assertEqual(green.returncode, 0, green.stdout)
+            self.assertIn("(ci/test-run.py --both-roads --exclusive --jobs 2)", green.stdout)
+            self.assertIn("2 build/test workers", (pkg / "target/release-prepare/gate.log").read_text())
             self.assertEqual(json.loads(stamp.read_text())["sha"], candidate)
             self.assertEqual(json.loads(stamp.read_text())["roads"], ["hooks", "mod"])
 

@@ -49287,3 +49287,16 @@ waits for the worker's own new `submit_unacked` feed entry.
 
 T-1148 had already raised this test's individual timeout to 180 s. All four
 cases now use the ordinary 120 s limit.
+
+## Release preparation uses Cargo and nextest's default parallelism (T-1391, 2026-11-21)
+
+On the same commit (`a5ddaa07`), T-1385 measured the exclusive two-road gate at
+10m 07s with default threads, 13m 46s with eight jobs and 18m 13s with six.
+The default-thread run passed both roads. T-1107 split the crown ask receipt
+test that had approached nextest's 120 s limit. Its “Default-thread gate timings”
+note records about 22 s for the receipt test under full-suite load and a green
+two-road gate at default threads.
+
+Those runs refuted the need for a host-wide precaution. Six jobs guarded one slow
+test. Release preparation now leaves parallelism to Cargo and nextest by default
+and accepts `--jobs N` as an override. The next release measures the new default.

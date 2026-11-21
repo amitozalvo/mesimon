@@ -3,8 +3,8 @@
 # On the committed candidate: ci/release-prepare.sh [--jobs N]
 # After fast-forwarding main to a worktree candidate: ci/release-prepare.sh --handoff
 #
-# Both roads get six test threads by default (T-1101). Once their test build
-# finishes, the release builds run beside the tests. Worktrees hand off only
+# Cargo and nextest choose their own parallelism unless --jobs is set. Once
+# the test build finishes, the release builds run beside the tests. Worktrees hand off only
 # the three finished binaries and the original two-road stamp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -32,11 +32,11 @@ if [ "$#" = 1 ] && [ "$1" = --handoff ]; then
   exit
 fi
 
-jobs=6
+gate_args=(--both-roads --exclusive)
 while [ $# -gt 0 ]; do
   case "$1" in
-    --jobs) jobs=${2:?--jobs needs a number}; shift 2 ;;
-    --jobs=*) jobs=${1#--jobs=}; shift ;;
+    --jobs) gate_args+=(--jobs "${2:?--jobs needs a number}"); shift 2 ;;
+    --jobs=*) gate_args+=(--jobs "${1#--jobs=}"); shift ;;
     *) die "unknown argument: $1" "ci/release-prepare.sh [--lint | --jobs N | --handoff]" ;;
   esac
 done
@@ -79,8 +79,8 @@ uptime
 
 # --- the gate, then the warm-up beside it ------------------------------------
 
-step "the gate: both roads, side by side (ci/test-run.py --both-roads --exclusive --jobs $jobs)"
-MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --both-roads --exclusive --jobs "$jobs" \
+step "the gate: both roads, side by side (ci/test-run.py ${gate_args[*]})"
+MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py "${gate_args[@]}" \
   > "$logs/gate.log" 2>&1 &
 gate=$!
 trap 'kill -TERM $gate 2>/dev/null || true' EXIT

@@ -7,8 +7,8 @@ adds the mod road's pass to a recognized full-workspace suite: the `mesimon`
 integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine.
 Nextest skips exact cases audited as independent in mod-road-independent.txt. The two
 passes run side by side (T-1101): the mod pass waits on cargo's own lock while
-the first pass builds, then both run their tests at once, each at --jobs N
-threads, so both roads take about one road's time (the e2es wait on their own
+the first pass builds, then both run their tests at once. The --jobs cap applies
+to each road when supplied. Both roads take about one road's time (the e2es wait on their own
 timers and barely use the CPU, T-1023). Release verification requests both
 explicitly; a one-road stamp is not a release gate. --one-road remains an
 explicit spelling of the default for existing callers. The deadline is 1200 s

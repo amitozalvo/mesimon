@@ -33,9 +33,9 @@ road, binary and test as `passed-alone` or `failed-alone`. A rerun that could no
 `inconclusive`. Any red in the full runs leaves the gate red and writes no stamp. Bring the
 named results to the person for any exception to the two-green-roads requirement.
 
-Use the default of six jobs per road. T-1101 measured 1,071 s on hooks and 1,038 s on mod at
-six. The observed four-job and six-job gates used different candidates. Record the job count,
-road summaries and elapsed gate time at the next real release before changing the default.
+Run `ci/release-prepare.sh` with Cargo and nextest's default parallelism. Pass `--jobs N`
+to cap Cargo build jobs and nextest threads per road. At the next release, record the
+parallelism used, both road summaries and elapsed gate time.
 Logs land in `target/release-prepare/`.
 
 Resolve `../mesimon-relay` relative to the main mesimon checkout. Use the resolved absolute
