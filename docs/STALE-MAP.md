@@ -49539,3 +49539,7 @@ The focused batch passed 123 e2es and the mod pass passed 27. Both fixture
 audits were clean. The Bash approval replay failed before the fix and passed
 on both transports. The five daemon replays failed before the fix and
 passed with the previous round’s nine cases.
+
+**Known open (low).** When a fork’s Bash approval has no call ID and
+the command finishes quickly, the lead can still show Permission after
+`PostToolUse` until the next transcript poll clears the wait.
