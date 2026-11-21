@@ -36,11 +36,7 @@ pub fn child_hook(frame: &HookFrame) -> Option<mesimon_core::attention::ChildHoo
                 reason: if question { Reason::Question } else { Reason::Permission },
             },
             ("PostToolUse" | "PostToolUseFailure" | "PermissionDenied", _) => {
-                ChildEvent::Finished {
-                    call: call.map(str::to_owned),
-                    fingerprint: fingerprint(),
-                    question,
-                }
+                ChildEvent::Finished { call: call.map(str::to_owned), fingerprint: fingerprint() }
             }
             _ => ChildEvent::Progress,
         };

@@ -4666,10 +4666,16 @@ impl Daemon {
     fn recovery_record<'a>(
         record: &'a SessionRecord,
         machine: Option<&Machine>,
+        status: bool,
     ) -> std::borrow::Cow<'a, SessionRecord> {
         if let Some(m) = machine.filter(|_| record.child_dialog) {
             let mut lead = record.clone();
-            lead.state = m.lead_state().clone();
+            if let Some(since) = m.child_permission_since().filter(|_| status) {
+                lead.state_changed_at = Some(since);
+            } else {
+                lead.state = m.lead_state().clone();
+                lead.child_dialog = false;
+            }
             std::borrow::Cow::Owned(lead)
         } else {
             std::borrow::Cow::Borrowed(record)
@@ -4698,9 +4704,13 @@ impl Daemon {
             let recovery = self.recovery.entry(record.id).or_insert_with(|| adapter.recovery());
             let machine = self.machines.get(&record.id);
             let child_transcript = channel == RecoveryChannel::Transcript
-                && machine.is_some_and(|m| m.child_waits().next().is_some());
+                && machine.is_some_and(Machine::has_child_wait);
             if child_transcript
-                || recovery.needs_poll(&Self::recovery_record(record, machine), channel, now)
+                || recovery.needs_poll(
+                    &Self::recovery_record(record, machine, channel == RecoveryChannel::Status),
+                    channel,
+                    now,
+                )
             {
                 candidates.push((record.id, record.sid16()));
             }
@@ -4805,15 +4815,14 @@ impl Daemon {
         let mut observations = Vec::new();
         if matches!(sample, RecoverySample::Transcript) {
             if let (Some(m), Some(path)) = (machine, record.transcript_path.as_deref()) {
-                for wait in m.child_waits() {
-                    if crate::agents::claude::tail::child_answered(std::path::Path::new(path), wait)
-                    {
+                for agent in m.waiting_children() {
+                    if let Some(evidence) = crate::agents::claude::tail::child_transcript(
+                        std::path::Path::new(path),
+                        agent,
+                    ) {
                         observations.push(crate::agents::RecoveryObservation {
-                            signal: Signal::ChildResult {
-                                agent: wait.agent.clone(),
-                                key: wait.key.clone(),
-                            },
-                            source: "child_dialog_result",
+                            signal: Signal::ChildTranscript { agent: agent.into(), evidence },
+                            source: "tail",
                             preview: None,
                             dialog: None,
                         });
@@ -4822,8 +4831,8 @@ impl Daemon {
             }
         }
         let child_transcript = matches!(sample, RecoverySample::Transcript)
-            && machine.is_some_and(|m| m.child_waits().next().is_some());
-        let lead = Self::recovery_record(record, machine);
+            && machine.is_some_and(Machine::has_child_wait);
+        let lead = Self::recovery_record(record, machine, matches!(sample, RecoverySample::Status));
         if !child_transcript || recovery.needs_poll(&lead, RecoveryChannel::Transcript, now) {
             observations.extend(recovery.poll(&lead, sample, now));
         }
@@ -4833,7 +4842,9 @@ impl Daemon {
             // its state claims wait: dropping the whole sample would lose
             // dialog results and leave the next turn on an old cursor.
             if self.async_stop_pending(id)
-                && !matches!(observation.signal, Signal::ChildResult { .. })
+                && !matches!(observation.signal, Signal::ChildTranscript { .. })
+                && !(matches!(observation.signal, Signal::StatusFilePermissionResumed)
+                    && self.machines.get(&id).and_then(Machine::child_permission_since).is_some())
             {
                 let ticket = self.board.session(id).map(|r| r.ticket);
                 self.feed.board_outcome(
@@ -8646,6 +8657,10 @@ impl Daemon {
         if rec.child_dialog {
             rec.dialog_call = None;
             rec.dialog_print = None;
+        }
+        if rec.child_dialog != was_child_dialog {
+            rec.detail = None;
+            self.crown_answer_lines.remove(&id);
         }
         rec.set_state(change.to.clone());
         rec.confidence = change.confidence;

@@ -11,37 +11,36 @@ use mesimon_core::adopt::{
     classify_tail_record, record_ms, turn_edge, TailEvent, TailTool, ToolLedger, TurnEdge,
 };
 
-/// A fork's result lives beside the lead transcript. Only use an agent id
-/// as a single file component, and only close the named tool call.
-pub fn child_answered(lead: &Path, wait: &mesimon_core::attention::ChildWait) -> bool {
-    use mesimon_core::attention::ChildCall;
-    let agent = &wait.agent;
+/// Read a fork once per poll, preserving tool_use order within each message
+/// and across records. The attention machine owns the matching requests.
+pub fn child_transcript(
+    lead: &Path,
+    agent: &str,
+) -> Option<mesimon_core::attention::ChildTranscript> {
     if !agent.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
-        return false;
+        return None;
     }
     let path = lead.with_extension("").join("subagents").join(format!("agent-{agent}.jsonl"));
-    let Some(mut records) = tail_records(&path) else { return false };
-    if let ChildCall::Id(call) = &wait.key {
-        return records.any(|v| carries_result_of(&v, call));
-    }
-    // Restart can lose the PreToolUse. Walk newest first: a result since
-    // this request must belong to a call with this tool and this exact input.
-    let mut results = std::collections::HashSet::new();
-    for row in records {
+    let mut evidence = mesimon_core::attention::ChildTranscript::default();
+    let rows: Vec<_> = tail_records(&path)?.collect();
+    for row in rows.iter().rev() {
         let blocks = row["message"]["content"].as_array().into_iter().flatten();
         match row["type"].as_str() {
-            Some("user") if record_ms(&row).is_some_and(|at| at >= wait.observed_at) => {
-                results.extend(
-                    blocks
-                        .filter(|b| b["type"] == "tool_result")
-                        .filter_map(|b| b["tool_use_id"].as_str().map(str::to_owned)),
-                );
+            Some("user") => {
+                for block in blocks.filter(|b| b["type"] == "tool_result") {
+                    if let Some(id) = block["tool_use_id"].as_str() {
+                        evidence.results.insert(id.into(), record_ms(row));
+                    }
+                }
             }
             Some("assistant") => {
-                for b in blocks.filter(|b| b["type"] == "tool_use") {
-                    if let (Some(tool), Some(id)) = (b["name"].as_str(), b["id"].as_str()) {
-                        if super::hooks::interaction_print(tool, &b["input"]) == wait.fingerprint {
-                            return results.contains(id);
+                for block in blocks.filter(|b| b["type"] == "tool_use") {
+                    if let (Some(tool), Some(id)) = (block["name"].as_str(), block["id"].as_str()) {
+                        if !id.is_empty() && id.len() <= 256 && tool.len() <= 256 {
+                            evidence.calls.push((
+                                id.into(),
+                                super::hooks::interaction_print(tool, &block["input"]),
+                            ));
                         }
                     }
                 }
@@ -49,7 +48,7 @@ pub fn child_answered(lead: &Path, wait: &mesimon_core::attention::ChildWait) ->
             _ => {}
         }
     }
-    false
+    (!evidence.calls.is_empty() || !evidence.results.is_empty()).then_some(evidence)
 }
 
 /// The last uuid-bearing record's classification — how a transcript nobody

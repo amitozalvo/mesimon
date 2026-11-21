@@ -311,6 +311,9 @@ impl ClaudeRecovery {
         let since = record.state_changed_at.unwrap_or(now);
         let pf = self.session_file(record, now)?;
         let probe = self.status.as_mut()?;
+        if record.state != (SessionState::RequiresAction { reason: Reason::Permission }) {
+            probe.waiting_spell = None;
+        }
         // A park the hooks have gone quiet on is still earned while Claude
         // Code calls the session busy: a subagent deep in one reasoning step
         // sends nothing at all (T-724).
@@ -324,11 +327,19 @@ impl ClaudeRecovery {
             return Some(observation(Signal::StatusFileBusy, "status"));
         }
         if record.state != SessionState::Running {
+            // A waiting sample from before this child's permission belongs to
+            // another spell, even if its next busy stamp is newer.
+            if record.child_dialog
+                && pf.status.as_deref() == Some("waiting")
+                && pf.status_updated_at.is_none_or(|at| at < since)
+            {
+                probe.waiting_spell = None;
+                return None;
+            }
             return probe
                 .permission_resumed(pf.status.as_deref(), pf.status_updated_at, since)
                 .then(|| observation(Signal::StatusFilePermissionResumed, "status"));
         }
-        probe.waiting_spell = None;
         if !probe.confirms_idle(pf.status.as_deref(), pf.status_updated_at, since, now) {
             return None;
         }

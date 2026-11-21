@@ -4,7 +4,7 @@
 //! owns one `Machine` per session and applies `Signal`s from the hook stream;
 //! debounce rules are 11 §11.7.4.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -250,10 +250,10 @@ pub enum Signal {
         child: ChildHook,
         lead: Option<Box<Signal>>,
     },
-    /// A result in this child's transcript, read independently of hooks.
-    ChildResult {
+    /// One bounded read of the child's transcript, in message order.
+    ChildTranscript {
         agent: String,
-        key: ChildCall,
+        evidence: ChildTranscript,
     },
     /// Native input is ready, with no turn or unresolved attention request.
     /// An empty prompt is not evidence of a successfully completed turn.
@@ -543,26 +543,35 @@ impl ChildHook {
 pub enum ChildEvent {
     Started { call: String, fingerprint: String, question: bool },
     Requested { call: Option<String>, fingerprint: String, reason: Reason },
-    Finished { call: Option<String>, fingerprint: String, question: bool },
+    Finished { call: Option<String>, fingerprint: String },
     Progress,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChildCall {
-    Id(String),
-    Input(String),
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ChildTranscript {
+    /// (tool_use id, input fingerprint), oldest first.
+    pub calls: Vec<(String, String)>,
+    pub results: BTreeMap<String, Option<u64>>,
 }
 
-/// Before PermissionRequest a question is only a candidate. The timestamp
-/// fences old transcript results when the transport could not name the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildPhase {
+    Started,
+    Waiting,
+    // Fence an answered id against re-use by later, identical requests
+    // when the transcript still contains its tool_use.
+    Closed,
+}
+
 #[derive(Debug, Clone)]
-pub struct ChildWait {
-    pub agent: String,
-    pub key: ChildCall,
-    pub fingerprint: String,
-    pub observed_at: u64,
+struct ChildWait {
+    agent: String,
+    call: Option<String>,
+    fingerprint: String,
     reason: Reason,
-    waiting: bool,
+    phase: ChildPhase,
+    requested_at: u64,
+    affirmed_at: u64,
 }
 
 const CHILD_QUESTION: SessionState = SessionState::RequiresAction { reason: Reason::Question };
@@ -743,8 +752,27 @@ impl Machine {
         }
     }
 
-    pub fn child_waits(&self) -> impl Iterator<Item = &ChildWait> {
-        self.child_waits.iter().filter(|w| w.waiting)
+    fn child_waits(&self) -> impl Iterator<Item = &ChildWait> {
+        self.child_waits.iter().filter(|w| w.phase == ChildPhase::Waiting)
+    }
+
+    pub fn waiting_children(&self) -> BTreeSet<&str> {
+        self.child_waits().map(|w| w.agent.as_str()).collect()
+    }
+
+    pub fn has_child_wait(&self) -> bool {
+        self.child_waits().next().is_some()
+    }
+
+    /// The session status file has no owner. Its waiting → busy edge can
+    /// settle a visible child permission only when exactly one wait owns it.
+    pub fn child_permission_since(&self) -> Option<u64> {
+        if self.visible_child_dialog() != Some(&CHILD_PERMISSION) {
+            return None;
+        }
+        let mut waits = self.child_waits();
+        let since = waits.next()?.requested_at;
+        waits.next().is_none().then_some(since)
     }
 
     pub fn confidence(&self) -> Confidence {
@@ -839,35 +867,44 @@ impl Machine {
             blocked
         };
         // Only the enum variant name, never a Debug payload containing names.
-        let signal = format!("{sig:?}")
-            .split(|c: char| !c.is_ascii_alphabetic())
-            .next()
-            .unwrap_or("Unknown")
-            .to_string();
+        let signal = match sig {
+            // The tail can contain many calls. Its payload never goes to the feed.
+            Signal::ChildTranscript { .. } => "ChildTranscript".into(),
+            _ => format!("{sig:?}")
+                .split(|c: char| !c.is_ascii_alphabetic())
+                .next()
+                .unwrap_or("Unknown")
+                .to_string(),
+        };
         (change, Decision { signal, outcome, before, after })
     }
 
     fn observe_child(&mut self, agent: &str, event: &ChildEvent, now: u64) {
-        let (call, fingerprint, reason, request) = match event {
+        let (call, fingerprint, reason, phase) = match event {
             ChildEvent::Started { call, fingerprint, question } => {
                 let reason = if *question { Reason::Question } else { Reason::Permission };
-                (Some(call), fingerprint, reason, false)
+                (Some(call), fingerprint, reason, ChildPhase::Started)
             }
             ChildEvent::Requested { call, fingerprint, reason } => {
-                (call.as_ref(), fingerprint, *reason, true)
+                (call.as_ref(), fingerprint, *reason, ChildPhase::Waiting)
             }
-            ChildEvent::Finished { call, fingerprint, question } => {
-                let found = self.child_waits.iter().position(|w| {
+            ChildEvent::Finished { call, fingerprint } => {
+                // A named completion can only finish its own call. A legacy
+                // id-less end can identify a unique id-less wait by input.
+                let mut matches = self.child_waits.iter().enumerate().filter(|(_, w)| {
                     w.agent == agent
-                        && match &w.key {
-                            ChildCall::Id(id) => call.as_ref() == Some(id),
-                            ChildCall::Input(input) => input == fingerprint,
-                        }
+                        && w.call == *call
+                        && w.phase != ChildPhase::Closed
+                        && (call.is_some() || w.fingerprint == *fingerprint)
                 });
-                if let Some(index) = found {
-                    self.child_waits.remove(index);
-                } else if !question {
-                    self.child_progress(agent);
+                if let Some((index, _)) = matches.next() {
+                    if matches.next().is_none() {
+                        if self.child_waits[index].phase == ChildPhase::Started {
+                            self.child_waits.remove(index);
+                        } else {
+                            self.child_waits[index].phase = ChildPhase::Closed;
+                        }
+                    }
                 }
                 return;
             }
@@ -877,58 +914,106 @@ impl Machine {
             }
         };
 
-        // A known call id wins. Join an id-less request to a candidate of
-        // the same input, or a late PreToolUse to the unidentified request.
-        let same_input = |w: &ChildWait| w.agent == agent && w.fingerprint == *fingerprint;
-        let found = match call {
-            Some(id) => self
-                .child_waits
-                .iter()
-                .position(|w| {
-                    w.agent == agent && matches!(&w.key, ChildCall::Id(known) if known == id)
-                })
-                .or_else(|| {
-                    self.child_waits
-                        .iter()
-                        .position(|w| same_input(w) && matches!(w.key, ChildCall::Input(_)))
-                }),
-            None => self
-                .child_waits
-                .iter()
-                .position(|w| same_input(w) && !w.waiting)
-                .or_else(|| self.child_waits.iter().position(same_input)),
-        };
-        if let Some(i) = found {
-            let w = &mut self.child_waits[i];
-            if let Some(id) = call {
-                w.key = ChildCall::Id(id.clone());
+        // Consume the opposite half once, FIFO. Two id-less requests are
+        // two waits, even when their tool inputs are byte-for-byte equal.
+        let exact = call.and_then(|id| {
+            self.child_waits.iter().position(|w| w.agent == agent && w.call.as_ref() == Some(id))
+        });
+        let matched = exact.or_else(|| {
+            self.child_waits.iter().position(|w| {
+                w.agent == agent
+                    && w.fingerprint == *fingerprint
+                    && matches!(
+                        (phase, w.phase),
+                        (ChildPhase::Started, ChildPhase::Waiting)
+                            | (ChildPhase::Waiting, ChildPhase::Started)
+                    )
+                    && (call.is_none() || w.call.is_none())
+            })
+        });
+        if let Some(index) = matched {
+            let w = &mut self.child_waits[index];
+            if w.phase != ChildPhase::Closed {
+                if let Some(id) = call {
+                    w.call = Some(id.clone());
+                }
+                if phase == ChildPhase::Waiting && w.phase == ChildPhase::Started {
+                    w.phase = phase;
+                    w.requested_at = now;
+                }
+                w.affirmed_at = now;
             }
-            w.waiting |= request;
-            w.observed_at = now;
-        } else if !request && reason == Reason::Permission {
-            // An ordinary tool starting after Escape is the child's progress.
-            self.child_progress(agent);
-        } else if self.child_waits.len() < 1024 {
-            let key = call
-                .cloned()
-                .map(ChildCall::Id)
-                .unwrap_or_else(|| ChildCall::Input(fingerprint.clone()));
-            self.child_waits.push(ChildWait {
-                agent: agent.into(),
-                key,
-                fingerprint: fingerprint.clone(),
-                observed_at: now,
-                reason,
-                waiting: request,
-            });
+            return;
         }
+        if phase == ChildPhase::Started {
+            // A genuinely new start is the continuation after Escape. A late
+            // start for an already waiting request was consumed above.
+            self.child_progress(agent);
+        }
+        if self.child_waits.len() >= 1024 {
+            let Some(disposable) =
+                self.child_waits.iter().position(|w| w.phase != ChildPhase::Waiting)
+            else {
+                return;
+            };
+            self.child_waits.remove(disposable);
+        }
+        self.child_waits.push(ChildWait {
+            agent: agent.into(),
+            call: call.cloned(),
+            fingerprint: fingerprint.clone(),
+            reason,
+            phase,
+            requested_at: now,
+            affirmed_at: now,
+        });
     }
 
     fn child_progress(&mut self, agent: &str) {
-        // A different tool after Escape closes a lone wait. With simultaneous
-        // dialogs only a named result or the end of the owner identifies what closed.
-        let parallel = self.child_waits().filter(|w| w.agent == agent).nth(1).is_some();
-        self.child_waits.retain(|w| w.agent != agent || (parallel && w.waiting));
+        let mut waits = self
+            .child_waits
+            .iter_mut()
+            .filter(|w| w.agent == agent && w.phase == ChildPhase::Waiting);
+        if let Some(wait) = waits.next() {
+            if waits.next().is_none() {
+                wait.phase = ChildPhase::Closed;
+            }
+        }
+    }
+
+    fn observe_child_transcript(&mut self, agent: &str, evidence: &ChildTranscript, now: u64) {
+        for (id, fingerprint) in &evidence.calls {
+            let mut own = self.child_waits.iter_mut().filter(|w| w.agent == agent);
+            if let Some(w) = own.find(|w| w.call.as_ref() == Some(id)) {
+                if w.phase == ChildPhase::Waiting && !evidence.results.contains_key(id) {
+                    w.affirmed_at = now;
+                }
+                continue;
+            }
+            // Never give a historical answer to a later request for the
+            // same input. Missing timestamps suffice only for a known id.
+            let result = evidence.results.get(id);
+            if let Some(w) = self.child_waits.iter_mut().find(|w| {
+                w.agent == agent
+                    && w.phase == ChildPhase::Waiting
+                    && w.call.is_none()
+                    && w.fingerprint == *fingerprint
+                    && result.is_none_or(|at| at.is_some_and(|stamp| stamp >= w.requested_at))
+            }) {
+                w.call = Some(id.clone());
+                w.affirmed_at = now;
+            }
+        }
+        for w in self
+            .child_waits
+            .iter_mut()
+            .filter(|w| w.agent == agent && w.phase == ChildPhase::Waiting)
+        {
+            if w.call.as_ref().is_some_and(|id| evidence.results.contains_key(id)) {
+                w.phase = ChildPhase::Closed;
+                w.affirmed_at = now;
+            }
+        }
     }
 
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
@@ -950,8 +1035,14 @@ impl Machine {
                     m.apply_lead(signal, now)
                 })
             }
-            Signal::ChildResult { agent, key } => {
-                m.child_waits.retain(|w| !(w.waiting && w.agent == *agent && w.key == *key));
+            Signal::ChildTranscript { agent, evidence } => {
+                m.observe_child_transcript(agent, evidence, now);
+                None
+            }
+            Signal::StatusFilePermissionResumed if m.child_permission_since().is_some() => {
+                if let Some(w) = m.child_waits.iter_mut().find(|w| w.phase == ChildPhase::Waiting) {
+                    w.phase = ChildPhase::Closed;
+                }
                 None
             }
             Signal::Notification { kind: NotificationKind::PermissionPrompt }
@@ -1178,12 +1269,7 @@ impl Machine {
     /// seconds. Everything else in the tick is the same.
     pub fn tick_parked(&mut self, now: u64, park_stale_ms: u64) -> Option<Change> {
         self.project_change(now, |m| {
-            // A lost PreToolUse can leave no call to probe. Without fresh
-            // evidence the anonymous wait has the ordinary attention deadline.
-            m.child_waits.retain(|w| {
-                (w.waiting && matches!(w.key, ChildCall::Id(_)))
-                    || now.saturating_sub(w.observed_at) < STALE_DEMOTE_MS
-            });
+            m.child_waits.retain(|w| now.saturating_sub(w.affirmed_at) < STALE_DEMOTE_MS);
             m.tick_lead(now, park_stale_ms)
         })
     }
@@ -1293,7 +1379,7 @@ impl Machine {
         let t = |s: S| Some((s, Confidence::High));
         match sig {
             Signal::ChildFrame { lead, .. } => lead.as_deref().and_then(|s| self.target(s)),
-            Signal::ChildResult { .. } => None,
+            Signal::ChildTranscript { .. } => None,
             Signal::Ready => t(S::Idle { stop_reason: StopReason::Unknown }),
             Signal::TurnStarted => t(S::Running),
             Signal::TurnEnded { outcome } => match outcome {
@@ -1714,7 +1800,13 @@ mod tests {
             fingerprint: "amber".into(),
             question: true,
         });
-        let result = Signal::ChildResult { agent: "fork".into(), key: ChildCall::Id("a".into()) };
+        let result = Signal::ChildTranscript {
+            agent: "fork".into(),
+            evidence: ChildTranscript {
+                calls: vec![],
+                results: BTreeMap::from([("a".into(), None)]),
+            },
+        };
         assert!(m.apply(&pre, 0).is_none());
         m.apply(&request("azure"), 1).unwrap();
         assert!(m.apply(&result, 2).is_none(), "a differently worded request has no known call");
@@ -1722,7 +1814,7 @@ mod tests {
         m.apply(&child(ChildEvent::Progress), 3).unwrap();
         m.apply(&pre, 4);
         m.apply(&request("amber"), 5).unwrap();
-        assert_eq!(m.child_waits().next().unwrap().key, ChildCall::Id("a".into()));
+        assert_eq!(m.child_waits().next().unwrap().call.as_deref(), Some("a"));
 
         // Ownership crosses even though the public reason is unchanged.
         let question = Signal::PreToolUse { tool: AttentionTool::AskUserQuestion };
@@ -1733,6 +1825,69 @@ mod tests {
         assert!(m.apply(&result, 7).is_none());
         assert_eq!(m.state(), &CHILD_QUESTION);
         assert!(m.view().pending.is_none());
+    }
+
+    #[test]
+    fn transcript_calls_are_consumed_in_order_and_cannot_be_claimed_twice() {
+        let mut m = m(SessionState::Running);
+        let request = |call| {
+            ChildHook {
+                ended: vec![],
+                frame: Some((
+                    "fork".into(),
+                    ChildEvent::Requested {
+                        call,
+                        fingerprint: "same".into(),
+                        reason: Reason::Question,
+                    },
+                )),
+            }
+            .scoped(None)
+        };
+        m.apply(&request(None), 1);
+        m.apply(&request(None), 2);
+        let calls = vec![("a".into(), "same".into()), ("b".into(), "same".into())];
+        let tail = |results| Signal::ChildTranscript {
+            agent: "fork".into(),
+            evidence: ChildTranscript { calls: calls.clone(), results },
+        };
+        m.apply(&tail(BTreeMap::new()), 3);
+        let ids = |m: &Machine| m.child_waits().map(|w| w.call.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&m), [Some("a".into()), Some("b".into())]);
+        let answered = tail(BTreeMap::from([("a".into(), Some(4))]));
+        m.apply(&answered, 4);
+        m.apply(&request(None), 4);
+        m.apply(&answered, 5);
+        assert_eq!(ids(&m), [Some("b".into()), None]);
+        m.apply(&request(Some("c".into())), 5);
+        assert_eq!(ids(&m), [Some("b".into()), None, Some("c".into())]);
+        m.tick(5 + STALE_DEMOTE_MS);
+        assert_eq!(m.state(), &SessionState::Running, "even named waits expire without evidence");
+    }
+
+    #[test]
+    fn a_session_busy_edge_needs_an_unambiguous_child_permission() {
+        let mut m = m(SessionState::Running);
+        for agent in ["one", "two"] {
+            m.apply(
+                &ChildHook {
+                    ended: vec![],
+                    frame: Some((
+                        agent.into(),
+                        ChildEvent::Requested {
+                            call: Some(agent.into()),
+                            fingerprint: "bash".into(),
+                            reason: Reason::Permission,
+                        },
+                    )),
+                }
+                .scoped(None),
+                1,
+            );
+        }
+        m.apply(&Signal::StatusFilePermissionResumed, 2);
+        assert_eq!(m.child_waits().count(), 2);
+        assert_eq!(m.state(), &CHILD_PERMISSION);
     }
 
     #[test]

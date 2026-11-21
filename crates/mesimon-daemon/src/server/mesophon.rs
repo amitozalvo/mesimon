@@ -8340,6 +8340,109 @@ mod tests {
         const QUESTION: SessionState = SessionState::RequiresAction { reason: Reason::Question };
 
         #[test]
+        fn identical_requests_claim_distinct_starts_in_order() {
+            run(|d, id| {
+                ask(d, id, "PreToolUse", "same", Some("a"));
+                ask(d, id, "PermissionRequest", "same", None);
+                ask(d, id, "PermissionRequest", "same", None);
+                ask(d, id, "PreToolUse", "same", Some("b"));
+                ask(d, id, "PostToolUse", "same", Some("a"));
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                ask(d, id, "PostToolUse", "same", Some("b"));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+            });
+        }
+
+        #[test]
+        fn an_earlier_bash_completion_cannot_answer_the_remaining_question() {
+            run(|d, id| {
+                let bash = json!({"agent_id":"fork","tool_name":"Bash","tool_use_id":"shell"});
+                send(d, id, "PreToolUse", bash.clone());
+                for q in ["a", "b"] {
+                    ask(d, id, "PreToolUse", q, Some(q));
+                }
+                for q in ["a", "b"] {
+                    ask(d, id, "PermissionRequest", q, None);
+                }
+                ask(d, id, "PostToolUse", "a", Some("a"));
+                send(d, id, "PostToolUse", bash);
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+            });
+        }
+
+        #[test]
+        fn an_open_transcript_call_identifies_the_wait_across_the_restart_gap() {
+            run(|d, id| {
+                ask(d, id, "PreToolUse", "A", Some("a"));
+                let fresh = Machine::restore(SessionState::unknown(), Confidence::Low, now_ms());
+                d.board.sessions[0].set_state(fresh.state().clone());
+                d.machines.insert(id, fresh);
+                let lead = d.paths.state_dir.join("session.jsonl");
+                let folder = lead.with_extension("").join("subagents");
+                std::fs::create_dir_all(&folder).unwrap();
+                d.board.sessions[0].transcript_path = Some(lead.display().to_string());
+                ask(d, id, "PermissionRequest", "A", None);
+                let call = json!({"type":"assistant","message":{"content":[{"type":"tool_use",
+                    "id":"a","name":"AskUserQuestion","input":{"questions":[{"question":"A"}]}}]}});
+                std::fs::write(folder.join("agent-fork.jsonl"), format!("{call}\n")).unwrap();
+                d.poll_agent_recovery(RecoveryChannel::Transcript);
+                // The open call is still on disk at the last poll before the deadline.
+                d.feed_recovery(
+                    id,
+                    RecoverySample::Transcript,
+                    now_ms() + attention::STALE_DEMOTE_MS - 1000,
+                );
+                tick(d, id, attention::STALE_DEMOTE_MS + 1);
+                assert_eq!(d.board.session(id).unwrap().state, QUESTION);
+                send(
+                    d,
+                    id,
+                    "PostToolUse",
+                    json!({"agent_id":"fork","tool_name":"AskUserQuestion","tool_use_id":"a"}),
+                );
+                assert_ne!(d.board.session(id).unwrap().state, QUESTION);
+            });
+        }
+
+        #[test]
+        fn the_next_question_after_escape_retires_the_old_call() {
+            run(|d, id| {
+                for q in ["a", "b"] {
+                    ask(d, id, "PreToolUse", q, Some(q));
+                    ask(d, id, "PermissionRequest", q, None);
+                }
+                ask(d, id, "PostToolUse", "b", Some("b"));
+                assert_eq!(d.board.session(id).unwrap().state, SessionState::Running);
+            });
+        }
+
+        #[test]
+        fn accepted_plan_detail_retires_with_its_owner() {
+            run(|d, id| {
+                let plan = json!({"tool_name":"ExitPlanMode","tool_use_id":"plan"});
+                send(d, id, "PermissionRequest", plan.clone());
+                assert_eq!(
+                    d.board.session(id).unwrap().detail.as_deref(),
+                    Some("plan ready for review")
+                );
+                send(
+                    d,
+                    id,
+                    "PermissionRequest",
+                    json!({"agent_id":"fork","tool_name":"Bash","tool_use_id":"shell"}),
+                );
+                send(d, id, "PostToolUse", plan);
+                tick(d, id, 2000);
+                let record = d.board.session(id).unwrap();
+                assert_eq!(
+                    record.state,
+                    SessionState::RequiresAction { reason: Reason::Permission }
+                );
+                assert_ne!(record.detail.as_deref(), Some("plan ready for review"));
+            });
+        }
+
+        #[test]
         fn lead_escape_retires_its_cached_options_and_request() {
             run(|d, id| {
                 let (_, _, old) = held_question(d);

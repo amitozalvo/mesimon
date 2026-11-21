@@ -152,6 +152,15 @@ fn explicit_abort_clears_a_held_permission_without_completion_movement() {
 
 #[test]
 fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
+    permission_resumes(r#"{"tool_name":"Bash"}"#);
+}
+
+#[test]
+fn waiting_then_busy_clears_the_forks_approval_before_bash_finishes() {
+    permission_resumes(r#"{"tool_name":"Bash","agent_id":"fork","tool_use_id":"shell"}"#);
+}
+
+fn permission_resumes(request: &str) {
     let Some(h) = Harness::boot_with_env(
         "state-approved",
         Some(STUB),
@@ -175,12 +184,7 @@ fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
     };
     write_status("waiting", 0);
     hook_send(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", "{}");
-    hook_send(
-        &h.paths.hook_sock(),
-        &sid.to_string(),
-        "PermissionRequest",
-        r#"{"tool_name":"Bash"}"#,
-    );
+    hook_send(&h.paths.hook_sock(), &sid.to_string(), "PermissionRequest", request);
     wait_until(Duration::from_secs(5), "permission visible", || {
         matches!(client.record(sid).state, SessionState::RequiresAction { .. })
     });

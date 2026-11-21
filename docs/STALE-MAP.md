@@ -49508,3 +49508,34 @@ fixture audits were clean. The first regression build needed a shared test
 helper made visible. The first cache test took the later-tool hook path and
 passed before the fix. Replaying the transcript-only departure exposed the
 stale request, and all nine regressions passed after the fixes.
+
+### Final review of 8c9455ee
+
+All six reports reproduced. A fork can send two identical id-less
+PermissionRequests. Each request now takes the first unclaimed start with
+the same owner and input. A late start takes the first matching unidentified
+request. A named completion closes only its own call. In the replay, answering
+A and finishing an earlier Bash command both leave B open.
+
+A transcript poll reads each waiting fork once and visits its calls in message
+order. An open call can supply a missing ID after restart. Its continued
+presence affirms the wait through the 15-minute deadline. Completed IDs are
+fenced against reuse by a later identical request. Named and unnamed waits
+both age out when evidence stops. A new start that claims no earlier request
+also supplies the continuation after Escape for a lone wait, including when
+the next tool is another question. Parallel waits need individual evidence.
+These rules supersede the earlier anonymous-only deadline.
+
+The session file can report an approval before Bash returns. When exactly
+one visible fork permission is waiting, a waiting sample from that spell and
+a newer busy sample release it. A process replay withholds PostToolUse through
+that assertion. Multiple waits cannot be attributed from the session-wide
+status. When ownership changes, the previous dialog’s detail and cached crown
+answer leave with it, including an accepted lead plan’s review text.
+
+Verification on the final inputs ran one test command at a time. All 85
+attention tests and 3,396 workspace unit tests passed (13 ignored).
+The focused batch passed 123 e2es and the mod pass passed 27. Both fixture
+audits were clean. The Bash approval replay failed before the fix and passed
+on both transports. The five daemon replays failed before the fix and
+passed with the previous round’s nine cases.
