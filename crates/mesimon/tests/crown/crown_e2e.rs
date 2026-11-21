@@ -11518,7 +11518,7 @@ fn a_failed_turn_wakes_the_crown_once_with_why() {
 /// after a restart, with the same crown or a new one. W1 delivered and
 /// merged and was told both; W2 finished a turn and was told, then ended
 /// another with background tasks running (an edge into work that no turn's
-/// end closed, as a Codex seat's lost observation is), and was parked. A
+/// end closed), and was parked. A
 /// bare restart says nothing of either, nor does a handover and a restart
 /// after it; a worker that delivers and merges after the handover still
 /// wakes the crown worn now. A turn genuinely ended in the restart's gap
@@ -12187,8 +12187,8 @@ fn a_codex_worker_s_failed_turns_are_told_by_turn() {
 /// T-936, Astra's read of the park's close: a Codex seat whose pane died
 /// keeps `codex_stopping`, which reads as working, and that edge kept a
 /// turn open where the seat had no pane. On the synthetic runtime: a
-/// worker's finished turn is told; its observation is lost (`Unknown`,
-/// working for a Codex seat); its runtime dies, so the pane-died hook
+/// worker's finished turn is told; a second turn starts and its observation
+/// is lost; its runtime dies, so the pane-died hook
 /// lands it `Exited` with `codex_stopping` set, and the ledger keeps no
 /// turn open for it (the old rule kept it, read back at a restart and by
 /// the next idle as a finished turn); after a restart the crown hears
@@ -12294,9 +12294,11 @@ fn a_codex_seat_whose_pane_died_has_no_turn_open_after_a_restart() {
             .unwrap_or_default()
             .contains(&json!(w.to_string()))
     };
-    control(ws, json!({"state":{"state":"unknown"},"turn_id":"turn-1"}));
+    control(ws, json!({"state":{"state":"running"},"turn_id":"turn-2"}));
+    c.await_state(ws, "the next turn running", |s| *s == SessionState::Running);
+    control(ws, json!({"state":{"state":"unknown"},"turn_id":"turn-2"}));
     c.await_state(ws, "observation lost", |s| matches!(s, SessionState::Unknown { .. }));
-    wait_until(std::time::Duration::from_secs(10), "a lost observation opens a turn", open);
+    wait_until(std::time::Duration::from_secs(10), "the running turn stays open", open);
     let sid = c.board().sessions.iter().find(|s| s.id == ws).unwrap().sid16();
     let pid = tmux(&tmux_sock)
         .args(["display-message", "-p", "-t", &sid, "#{pane_pid}"])

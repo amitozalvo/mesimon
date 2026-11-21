@@ -116,7 +116,7 @@ defaults, using Codex's [configuration settings](https://learn.chatgpt.com/docs/
 `--max-turns` defaults to 12 and must cover the selected scenarios, including
 their explicit child, continuation or compaction allowances. `--max-tokens`
 defaults to 600000 observed total tokens across cases, including cached input,
-raised to cover the selected crown cases (1M for `delegate`, 2M for `forge`,
+raised to cover the selected crown cases (1M each for `delegate` and `restart-idle`, 2M for `forge`,
 each also that case's own stop);
 manifests also retain input, cached input, output and reasoning token readings.
 The runner checks native
@@ -136,11 +136,15 @@ python3 -B ci/rig.py --provider codex --live --only guard,plan,plan-launch,inter
 python3 -B ci/rig.py --provider codex --live --only child,stop,compact,identity,question
 python3 -B ci/rig.py --provider codex --live --only delegate
 python3 -B ci/rig.py --provider codex --live --only forge
+python3 -B ci/rig.py --provider codex --live --only restart-idle --model gpt-6.2-astra --effort high
 python3 -B ci/rig.py --provider codex --live --only read-other
-python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 34
+python3 -B ci/rig.py --provider codex --live --suite extended --max-turns 41
 ```
 
 These reuse the native gate, plan, interruption, child and lifecycle checks.
+The `restart-idle` case waits for the crown to hear a worker finish, withholds that
+worker's heartbeat file until the board reports observation loss, then restarts the daemon.
+It checks that the board sees the same completed turn and leaves the crown quiet.
 The plan-launch case starts a ticket in plan mode the way `^p` does and checks that
 `/plan` took before the title, that the turn stopped on a plan, and that the board's
 accept moved the same thread on. The steer case sends words into a running turn the way the board and Remote

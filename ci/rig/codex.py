@@ -21,23 +21,23 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE = ("complete", "mcp", "brief", "queue", "sleep-resume", "handover")
 EXTENDED = ("guard", "plan", "plan-launch", "interrupt", "steer", "child", "stop", "compact",
-            "identity", "question", "delegate", "forge", "read-other", "shell", "file")
+            "identity", "question", "delegate", "forge", "restart-idle", "read-other", "shell", "file")
 TURNS = {"complete": 1, "mcp": 1, "brief": 2, "queue": 2, "sleep-resume": 2,
          "handover": 2, "guard": 2, "plan": 2, "plan-launch": 2, "interrupt": 1, "steer": 2, "child": 2,
-         "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1,
+         "stop": 2, "compact": 3, "identity": 2, "question": 3, "delegate": 1, "forge": 1, "restart-idle": 1,
          "read-other": 1, "shell": 4, "file": 2}
 LIFECYCLE = {"stop", "compact", "identity", "question"}
 # T-916: a crowned Codex seat asked one thing by the person, in words a person
 # would use. Everything after that one submission is the crown's own doing and
 # the board's wakes, so these cases also bound the native turns every thread of
 # the fixture takes (children included), and take a longer deadline.
-CROWN = {"delegate", "forge"}
-NATIVE_TURNS = {"delegate": 20, "forge": 24}
-TIMEOUTS = {"delegate": 300, "forge": 300}
+CROWN = {"delegate", "forge", "restart-idle"}
+NATIVE_TURNS = {"delegate": 20, "forge": 24, "restart-idle": 6}
+TIMEOUTS = {"delegate": 300, "forge": 300, "restart-idle": 300}
 # Observed tokens, cached input included, one crown case may use. A Codex
 # crown re-sends a ~60k context on every code-mode request, so a forge case's
 # four turns read about 1.5M, 90 % of it cached (measured on Luna, T-916).
-CASE_TOKENS = {"delegate": 1000000, "forge": 2000000}
+CASE_TOKENS = {"delegate": 1000000, "forge": 2000000, "restart-idle": 1000000}
 # Model-created children stay off except where a case measures them, or (the
 # delegate case) where Codex's own default (`multi_agent` on) is the competing
 # road the crown could take instead of a board ticket.
@@ -628,6 +628,23 @@ def adapter(base):
             if args.case in CROWN:
                 self.crown_board()
 
+        def restart_daemon(self):
+            self.request("shutdown")
+            self.client.close()
+            deadline = time.monotonic() + 10
+            while (self.runtime / "orch.sock").exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the fixture daemon did not stop")
+                time.sleep(0.1)
+            self.guard.request(op="spawn", argv=[str(self.args.binary), "daemon", "--repo", str(self.repo)],
+                               env=self.env)
+            deadline = time.monotonic() + 15
+            while not (self.runtime / "orch.sock").exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the fixture daemon did not come back")
+                time.sleep(0.1)
+            self.client = type(self.client)(self.repo)
+
         def crown_board(self):
             """A board a person crowns a Codex seat on (T-916): one commit, so
             a worktree can be cut; the board's tools and its brief on, as on
@@ -647,26 +664,12 @@ def adapter(base):
                                 "https://github.com/example/rig.git"], check=True, timeout=5)
             home = self.guard.root / "home"
             shell, claude, path = fixture_home(home, stub)
-            self.request("shutdown")
-            self.client.close()
-            deadline = time.monotonic() + 10
-            while (self.runtime / "orch.sock").exists():
-                if time.monotonic() > deadline:
-                    raise RuntimeError("the fixture daemon did not stop for its own HOME")
-                time.sleep(0.1)
             self.env.update(HOME=str(home), SHELL=str(shell), PATH=path, MESIMON_CLAUDE_BIN=str(claude))
             if stub:
                 self.env.update(MESIMON_FORGE_EVERY_MS="2000", MESIMON_FORGE_BUSY_MS="2000")
             # The board's state follows HOME; it lies inside the fixture root.
             self.state = home / ".local/state/mesimon" / self.state.name
-            self.guard.request(op="spawn", argv=[str(self.args.binary), "daemon", "--repo", str(self.repo)],
-                               env=self.env)
-            deadline = time.monotonic() + 15
-            while not (self.runtime / "orch.sock").exists():
-                if time.monotonic() > deadline:
-                    raise RuntimeError("the fixture daemon did not come back on its own HOME")
-                time.sleep(0.1)
-            self.client = type(self.client)(self.repo)
+            self.restart_daemon()
             machine = self.snapshot().get("machine_tiers") or {}
             if [tier.get("id") for tier in machine.get("tiers", []) if tier.get("id") not in ("claude", "codex")]:
                 raise RuntimeError("the fixture board still sees a person's tiers")
@@ -1070,6 +1073,36 @@ def adapter(base):
                       "nothing of the work its own", passed=True, wake=wake.get("cause"),
                       files=self.manifest["worker_files"], crown_board_calls_on_wake=board_calls(every[len(calls):]))
 
+        def restart_idle(self):
+            title = "Reply with the word ready."
+            ticket = self.request("create_ticket", column="TODO", title=title, workspace=None)["id"]
+            key = self.board_ticket(ticket)["short_key"]
+            self.crown_seat()
+            self.ask(self.crown_sid, f"Start {key}. When it finishes, acknowledge its reply.")
+            worker = self.until("the crown starts the worker", lambda b: self.worker_started(b, key, ticket))
+            sid = worker["id"]
+            self.until("the crown completes its turn on the finish", lambda b:
+                       (self.crown_turn_on(b, f'{key} "{title}" finished its turn') or (None, False))[1]
+                       and self.turn_ended(self.seat(b, sid)))
+            turn = self.seat(self.client.board(), sid)["codex_turn_id"]
+            mark = len(self.feed())
+
+            # Withhold only this fixture worker's heartbeat file. Its runtime
+            # republishes it on the next heartbeat with the same turn id.
+            heartbeat = self.runtime / ("cdx-" + sid.replace("-", "")[:16] + ".json")
+            def lose_observation(session, ticket, screen):
+                heartbeat.unlink(missing_ok=True)
+                return session["state"].get("reason") == "observation_lost"
+            self.wait(sid, "the idle worker loses observation", lose_observation, timeout=20, consent=False)
+            self.restart_daemon()
+            self.until("the board looks at the same completed turn after restart", lambda b:
+                       self.turn_ended(self.seat(b, sid)) and self.seat(b, sid).get("codex_turn_id") == turn
+                       and any(r.get("cmd") == "crown_restart_looked" and r.get("ticket") == ticket
+                               for r in self.feed()[mark:]))
+            if any(r.get("kind") == "crown_wake" and r.get("worker") == ticket for r in self.feed()[mark:]):
+                raise AssertionError("the board woke the crown again for the idle worker")
+            self.mark(assertion="the restart look leaves the finish the crown heard silent", passed=True)
+
         def forge(self):
             """A person asks the crown to start a ticket and look after its
             pull request, getting CI fixed if it fails (FORGE_ASK). The stub
@@ -1231,7 +1264,7 @@ def adapter(base):
 
         def run(self):
             if self.args.case in CROWN:
-                return getattr(self, self.args.case)()
+                return getattr(self, self.args.case.replace("-", "_"))()
             if self.args.case == "interrupt":
                 sid = self.start("Run sleep 25 once, then reply exactly MESIMON_INTERRUPTED. No other tools.")
                 self.wait(sid, "native model activity precedes interruption", lambda session, ticket, screen:

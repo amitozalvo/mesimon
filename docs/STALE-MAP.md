@@ -49241,3 +49241,31 @@ error), `agy_e2e::` 6/6 under `ci/test-run.py`; `ci/release_watch_test.py` 25/25
 No qualifying post-merge full-suite file (`command.rs`, `mcp.rs`, `authorize.rs`,
 state schema, `server.rs`, `mesimon-backend-tmux`, or `tests/common/mod.rs`) was
 changed.
+
+## Codex observation loss before a restart preserves the turn the crown heard (T-1350, 2026-11-21)
+
+After the Mac slept, three idle Codex workers lost observation. The next
+daemon told the crown all three had finished again. The deterministic
+reproduction kept the watch and both saved baselines intact and still got
+`Finished` with `late: true`. The watch ending at merge and the restart
+probe's count of outstanding looks were unnecessary to reproduce it.
+
+`apply_change` used the checkout's busy predicate to open a turn when the
+worker entered `Unknown(ObservationLost)`. The checkout still needs that hold.
+The crown ledger now preserves its existing open-turn mark on that edge.
+If a restart first sees a new Codex turn ID at completion, the ID itself
+supplies the evidence that the turn ran.
+
+The daemon regression passes a lost heartbeat through the real snapshot
+handler, reloads the ledger and judges the restart probe. The old completed
+turn stays silent at both the same and a newer observation sequence. A turn
+seen running before the gap and a turn first seen complete after it each
+produce one late finish. The pane-death e2e now starts an actual second turn
+before testing that its open mark goes away when the pane dies. Codex rig
+case `restart-idle` checks the restart look after a live crown heard its
+worker's finish.
+
+The live case passed on Codex 0.169.0, gpt-6.2-astra at high effort. It
+withholds the worker's heartbeat file until the daemon records observation
+loss. An earlier fixture tried pausing the runtime and timed out before
+establishing that precondition. All 139 crown e2es and `cargo ut` passed.

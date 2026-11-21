@@ -6504,6 +6504,71 @@ pub(in crate::server) mod tests {
     }
 
     #[test]
+    fn losing_codex_observation_preserves_only_a_real_turn_for_the_restart() {
+        let idle = SessionState::Idle { stop_reason: StopReason::EndTurn };
+        // The same turn, an observed running turn that ends in the gap, and
+        // a whole new turn whose completion is the first sight of its id.
+        for (running, returned_turn, sequence) in
+            [(false, "old", 1), (false, "old", 2), (true, "open", 2), (false, "new", 2)]
+        {
+            let mut b =
+                watched_bed(&format!("gap-{returned_turn}-{sequence}"), Some(Told::default()));
+            let rec = &mut b.d.board.sessions[0];
+            let seat = rec.id;
+            rec.kind = SessionKind::Codex;
+            rec.codex_generation = Some(1);
+            rec.codex_turn_id = Some(if running { "open" } else { "old" }.into());
+            rec.codex_observed_seq = 1;
+            at(&mut b, seat, idle.clone());
+            if running {
+                let start =
+                    b.d.machines
+                        .get_mut(&seat)
+                        .unwrap()
+                        .apply(&Signal::TurnStarted, 2_000)
+                        .unwrap();
+                b.d.apply_change(seat, &start, None, Some("codex"));
+            }
+            b.d.on_codex_snapshots(vec![(seat, None)]);
+            assert!(b.d.board.sessions[0].observation_hold);
+            b.d.persist_crown();
+
+            let (ledger, _, barred) = crate::server::crownledger::load_or_recover(&b.d.paths);
+            assert!(!barred);
+            b.d.restore_crown(ledger);
+            at(&mut b, seat, SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
+            let (tx, rx) = std::sync::mpsc::channel();
+            b.d.tx = tx;
+            let snapshot = serde_json::from_value(serde_json::json!({
+                "session": seat, "generation": 1, "heartbeat_ms": now_ms(), "sequence": sequence,
+                "state": idle, "turn_id": returned_turn, "observation_hold": false
+            }))
+            .unwrap();
+            b.d.on_codex_snapshots(vec![(seat, Some(snapshot))]);
+            if let Some(end) =
+                b.d.machines.get_mut(&seat).unwrap().tick(now_ms() + attention::SETTLE_MS)
+            {
+                b.d.apply_change(seat, &end, None, Some("codex"));
+            }
+            b.d.hear_restored();
+            let probe = loop {
+                if let Msg::TurnProbed(probe) =
+                    rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap()
+                {
+                    break probe;
+                }
+            };
+            b.d.on_turn_probed(probe);
+            assert_eq!(
+                owed_for(&b.d, b.worker).map(|w| (w.cause, w.late)),
+                (running || returned_turn == "new").then_some((WakeCause::Finished, true)),
+                "running={running}, returned turn={returned_turn}, sequence={sequence}"
+            );
+            assert!(!b.d.crown_recheck.contains_key(&b.worker));
+        }
+    }
+
+    #[test]
     fn a_mid_turn_exit_wakes_its_crown_once_even_after_observation_loss() {
         use mesimon_core::board::{ExitReason, UnknownReason};
         for (claim, kind) in [

@@ -5661,6 +5661,13 @@ impl Daemon {
             }
             dirty = true;
             if new_turn {
+                // A turn can both start and finish during the restart gap.
+                // Its new runtime id proves it ran even if we missed Running.
+                if self.crown_recheck.contains_key(&ticket)
+                    && observed == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+                {
+                    self.turns_open.insert(ticket);
+                }
                 // A turn began before `/plan` took: someone typed in the
                 // pane, and the words owed went with it (`ack_owed`).
                 rec.codex_plan_owed = false;
@@ -8739,9 +8746,16 @@ impl Daemon {
             if answered_with_tasks {
                 self.turn_ended(snapshot.ticket, true);
             } else if mesimon_core::quiet::is_working(&snapshot) {
-                // Never for a seat with no pane (T-936): a Codex seat whose
-                // pane died keeps `codex_stopping`, which reads as working.
-                if change.to.has_pane() && !held_stop && !self.turns_open.contains(&snapshot.ticket)
+                // A lost Codex observation holds the checkout. It preserves
+                // an open turn, but supplies no evidence to open one.
+                // A dead pane can likewise hold the checkout during cleanup.
+                if change.to.has_pane()
+                    && !matches!(
+                        change.to,
+                        SessionState::Unknown { reason: UnknownReason::ObservationLost }
+                    )
+                    && !held_stop
+                    && !self.turns_open.contains(&snapshot.ticket)
                 {
                     self.turns_open.insert(snapshot.ticket);
                 }
