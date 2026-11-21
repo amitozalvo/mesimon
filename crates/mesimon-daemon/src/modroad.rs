@@ -478,7 +478,7 @@ fn first_error(out: &Output) -> String {
 pub(crate) struct Output {
     pub(crate) code: Option<i32>,
     pub(crate) stdout: String,
-    stderr: String,
+    pub(crate) stderr: String,
 }
 
 /// A child in a process group of its own, read whole, killed whole at the

@@ -798,6 +798,10 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Read `agy models` into `<state root>/agy-models.tsv` now (T-1327):
+    /// the tier page's `r` on an agy tier, after a sign-in change, without
+    /// waiting out `MODELS_TTL_MS`. Runs on a daemon worker; local only.
+    RefreshAgyModels,
     /// Turn the agent brief on or off for this board (T-224): `brief::TEXT`
     /// in the system prompt of every claude mesimon starts here, through
     /// `--append-system-prompt`. Per repo, persisted in `columns.toml`, read
@@ -1713,8 +1717,10 @@ impl Command {
             // what the board did, and where the status line sits is neither.
             SetStatusLine { .. } | SetWornTheme { .. } => m(Mutate, false, None),
             // The daemon's reading schedule, never board state: a viewer of a
-            // shared board reads their own quota like anyone (T-327).
-            SetUsageWants { .. } | RefreshUsage { .. } => m(Read, false, None),
+            // shared board reads their own quota like anyone (T-327); the tier
+            // page's `agy models` refresh (T-1327) updates the machine's model
+            // list cache the same way.
+            SetUsageWants { .. } | RefreshUsage { .. } | RefreshAgyModels => m(Read, false, None),
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }
@@ -2143,6 +2149,11 @@ pub enum Response {
         /// empty", which shows no offer — the right way to fail.
         #[serde(default)]
         shell_env: ShellEnvStatus,
+        /// How the daemon's `agy models` read stands (T-1327): whether a
+        /// worker is reading it right now, and why the last read failed when
+        /// it did. Absent from an older daemon parses as idle.
+        #[serde(default, skip_serializing_if = "AgyModelsStatus::is_idle")]
+        agy_models: AgyModelsStatus,
         /// Where the checkout the board sits in stands against its upstream
         /// (see [`RepoGit`]). Serde-additive: absent from an older daemon parses
         /// as "not sampled", which draws nothing.
@@ -4109,6 +4120,23 @@ impl ShellEnvStatus {
     /// Never on a side that does not say.
     pub fn shell_differs(&self, board: Option<&str>) -> bool {
         board.is_some_and(|b| !b.is_empty() && !self.shell.is_empty() && b != self.shell)
+    }
+}
+
+/// How the daemon's `agy models` cache read stands (T-1327): whether a worker
+/// is reading `agy models` right now, and why the last read left the file as
+/// it was. Absent from an older daemon parses as idle with no error.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgyModelsStatus {
+    #[serde(default)]
+    pub reading: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl AgyModelsStatus {
+    pub fn is_idle(&self) -> bool {
+        !self.reading && self.error.is_none()
     }
 }
 

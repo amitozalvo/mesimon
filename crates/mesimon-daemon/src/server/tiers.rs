@@ -97,16 +97,41 @@ impl Daemon {
         if !agy::enabled() || self.agy_models_reading || !agy::models_due(&file, now_ms()) {
             return;
         }
+        self.start_agy_models_read(file);
+    }
+
+    /// `Command::RefreshAgyModels` (T-1327): read `agy models` now regardless
+    /// of its TTL, on a worker. A request while a read is already out queues
+    /// one fresh pass behind it, so a sign-in completed mid-read is still seen.
+    pub(super) fn refresh_agy_models(&mut self) -> Response {
+        use crate::agents::agy;
+        if !agy::enabled() {
+            return Response::Err { message: "agy is switched off on this daemon".into() };
+        }
+        if self.agy_models_reading {
+            self.agy_models_again = true;
+            return Response::Ok;
+        }
+        self.start_agy_models_read(agy::models_file());
+        self.broadcast();
+        Response::Ok
+    }
+
+    fn start_agy_models_read(&mut self, file: std::path::PathBuf) {
+        use crate::agents::agy;
         let bin = crate::agents::cli_bin(AgentProvider::Agy);
         let argv = self.launch(&[bin, "models".into()], &[]);
         let cwd = self.paths.state_dir.clone();
         self.agy_models_reading = true;
+        self.agy_models_error = None;
         self.off_writer(move || {
             let read = crate::modroad::run_bounded(&argv, &cwd, agy::MODELS_TIMEOUT)
                 .and_then(|out| match (out.code, agy::models_text(&out.stdout)) {
                     (Some(0), Some(text)) => Ok(text),
                     (Some(0), None) => Err("agy models listed no model".to_string()),
-                    (code, _) => Err(format!("agy models exited {code:?}")),
+                    (code, _) => Err(crate::agents::detail_text(&out.stderr)
+                        .or_else(|| crate::agents::detail_text(&out.stdout))
+                        .unwrap_or_else(|| format!("agy models exited {code:?}"))),
                 })
                 .and_then(|text| {
                     store::write_atomic(&file, &text, store::SHARED)
@@ -118,11 +143,17 @@ impl Daemon {
     }
 
     pub(super) fn on_agy_models_read(&mut self, read: Result<usize, String>) {
-        self.agy_models_reading = false;
-        match read {
+        match &read {
             Ok(n) => self.journal.line(&format!("agy models: {n} listed")),
             Err(e) => self.journal.line(&format!("agy models not read: {e}")),
         }
+        if std::mem::take(&mut self.agy_models_again) && crate::agents::agy::enabled() {
+            self.start_agy_models_read(crate::agents::agy::models_file());
+            return;
+        }
+        self.agy_models_reading = false;
+        self.agy_models_error = read.err().and_then(|e| crate::agents::detail_text(&e));
+        self.broadcast();
     }
 
     /// Pick up another board's edit of `tiers.toml`: one `stat`, on every

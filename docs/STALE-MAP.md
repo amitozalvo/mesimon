@@ -49679,3 +49679,14 @@ and then skipped without a count, so `X` answered "nothing finished to sleep".
 - **Test.** `queued_person_push_tests::x_sleeps_every_agent_the_offer_counts`
   (an idle Claude, an idle agy and a throttled Claude on DONE: offer 3, `X`
   sleeps 3; the old filter slept 1).
+## `r` on an agy tier page refreshes `agy models` on a worker without waiting out the 6-hour TTL (T-1327, 2026-11-21)
+
+- **What changed.**
+  - `Scope::TierEdit` binds `r` (`Verb::TierModelsRefresh`, `Ctx::tier_models_refresh`, `prio: 30`) on an agy tier page when `MESIMON_AGY=1` and no read is in flight. Opening a tier page still reads `agy-models.tsv` off disk alone and never spawns `agy models`.
+  - `Command::RefreshAgyModels` (local only, `Read`) asks the daemon to run `agy models` on a worker regardless of `MODELS_TTL_MS` (`Daemon::refresh_agy_models`, sharing `start_agy_models_read` with `warm_agy_models`). A request while a read is already out sets `agy_models_again` so one fresh pass follows it.
+  - `Response::Board` carries `agy_models: AgyModelsStatus { reading, error }` (`#[serde(default, skip_serializing_if = "AgyModelsStatus::is_idle")]`), and `on_agy_models_read` broadcasts when a read finishes. While reading, `r` stands down and the status and `Model` row say `reading agy models`; when the post-ask snapshot settles, the open tier page reloads `agy-models.tsv` in place (updating both the `Model` and `Effort` rings) or reports `agy models not read ∙ …` while keeping the last good file.
+- **Refuted.**
+  - "Re-read `agy models` when a tier names a model the file lacks": misses the measured sign-in case (an account that *gained* models while the tier still holds `default` or an older listed model, before Neon or Carbon can be stepped onto), misses an absent `agy-models.tsv` on a `default` tier, and misfires on `i`-typed unlisted models.
+  - "Re-read `agy models` when agy refuses a model at launch (`not recognized as a known model`)": also misses an account that gained models, acts only after a ticket launch crashes in a pane, and scrapes CLI error prose.
+  - "Bind `r` on Claude Code and Codex tier pages too": Mesimon runs no model-list subcommand for either CLI (both write their own local catalog/cache files, re-read on page open), and `r` on the 60-cell dialog border would crowd `esc` or suggest a network refresh where none happens.
+- **Checks.** `cargo ut` (73 + 17 + 790 + 990 + 24 + 1,504 passed, 0 failed; sandboxed run first hit the expected 6 `tmux` socket `Operation not permitted` failures in `mesimon-backend-tmux`); `--test agents -- agy_e2e:: tier_e2e::` (9 passed), `--test tools mcp_e2e::` (4 passed), `--test board restart_skew_e2e::` (3 passed), 0 reruns. No golden changed; no rig run (nothing an agent or the crown is told changed). Full workspace suite owed once after merge (`command.rs`, `mcp.rs`, `server.rs` changed). A running daemon serves `RefreshAgyModels` after `U`.

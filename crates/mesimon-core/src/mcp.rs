@@ -2084,6 +2084,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::DeleteTier { .. }
         | Command::MoveTier { .. }
         | Command::SetDefaultTier { .. }
+        | Command::RefreshAgyModels
         | Command::SetCrownBudget { .. }
         // T-550, T-569, T-610: the crown sending its own asks is the person
         // stepping out from between one agent's words and another's turn,
@@ -4347,6 +4348,7 @@ mod tests {
                 tier: crate::tier::Tier::builtin(crate::board::AgentProvider::Codex),
             },
             Command::DeleteTier { scope: crate::tier::TierScope::Board, id: "x".into() },
+            Command::RefreshAgyModels,
             Command::MoveTier {
                 scope: crate::tier::TierScope::Machine,
                 id: "x".into(),

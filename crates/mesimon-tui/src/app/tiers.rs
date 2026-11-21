@@ -428,6 +428,9 @@ impl App {
                     _ => false,
                 };
                 c.tier_on_model = field == Some(TierField::Model);
+                c.tier_models_refresh = self.agy_switch
+                    && !self.agy_models.reading
+                    && self.edited_tier().is_some_and(|(t, _)| t.provider == AgentProvider::Agy);
                 c.tier_edit_enter_word = match field {
                     Some(TierField::Name | TierField::Description) => "edit",
                     Some(TierField::Provider) => "switch",
@@ -556,11 +559,55 @@ impl App {
     /// again here, so a list the CLI refreshed meanwhile is the one the ring
     /// steps, and the tier's model word is the one the page keeps.
     fn open_tier_page(&mut self, id: String, idx: usize) {
+        self.reload_tier_models();
+        self.mode = Mode::TierEdit { id, idx, field: None, armed: false };
+        self.tier_kept_model = self.edited_tier().map(|(t, _)| t.model).unwrap_or_default();
+    }
+
+    pub(crate) fn reload_tier_models(&mut self) {
         if let Some(homes) = &self.model_homes {
             self.tier_models = homes.read();
         }
-        self.mode = Mode::TierEdit { id, idx, field: None, armed: false };
-        self.tier_kept_model = self.edited_tier().map(|(t, _)| t.model).unwrap_or_default();
+    }
+
+    /// `r` on an agy tier's page (T-1327): ask the daemon to run `agy models`
+    /// on a worker now, after a sign-in change, without waiting out the TTL.
+    pub(super) fn refresh_tier_models(&mut self) -> Result<()> {
+        if !self.agy_switch
+            || self.agy_models.reading
+            || !self.edited_tier().is_some_and(|(t, _)| t.provider == AgentProvider::Agy)
+        {
+            return Ok(());
+        }
+        match self.req(Command::RefreshAgyModels) {
+            Response::Err { message } if message.contains("switched off") => self.status = message,
+            Response::Err { message } => {
+                self.status =
+                    format!("reading agy models needs the new daemon ∙ U reloads ∙ {message}");
+            }
+            _ => {
+                self.agy_models_asked = Some(self.snapshot_sent + 1);
+                self.agy_models.reading = true;
+                self.agy_models.error = None;
+                self.status = "reading agy models".into();
+                self.refresh_soon()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settle a `r` refresh of `agy models` once its worker's snapshot lands.
+    pub(crate) fn finish_agy_models_refresh(&mut self) {
+        self.reload_tier_models();
+        if let Some(err) = &self.agy_models.error {
+            self.status = format!("agy models not read ∙ {err}");
+            return;
+        }
+        self.status = match self.tier_models.agy.as_ref().map_or(0, Vec::len) {
+            0 => "no model list from agy".into(),
+            1 => "agy models ∙ 1 model on its list".into(),
+            n => format!("agy models ∙ {n} models on its list"),
+        };
     }
 
     /// The page's Model ring: `default` first, the word no list offers —
@@ -797,7 +844,14 @@ impl App {
     fn model_words(&self, t: &Tier) -> (String, String) {
         let label = t.provider.label();
         let list = self.tier_models.of(t.provider);
-        let no_list = || format!("no model list from {}", label.to_lowercase());
+        let reading = t.provider == AgentProvider::Agy && self.agy_models.reading;
+        let no_list = || {
+            if reading {
+                "reading agy models".into()
+            } else {
+                format!("no model list from {}", label.to_lowercase())
+            }
+        };
         // `i`'s field: what the name is handed to.
         let typing = matches!(self.mode, Mode::TierEdit { idx, field: Some(_), .. }
             if self.tier_fields().get(idx) == Some(&TierField::Model));
@@ -829,6 +883,7 @@ impl App {
             _ => (
                 "Model: default".into(),
                 match list {
+                    Some(_) if reading => format!("{label} picks its own ∙ reading agy models"),
                     Some(l) if l.len() == 1 => {
                         format!("{label} picks its own ∙ 1 model on its list")
                     }

@@ -640,6 +640,7 @@ mod tests {
                 board_cost: None,
                 costs: Default::default(),
                 shell_env: Default::default(),
+                agy_models: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),

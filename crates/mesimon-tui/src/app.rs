@@ -1945,6 +1945,11 @@ pub struct App {
     /// offers it (a typed name): stepping past it saves another word, and
     /// it stays a stop until the page closes.
     pub(crate) tier_kept_model: String,
+    /// How the daemon's `agy models` read stands (T-1327), off the snapshot,
+    /// and the snapshot sequence a `r` refresh waits for before re-reading
+    /// `agy-models.tsv`.
+    pub(crate) agy_models: mesimon_core::command::AgyModelsStatus,
+    pub(crate) agy_models_asked: Option<u64>,
     /// Subscription quota (T-327), off the snapshot: each provider's reading,
     /// what the daemon reads for, and what is in flight.
     pub usage: mesimon_core::usage::Usage,
@@ -2823,6 +2828,8 @@ impl App {
             model_homes: None,
             tier_models: Default::default(),
             tier_kept_model: String::new(),
+            agy_models: snap.agy_models,
+            agy_models_asked: None,
             usage: snap.usage,
             board_cost: snap.board_cost,
             costs: snap.costs,
@@ -4358,6 +4365,7 @@ impl App {
             worktrees,
             notices,
             shell_env,
+            agy_models,
             git,
             pending,
             automation,
@@ -4455,6 +4463,15 @@ impl App {
         self.worktrees = worktrees;
         self.notices = notices;
         self.shell_env = shell_env;
+        let was_agy_reading = self.agy_models.reading;
+        let settled_agy = self
+            .agy_models_asked
+            .is_some_and(|need| self.landing >= need && !agy_models.reading);
+        let waiting_agy = self.agy_models_asked.is_some() && !settled_agy;
+        self.agy_models = agy_models;
+        if waiting_agy {
+            self.agy_models.reading = true;
+        }
         self.git = git;
         self.pending = pending;
         self.automation = automation;
@@ -4466,6 +4483,15 @@ impl App {
         self.control = mesophon;
         self.terminals = terminals;
         self.machine_tiers = machine_tiers;
+        if settled_agy {
+            self.agy_models_asked = None;
+            self.finish_agy_models_refresh();
+        } else if was_agy_reading
+            && !self.agy_models.reading
+            && matches!(self.mode, Mode::TierEdit { .. })
+        {
+            self.reload_tier_models();
+        }
         self.usage = usage;
         self.costs = costs;
         self.board_cost = board_cost;
@@ -9594,6 +9620,7 @@ impl App {
             boards_enter_word: "",
             tier_on_step: false,
             tier_on_model: false,
+            tier_models_refresh: false,
             tier_can_nudge: false,
         };
         // Agent tiers (T-443): the rows, the dialogs' Enter words and `^r`.
@@ -10611,6 +10638,7 @@ impl App {
             // `key_editor`.
             Verb::TierNext | Verb::TierPrev => {}
             Verb::TierModelName => self.type_tier_model(),
+            Verb::TierModelsRefresh => self.refresh_tier_models()?,
             Verb::CrownBudget => {
                 if !self.catch_up()? {
                     return Ok(());
@@ -17935,6 +17963,7 @@ struct Snapshot {
     /// Each ticket's pull requests as the forge last said (T-739).
     prs: Vec<mesimon_core::command::PrItem>,
     forge: mesimon_core::command::ForgeStatus,
+    agy_models: mesimon_core::command::AgyModelsStatus,
 }
 
 impl Snapshot {
@@ -17950,6 +17979,7 @@ impl Snapshot {
                 worktrees,
                 notices,
                 shell_env,
+                agy_models,
                 git,
                 pending,
                 automation,
@@ -17980,6 +18010,7 @@ impl Snapshot {
                 worktrees,
                 notices,
                 shell_env,
+                agy_models,
                 git,
                 pending,
                 automation,
@@ -18097,6 +18128,7 @@ pub(crate) mod test_support {
         pub external: Vec<ExternalItem>,
         pub resources: Resources,
         pub shell_env: mesimon_core::command::ShellEnvStatus,
+        pub agy_models: std::rc::Rc<std::cell::RefCell<mesimon_core::command::AgyModelsStatus>>,
         pub git: mesimon_core::command::RepoGit,
         /// What the fake daemon says it owes, and whether its train is armed.
         pub pending: Vec<mesimon_core::command::Pending>,
@@ -18624,6 +18656,7 @@ pub(crate) mod test_support {
                         prs: Vec::new(),
                         forge: Default::default(),
                         shell_env: self.shell_env.clone(),
+                        agy_models: self.agy_models.borrow().clone(),
                         git: self.git.clone(),
                         claude_md: self.claude_md.clone().for_board(&self.board),
                         pending: self.pending.clone(),
@@ -19001,6 +19034,12 @@ pub(crate) mod test_support {
                     self.usage.wants = mesimon_core::usage::Wants { claude, codex };
                     Ok(Response::Ok)
                 }
+                Command::RefreshAgyModels => {
+                    let mut st = self.agy_models.borrow_mut();
+                    st.reading = true;
+                    st.error = None;
+                    Ok(Response::Ok)
+                }
                 _ => Ok(Response::Ok),
             }
         }
@@ -19037,6 +19076,7 @@ pub(crate) mod test_support {
                 external: vec![],
                 resources: Resources::default(),
                 shell_env: Default::default(),
+                agy_models: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),
@@ -19097,6 +19137,7 @@ pub(crate) mod test_support {
                 external: vec![],
                 resources: Resources::default(),
                 shell_env: Default::default(),
+                agy_models: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),
@@ -19351,6 +19392,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),
@@ -20549,6 +20591,7 @@ mod tests {
             prs: Vec::new(),
             forge: Default::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             claude_md: Default::default(),
             pending: Vec::new(),
@@ -20933,6 +20976,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             claude_md: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
@@ -20999,6 +21043,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             claude_md: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
@@ -25051,6 +25096,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// T-1327: after signing agy into another account inside the 6 h TTL, `r`
+    /// on an agy tier page asks the daemon to read `agy models` on a worker
+    /// (never on page open, never on Claude/Codex tiers), stands down while
+    /// reading, and reloads `agy-models.tsv` in place when the read lands; a
+    /// failed read names why and keeps the previous list.
+    #[test]
+    fn r_on_an_agy_tier_page_refreshes_the_model_list_when_the_worker_lands() {
+        use mesimon_core::board::AgentProvider::{Agy, ClaudeCode};
+        use mesimon_core::tier::{Effort, Tier};
+        let root =
+            std::env::temp_dir().join(format!("msmn-agy-tier-refresh-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let models_file = root.join("agy-models.tsv");
+        std::fs::write(
+            &models_file,
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
+             gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n",
+        )
+        .unwrap();
+        let agy_state = std::rc::Rc::new(std::cell::RefCell::new(
+            mesimon_core::command::AgyModelsStatus::default(),
+        ));
+        let shared = agy_state.clone();
+        let (mut app, sent) = App::for_test_with(board_three_columns(), theme(), move |fake| {
+            fake.agy_models = shared;
+            fake.machine_tiers.tiers = vec![
+                Tier {
+                    id: "01CLAUDE".into(),
+                    name: "claude-tier".into(),
+                    provider: ClaudeCode,
+                    model: String::new(),
+                    effort: Effort::Default,
+                    description: String::new(),
+                },
+                Tier {
+                    id: "01AGY".into(),
+                    name: "agy-tier".into(),
+                    provider: Agy,
+                    model: String::new(),
+                    effort: Effort::Default,
+                    description: String::new(),
+                },
+            ];
+        });
+        app.agy_switch = true;
+        app.model_homes = Some(ModelHomes {
+            claude: root.join("claude"),
+            codex: root.join("codex"),
+            agy: models_file.clone(),
+        });
+        app.refresh().unwrap();
+
+        // Opening the page never asks the daemon to run `agy models`, and a
+        // Claude tier page does not bind `r`.
+        app.mode = Mode::Tiers { idx: 0, naming: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.ctx().tier_models_refresh);
+        press(&mut app, 'r');
+        assert!(!sent_contains(&sent, "RefreshAgyModels"));
+
+        // Opening the agy tier page reads the cached 1-model file; `r` asks
+        // the worker and stands down until the read lands.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "RefreshAgyModels"), "never on page open");
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        assert_eq!(
+            app.tier_field_words(TierField::Model, false).1,
+            "Antigravity picks its own ∙ 1 model on its list"
+        );
+        assert!(app.ctx().tier_models_refresh);
+        press(&mut app, 'r');
+        assert!(sent_contains(&sent, "RefreshAgyModels"));
+        assert_eq!(app.status, "reading agy models");
+        assert!(!app.ctx().tier_models_refresh, "stood down while in flight");
+        assert_eq!(
+            app.tier_field_words(TierField::Model, false).1,
+            "Antigravity picks its own ∙ reading agy models"
+        );
+
+        // The worker writes the new sign-in's models and broadcasts: the open
+        // page picks up Neon and Carbon and their Effort rings in place.
+        std::fs::write(
+            &models_file,
+            "gemini-4-neon-high\tGemini 4 Neon (High)\n\
+             gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)\n\
+             gemini-4-neon-low\tGemini 4 Neon (Low)\n\
+             gemini-4-carbon-high\tGemini 4 Carbon (High)\n\
+             gemini-4-carbon-low\tGemini 4 Carbon (Low)\n",
+        )
+        .unwrap();
+        agy_state.borrow_mut().reading = false;
+        app.refresh().unwrap();
+        assert_eq!(app.status, "agy models ∙ 2 models on its list");
+        assert!(app.ctx().tier_models_refresh);
+        press(&mut app, 'l');
+        let edited = app.edited_tier().unwrap().0;
+        assert_eq!(edited.model, "gemini-4-neon");
+        assert_eq!(
+            app.effort_ring(&edited),
+            vec![Effort::Default, Effort::Low, Effort::High, Effort::Xhigh]
+        );
+
+        // A failed refresh reports why and leaves the last good list standing.
+        press(&mut app, 'r');
+        *agy_state.borrow_mut() = mesimon_core::command::AgyModelsStatus {
+            reading: false,
+            error: Some("not signed in".into()),
+        };
+        app.refresh().unwrap();
+        assert_eq!(app.status, "agy models not read ∙ not signed in");
+        assert_eq!(app.model_ring().len(), 3, "default, neon, carbon kept");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// T-562 (user: "reorder tiers in settings just like reordering tickets
     /// on board ∙ same keys"): `JK` and Alt up/down move the tier under the
     /// cursor along its scope's order and the cursor rides with it. An edge
@@ -28503,6 +28665,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),
@@ -31169,6 +31332,7 @@ mod tests {
                 external: vec![],
                 resources: Resources::default(),
                 shell_env: Default::default(),
+                agy_models: Default::default(),
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),
@@ -32665,6 +32829,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),

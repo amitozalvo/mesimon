@@ -256,6 +256,7 @@ impl World {
             worktrees,
             notices: Vec::new(),
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
             automation: self.automation.clone(),
@@ -543,7 +544,8 @@ impl World {
             | Command::SetUsageWants { .. }
             | Command::SetStatusLine { .. }
             | Command::SetWornTheme { .. }
-            | Command::RefreshUsage { .. } => Response::Ok,
+            | Command::RefreshUsage { .. }
+            | Command::RefreshAgyModels => Response::Ok,
             // The census of sessions started elsewhere: the lesson's own.
             Command::RescanExternal => self.snapshot(),
             // What the board says it saw: nothing to keep on a practice board.

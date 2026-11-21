@@ -314,6 +314,7 @@ mod tests {
             worktrees: vec![],
             notices: vec![],
             shell_env: Default::default(),
+            agy_models: Default::default(),
             git: Default::default(),
             automation: Default::default(),
             links: Vec::new(),

@@ -427,6 +427,50 @@ fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
     let calls = std::fs::read_to_string(bed.h.dir.join("agy-models.log")).unwrap();
     assert_eq!(calls.lines().count(), 1, "one read for a daemon whose file is fresh");
 
+    // T-1327: after a sign-in change while `agy-models.tsv` is still fresh,
+    // `RefreshAgyModels` re-reads `agy models` on a worker without waiting out
+    // `MODELS_TTL_MS`, is refused to an agent, and keeps the last good file if
+    // a read lists no model.
+    assert!(
+        !mesimon_daemon::agents::agy::models_due(
+            &models,
+            mesimon_core::clock::now_ms(),
+        ),
+        "the file is well inside its 6 h TTL"
+    );
+    let denied = c.send(mesimon_core::Principal::Agent { session: id }, Command::RefreshAgyModels);
+    assert!(matches!(denied, Response::Err { .. }), "local only: {denied:?}");
+    let signed_in = "\
+gemini-4-neon-high\tGemini 4 Neon (High)\n\
+gemini-4-neon-low\tGemini 4 Neon (Low)\n\
+gemini-4-carbon-high\tGemini 4 Carbon (High)\n\
+claude-opus-5-5-high\tClaude Opus 5.5 (High)\n";
+    std::fs::write(bed.h.dir.join("agy-models.txt"), signed_in).unwrap();
+    assert!(matches!(c.request(Command::RefreshAgyModels), Response::Ok));
+    wait_until(Duration::from_secs(10), "the refreshed models file", || {
+        matches!(
+            c.request(Command::Snapshot),
+            Response::Board { agy_models, .. } if !agy_models.reading && agy_models.error.is_none()
+        ) && std::fs::read_to_string(&models).ok().as_deref() == Some(signed_in)
+    });
+    let calls = std::fs::read_to_string(bed.h.dir.join("agy-models.log")).unwrap();
+    assert_eq!(calls.lines().count(), 2, "the refresh ran one worker read");
+    std::fs::write(bed.h.dir.join("agy-models.txt"), "").unwrap();
+    assert!(matches!(c.request(Command::RefreshAgyModels), Response::Ok));
+    wait_until(Duration::from_secs(10), "the empty read's error", || {
+        matches!(
+            c.request(Command::Snapshot),
+            Response::Board { agy_models, .. }
+                if !agy_models.reading
+                    && agy_models.error.as_deref() == Some("agy models listed no model")
+        )
+    });
+    assert_eq!(
+        std::fs::read_to_string(&models).unwrap(),
+        signed_in,
+        "an empty read leaves the last good file in place"
+    );
+
     // T-1238: the launch's `PreToolUse` write gate passes ordinary writes with
     // zero bytes on stdout and denies `.mesimon/` and the session's own folder
     // (`--add-dir` puts it in agy's workspace) with `{"decision":"deny",…}`,

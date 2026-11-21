@@ -106,6 +106,13 @@ def log(name, record):
 
 def models():
     log("agy-models.log", "models")
+    override = os.path.join(HERE, "agy-models.txt")
+    if os.path.exists(override):
+        print("Fetching available models...")
+        text = open(override).read()
+        if text:
+            sys.stdout.write(text)
+        return
     print("Fetching available models...")
     print("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
     print("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)")

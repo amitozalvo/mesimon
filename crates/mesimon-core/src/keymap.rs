@@ -873,6 +873,9 @@ pub enum Verb {
     /// `i` on a tier page's Model row (T-951): a model name typed in place,
     /// for one the provider's list does not offer (an older model).
     TierModelName,
+    /// `r` on an agy tier's page (T-1327): asks the daemon to read `agy
+    /// models` again now, on a worker, after a sign-in change.
+    TierModelsRefresh,
     /// The Settings row for the crown's spawn budget (T-412): how many agent
     /// seats the crowned agent may have started at once. Board state like
     /// `McpTools`, in `columns.toml`; Enter cycles it.
@@ -1711,6 +1714,9 @@ pub struct Ctx {
     pub tier_edit_enter_word: &'static str,
     pub tier_on_step: bool,
     pub tier_on_model: bool,
+    /// `r` on an agy tier's page (T-1327): agy is switched on and no `agy
+    /// models` read is already running.
+    pub tier_models_refresh: bool,
     /// The tiers list's cursor is on a tier its scope orders, beside another
     /// one (T-562): the machine's tiers, or a board's own.
     pub tier_can_nudge: bool,
@@ -4946,6 +4952,17 @@ static TIER_EDIT: &[Binding] = &[
         group: Group::Navigate,
         mutates: true,
         prio: 25,
+    },
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::TierModelsRefresh,
+        show: "r",
+        hint: |_| "refresh",
+        avail: |c| c.tier_models_refresh,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
     },
     Binding {
         keys: &[Key::Char('q'), Key::Esc],
@@ -11522,6 +11539,27 @@ mod tests {
         assert_eq!(
             words(frame_keys(Scope::TierEdit, &ctx, 200)),
             ["jk", "h l", "u", "enter", "i", "esc"]
+        );
+        // T-1327: an agy tier page offers `r refresh` when idle, stands down
+        // otherwise, and never crowds `esc` off the 60-cell dialog border on
+        // the Model row while showing on rows with room and in the footer.
+        assert_eq!(resolve(Scope::TierEdit, Key::Char('r'), &ctx), None);
+        let agy_model = Ctx { tier_models_refresh: true, can_undo: false, ..ctx };
+        assert_eq!(
+            resolve(Scope::TierEdit, Key::Char('r'), &agy_model),
+            Some(Verb::TierModelsRefresh)
+        );
+        assert_eq!(words(frame_keys(Scope::TierEdit, &agy_model, 60)), ["jk", "h l", "enter", "i", "esc"]);
+        assert!(footer(Scope::TierEdit, &agy_model, 120).contains("r refresh ∙ esc back"));
+        let agy_provider = Ctx {
+            tier_on_step: true,
+            tier_edit_enter_word: "switch",
+            tier_models_refresh: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            words(frame_keys(Scope::TierEdit, &agy_provider, 60)),
+            ["jk", "h l", "enter", "r", "esc"]
         );
     }
 

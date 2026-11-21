@@ -1307,6 +1307,10 @@ pub struct Daemon {
     shell_env_capturing: bool,
     /// An `agy models` read is out (T-1234): one at a time.
     agy_models_reading: bool,
+    /// Another `agy models` read was asked while one was out (T-1327).
+    agy_models_again: bool,
+    /// Why the last `agy models` read left the file as it was (T-1327).
+    agy_models_error: Option<String>,
     /// When the capture in flight was asked, for the journal's line.
     shell_env_asked_at: u64,
     /// Why the last capture failed, if it did. The previous environment stays
@@ -2481,6 +2485,8 @@ impl Daemon {
             shell_env: crate::shellenv::ShellEnv::default(),
             shell_env_capturing: false,
             agy_models_reading: false,
+            agy_models_again: false,
+            agy_models_error: None,
             shell_env_asked_at: 0,
             shell_env_error: None,
             shell: crate::shellenv::inherited(),
@@ -4155,6 +4161,7 @@ impl Daemon {
             Command::DeleteTier { scope, id } => self.delete_tier(scope, id),
             Command::MoveTier { scope, id, to_index } => self.move_tier(scope, id, to_index),
             Command::SetDefaultTier { scope, id } => self.set_default_tier(scope, id),
+            Command::RefreshAgyModels => self.refresh_agy_models(),
             Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetCrownMode { mode } => self.set_crown_mode(mode),
             Command::SetMergeInto { into } => self.set_merge_into(into),
@@ -13714,6 +13721,10 @@ impl Daemon {
                 failed: self.shell_env_error.is_some(),
                 vars: self.shell_env.vars.len(),
                 shell: self.shell.clone(),
+            },
+            agy_models: mesimon_core::command::AgyModelsStatus {
+                reading: self.agy_models_reading,
+                error: self.agy_models_error.clone(),
             },
             git: mesimon_core::command::RepoGit {
                 fetching: self.git_fetching,
