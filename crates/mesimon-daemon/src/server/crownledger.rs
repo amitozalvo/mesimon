@@ -539,6 +539,7 @@ mod tests {
                 frame: Some("01SUBMIT".into()),
                 submit: true,
                 own_turn: true,
+                agy_queued: false,
                 released: false,
                 handed: true,
                 since_ms: 9,

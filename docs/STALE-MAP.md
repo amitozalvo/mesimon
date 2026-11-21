@@ -49915,3 +49915,51 @@ suite passed 3,407 tests (13 ignored), the workspace built, and all 28 agy
 and 26 plan-accept end-to-end tests passed. The live board accept produced
 the matching provider prompt and daemon receipt, and agy continued.
 The rig verdict is in `target/rig/agy/20261121T144336Z/verdicts.json`.
+
+## agy's first invocation confirms a crown ask (T-1396, 2026-11-21)
+
+Both reported asks to T-1381 started turns from idle, including the one sent
+with `deliver: now`. The board recorded `AgyPreInvocation` 205 ms and 115 ms
+after dispatch. The adapter recognized each prompt, but the daemon passed
+prompt text to the ask ledger only for Claude's `UserPromptSubmit`. This
+explains how an agy worker could act on the words while the crown saw `sent`.
+
+The lead's invocation zero supplies `lastUserInput` for the existing word
+match. The matching ask reads `handed`, then `taken` when the turn settles.
+An Enter into a working agy seat can clear the box before its queued prompt
+runs. The ledger remembers that send and can credit a later first invocation
+to a unique outstanding ask in the same pane. A cleared composer or a later
+model call alone proves no words. A dispatched ask still unconfirmed when
+the turn settles reads `unknown`, with the reason available to the crown.
+
+The live rig on agy 1.5.14 used T-1381's Gemini 4 Carbon High tier. For ask
+`01M7Z90FV3MTPKMZEA4P39J6FQ`, the crown read `handed` and then `taken`
+10.1 seconds later. Its wake named that id as taken, and agy's reply contained
+the word from the ask. One live run, with a fixture crown issuing the real
+wire request to the installed worker.
+
+The first supervised `cargo ut` stopped at six tmux tests under the sandbox.
+The socket-enabled rerun passed, as did the final rerun after adding support
+for Enter during a working turn (3,402 passed, 13 ignored). The first agy e2e
+run passed 10/11. Its new case had already proved both receipts and accepted
+the follow-up idle ask. It then waited for that ask to run while the fixture
+crown held the shared checkout. The corrected case checks acceptance and
+also exercises the later first invocation after a queued Enter. Its supervised
+rerun passed 11/11. The first crown run passed 142/142. Nextest reported a
+leaked output handle on
+`a_brief_left_unsent_after_a_restart_is_not_heard_as_a_finished_turn`.
+The fixture audit was clean.
+The crown rerun on the final ledger passed 142/142 with a clean audit and no
+leak report. The agy rig's seven offline tests and `git diff --check` passed.
+The server change qualifies for the crown's post-merge workspace batch.
+
+The rebase onto f50a22cc overlapped the agy rig's case registry and its
+live-only check. The plan, plan-revision and ask-receipt cases all register,
+and the receipt case requires a live worker. The seven offline checks passed
+again. Rebased `cargo ut` passed 3,407 with 13 ignored and the workspace
+build passed. The rebased agy file passed 28/29. Its existing
+`agy_keeps_the_ticket_in_progress_until_the_whole_seat_finishes` saw idle
+early after two title reports arrived two milliseconds apart. It passed on
+its isolated rerun.
+The complete file rerun with four threads passed 29/29 with a clean fixture
+audit.

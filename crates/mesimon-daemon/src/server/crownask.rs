@@ -72,9 +72,9 @@
 //! next ask until a later end read `taken` at the Esc.
 //!
 //! **A prompt hook that carries the words hands them (T-1025).** Claude
-//! Code's `UserPromptSubmit` names the prompt's text, so a paste's or a
-//! fill's ack whose text is the ask's words is the agent's own receipt of
-//! them (`ack_edge`): the ask reads `handed`, and its turn's end `taken`.
+//! Code's `UserPromptSubmit` and agy's first `PreInvocation` name the
+//! prompt's text. A match with the crown's words is the agent's receipt
+//! of the ask (`ack_edge`): the ask reads `handed`, and its turn's end `taken`.
 //! Other words in the hook (a person's own prompt) still mark the turn and
 //! hand nothing, as T-938 had it.
 
@@ -134,6 +134,8 @@ pub(super) struct CrownAsk {
     /// The words start a turn of their own: sent to an idle or parked
     /// agent, or down the mod as a `submit`.
     pub(super) own_turn: bool,
+    /// Enter queued these words inside a running agy seat for a later turn.
+    pub(super) agy_queued: bool,
     /// The turn the words went into has ended: no longer a block.
     pub(super) released: bool,
     /// The words, as the crown gave them, kept for the one re-send after
@@ -157,6 +159,7 @@ impl CrownAsk {
             frame: None,
             submit: false,
             own_turn: false,
+            agy_queued: false,
             released: false,
             text: None,
             again: false,
@@ -266,6 +269,8 @@ pub(super) struct KeptAsk {
     pub(super) submit: bool,
     #[serde(default)]
     pub(super) own_turn: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) agy_queued: bool,
     #[serde(default)]
     pub(super) released: bool,
     #[serde(default)]
@@ -295,6 +300,7 @@ impl KeptAsk {
             frame: a.frame.clone(),
             submit: a.submit,
             own_turn: a.own_turn,
+            agy_queued: a.agy_queued,
             released: a.released,
             handed,
             since_ms: a.since_ms,
@@ -313,6 +319,7 @@ impl KeptAsk {
             frame: self.frame,
             submit: self.submit,
             own_turn: self.own_turn,
+            agy_queued: self.agy_queued,
             released: self.released,
             text: self.text,
             again: self.again,
@@ -400,6 +407,7 @@ impl Daemon {
         text: Option<String>,
     ) {
         let owed = self.owed.get(&session).filter(|o| o.ticket == target);
+        let agy_queued = owed.is_some_and(|o| o.agy_queued);
         let frame = owed.and_then(|o| o.frame.clone());
         let submit = owed.is_some_and(|o| o.frame.is_some() && o.fill.is_none());
         // A parked seat's pane is the one its wake makes: bound when its
@@ -415,6 +423,7 @@ impl Daemon {
         ask.frame = frame.clone();
         ask.submit = submit;
         ask.own_turn = submit || !working;
+        ask.agy_queued = agy_queued;
         if text.is_some() {
             ask.text = text;
         }
@@ -589,22 +598,82 @@ impl Daemon {
         ask: ulid::Ulid,
         words: Option<&str>,
     ) {
-        let codex = self.session_kind(session) == SessionKind::Codex;
+        let kind = self.session_kind(session);
         let pane = self.pane_of(session);
         let Some(a) = self.crown_ask_mut(target, ask) else { return };
         if !bind_pane(a, pane.as_deref()) {
             return;
         }
         let crown = a.crown;
-        match ack_edge(a, codex, words) {
+        match ack_edge(a, kind == SessionKind::Codex, words) {
             AckEdge::Hand => {
+                if kind == SessionKind::Agy {
+                    // A matching first invocation starts these words' own turn,
+                    // even when Enter queued them behind the preceding turn.
+                    a.own_turn = true;
+                }
                 self.crown_ask_handed(target, ask);
             }
+            // The empty box does not mark the preceding turn with words
+            // waiting inside agy for a turn of their own.
+            AckEdge::Mark if a.agy_queued => {}
             AckEdge::Mark => {
                 self.mark_ask_turn(target, TurnAsk::Asked { crown, ask, said: Said::Sent });
             }
             AckEdge::Nothing => {}
         }
+    }
+
+    /// Only the adapter's accepted lead prompt reaches here. A screen
+    /// receipt, a child hook and a later model invocation carry no proof.
+    pub(super) fn ack_prompt_hook(
+        &mut self,
+        ticket: ulid::Ulid,
+        session: uuid::Uuid,
+        frame: &HookFrame,
+    ) -> bool {
+        if frame.event != crate::agents::agy::PRE_INVOCATION {
+            return self.ack_owed(session, frame.payload["prompt"].as_str());
+        }
+        if let (Some(from), Some(current)) = (frame.pane.as_deref(), self.pane_of(session)) {
+            if from != current {
+                return false;
+            }
+        }
+        let words = (frame.payload["invocationNum"].as_u64() == Some(0))
+            .then(|| frame.payload["lastUserInput"].as_str())
+            .flatten();
+        if self.owed.get(&session).is_some_and(|o| !o.agy_queued) {
+            return self.ack_owed(session, words);
+        }
+        let ask =
+            words.and_then(|w| self.agy_queued_ask(ticket, session, frame.pane.as_deref()?, w));
+        if let Some(ask) = ask {
+            self.crown_ask_acked(ticket, session, ask, words);
+        }
+        self.ack_owed(session, None) || ask.is_some()
+    }
+
+    /// An Enter into a working agy box queues a prompt. A screen sample can
+    /// have already cleared its owed entry when the next invocation names
+    /// the words. Credit only a unique outstanding send to that very pane.
+    fn agy_queued_ask(
+        &self,
+        ticket: ulid::Ulid,
+        session: uuid::Uuid,
+        pane: &str,
+        words: &str,
+    ) -> Option<ulid::Ulid> {
+        let list = self.crown_asks.get(&ticket)?;
+        let mut matching = list.iter().filter(|a| {
+            a.agy_queued
+                && !a.released
+                && a.session == Some(session)
+                && a.pane.as_deref() == Some(pane)
+                && ack_edge(a, false, Some(words)) == AckEdge::Hand
+        });
+        let ask = matching.next()?.id;
+        matching.next().is_none().then_some(ask)
     }
 
     /// The mod's `entered` for `frame` from `session`: found by its frame,
@@ -728,7 +797,7 @@ impl Daemon {
             return asked;
         }
         let now = now_ms();
-        let seat = self.board.live_agent(worker).map(|s| (s.id, s.pane_key.clone()));
+        let seat = self.board.live_agent(worker);
         let Some(list) = self.crown_asks.get_mut(&worker) else { return asked };
         let mut said = asked;
         for a in list.iter_mut() {
@@ -741,8 +810,8 @@ impl Daemon {
                 }
                 continue;
             }
-            let same_seat = seat.as_ref().is_some_and(|(id, pane)| {
-                a.session.is_none_or(|s| s == *id) && bind_pane(a, pane.as_deref())
+            let same_seat = seat.is_some_and(|s| {
+                a.session.is_none_or(|id| id == s.id) && bind_pane(a, s.pane_key.as_deref())
             });
             if a.session.is_some() && !same_seat {
                 if matches!(a.stage, Stage::Sent | Stage::Handed) {
@@ -759,6 +828,26 @@ impl Daemon {
                     said = None;
                 }
                 continue;
+            }
+            // An agy send into a running turn can be acked by the empty
+            // composer alone. Its turn ending cannot confirm the words.
+            if a.stage == Stage::Sent
+                && seat.is_some_and(|s| {
+                    s.kind == SessionKind::Agy
+                        && Some(s.id) == a.session
+                        && !self
+                            .owed
+                            .get(&s.id)
+                            .is_some_and(|o| o.ask == Some(a.id) && o.parked.is_some())
+                        && !self.pending_resumes.iter().any(|r| r.ask == Some(a.id))
+                })
+            {
+                a.set(
+                    Stage::Unknown {
+                        why: "the turn ended without agy confirming the words".into(),
+                    },
+                    now,
+                );
             }
             if let (true, Some(TurnAsk::Asked { crown, ask, .. })) = (mine, asked) {
                 said =
@@ -962,7 +1051,7 @@ pub(super) fn keeps_turn(current: Option<&TurnAsk>, mark: &TurnAsk, list: &[Crow
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum AckEdge {
     /// A receipt that names these words: a Codex steer or turn counted by
-    /// its tag, or a Claude prompt hook whose text is the ask's words
+    /// its tag, or a prompt hook whose text is the ask's words
     /// (T-1025).
     Hand,
     /// A prompt hook with other words, or none (a person's prompt fires one

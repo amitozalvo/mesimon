@@ -275,7 +275,7 @@ mod tests {
         let (effect, applied) = channel();
         b.d.after_paste(b.worker, move |_, pasted| effect.send(pasted).unwrap());
 
-        assert!(b.d.ack_owed(id));
+        assert!(b.d.ack_owed(id, None));
         assert!(!b.d.owed.contains_key(&id));
         let recorded = b.d.crown_ask_latest_clone(b.worker).unwrap();
         assert_eq!(recorded.id, ask);

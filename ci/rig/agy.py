@@ -11,6 +11,9 @@ the title alone. It passes when the brief reached the conversation, the
 first call is the eager mesimon get_ticket, and the reply carries the nonce
 without asking the person.
 
+Case `ask-receipt` uses a fixture crown session to ask a live agy worker.
+It checks the same ask id at receipt, at turn end and in the crown wake.
+
 Case `sign-in` launches agy with a disposable HOME, reads the board and
 get_ticket at the login chooser, and sends no keys.
 
@@ -29,7 +32,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ("brief", "worktree-trust", "sign-in", "file", "plan", "plan-revision")
+CASES = ("brief", "worktree-trust", "sign-in", "file", "plan", "plan-revision", "ask-receipt")
 TITLE = "Answer the question on this ticket"
 BRIEF_MARK = "This session was started by mesimon on a ticket."
 
@@ -148,6 +151,13 @@ class Case:
         env.update(TERM="xterm-256color", MESIMON_AGY="1", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
                    MESIMON_HOOK_BIN=str(args.binary), MESIMON_NO_DAEMON_AUTORESTART="1",
                    MESIMON_AGY_BIN=binary)
+        if result["case"] == "ask-receipt":
+            # The receiver is the live provider under test. The fixture
+            # issues the crown's wire requests and records its wake.
+            crown = guard.root / "fixture-crown"
+            crown.write_text("#!/bin/sh\nexec sleep 600\n")
+            crown.chmod(0o700)
+            env["MESIMON_CLAUDE_BIN"] = str(crown)
         guard.request(op="spawn", argv=[str(args.binary), "daemon", "--repo", str(self.repo)], env=env)
         self.lab.wait_for(lambda: (self.runtime / "orch.sock").exists(), timeout=15)
         self.client = self.lab.Client(self.repo)
@@ -216,6 +226,9 @@ class Case:
             tier = dict(id="rig-agy", name="rig-agy", provider="agy", model=self.args.model)
             self.request("save_tier", scope="board", tier=tier)
             self.request("set_ticket_tier", id=ticket, tier=tier["id"])
+        if self.result["case"] == "ask-receipt":
+            self.check_ask_receipt(ticket)
+            return
         self.sid = self.request("spawn_session", ticket=ticket, kind="agy", submit_prompt=False,
                                 plan=False)["id"]
         self.pane = None
@@ -271,6 +284,50 @@ class Case:
             return
         for name, passed, detail in verdict(rows, self.nonce):
             self.mark(name, passed, detail)
+
+    def check_ask_receipt(self, worker):
+        self.pane = None
+        self.request("set_crown_mode", mode="autonomous")
+        self.request("set_crown_budget", budget=2)
+        crown = self.request("create_ticket", column="TODO", title="Coordinate",
+                             workspace="shared_checkout", tier="claude")["id"]
+        self.request("crown_ticket", id=crown)
+        sid = self.request("spawn_session", ticket=crown, kind="claude", submit_prompt=False)["id"]
+        key = next(t["short_key"] for t in self.client.board()["tickets"] if t["id"] == worker)
+
+        def as_crown(command, **fields):
+            response = self.client.agent(sid, command, key=key, **fields)
+            if response.get("resp") in ("err", "error", "denied"):
+                raise AssertionError(f"{command} refused: {response}")
+            return response
+
+        def view():
+            return as_crown("agent_read_ticket")["ticket"]
+
+        as_crown("agent_start_ticket", seen=view()["seen"], workspace="shared_checkout")
+        self.sid = self.wait("worker seat", lambda: next((s["id"] for s in self.client.board()["sessions"]
+                             if s["ticket"] == worker), None), 30)
+        self.pane = self.sid.replace("-", "")[:16]
+        self.wait("worker's first turn to finish", lambda: self.session()["state"] ==
+                  {"state": "idle", "stop_reason": "end_turn"}, self.args.timeout)
+        words = f"Reply with {self.nonce} and nothing else."
+        ask = as_crown("agent_ask_ticket", text=words, seen=view()["seen"], deliver="now")["asked"]["ask"]
+
+        def heard(status):
+            receipt = view().get("asked") or {}
+            return receipt.get("ask") == ask and receipt.get("status") == status
+
+        for status in ("handed", "taken"):
+            self.wait(f"ask {ask} {status}", lambda: heard(status), self.args.timeout)
+            self.mark(f"get_ticket reads {status}", True, ask)
+        self.wait("crown wake naming the taken ask", lambda: any(
+            row.get("kind") == "crown_wake" and row.get("worker") == worker
+            and row.get("ask") == f"{ask} taken" for row in read_transcript(self.state / "activity.jsonl")), 30)
+        self.mark("crown wake names the taken ask", True, ask)
+        rows = read_transcript(transcript_path(self.session()["agy_conversation_id"]))
+        self.mark("agy replied to the ask", any(self.nonce in r.get("content", "") for r in rows
+                                               if r.get("type") == "PLANNER_RESPONSE"))
+        self.result["model"] = ", ".join(sorted({r["model"] for r in rows if r.get("model")}))
 
     def check_sign_in(self):
         ticket = self.request("create_ticket", column="TODO", title="Wait for sign-in",
@@ -403,8 +460,9 @@ def run(repo, args, parser):
     print(f"agy rig: {', '.join(cases)}; {'live' if args.live else 'no model call'}", flush=True)
     if args.lay:
         return 0
-    if {"file", "plan", "plan-revision"}.intersection(cases) and not args.live:
-        parser.error("the file and plan cases need --live to verify the agent's answer")
+    live_cases = {"file", "plan", "plan-revision", "ask-receipt"}.intersection(cases)
+    if live_cases and not args.live:
+        parser.error(f"{', '.join(sorted(live_cases))} requires --live to verify the agent's answer")
     if not os.environ.get("MESIMON_TEST_RUN"):
         command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--cargo-manifest", str(Path(repo) / "Cargo.toml"),
                    "--timeout", "900", "--",

@@ -17,7 +17,7 @@ use mesimon_core::board::{
     AgentProvider, AgyMode, CrownMode, Reason, SessionKind, SessionRecord, SessionState,
     StopReason, WorkspaceStrategy,
 };
-use mesimon_core::command::{Command, Response};
+use mesimon_core::command::{Command, Deliver, Response};
 use mesimon_core::mesophon::{
     self as api, Answer, DialogAnswer, LocalAction, PermissionDecision, QuestionAnswer, Reply,
 };
@@ -1807,6 +1807,78 @@ fn intervening_working_titles_preserve_the_command_and_refused_calls_never_type(
         assert!(keys.iter().all(|key| key["id"] == "ordinary"), "{keys:?}");
         assert_eq!(bed.decisions().len(), 1);
     }
+}
+
+#[test]
+fn a_crown_ask_is_handed_by_agys_words_and_taken_when_its_turn_ends() {
+    let Some(bed) = Bed::boot("agy-ask-receipt", true, true) else { return };
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
+    assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+    let crown = ticket(&mut c, "Coordinate");
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    let crown = c.spawn_claude(crown);
+    agy_board(&mut c);
+    let worker = ticket(&mut c, "Start here");
+    let key = c.key_of(worker);
+    assert!(matches!(c.crown_start(crown, &key, "shared_checkout"), Response::AgentStarted { .. }));
+    let sid = c.board().live_agent(worker).unwrap().id;
+    bed.await_prompt(0, "turn", "Start here");
+    bed.cue("stop");
+    c.await_state(sid, "first turn ended", |s| {
+        matches!(s, SessionState::Idle { stop_reason: StopReason::EndTurn })
+    });
+
+    let ask =
+        |c: &mut TestClient, text, deliver| match c.crown_ask(crown, &key, text, deliver, None) {
+            Response::AgentAsked { asked: Some(a), .. } => a.ask,
+            other => panic!("ask_agent: {other:?}"),
+        };
+    let read = |c: &mut TestClient| c.agent_read(crown, &key).unwrap().asked.unwrap();
+    let words = "Read the first line.\nThen read the second.";
+    let first = ask(&mut c, words, Deliver::Now);
+    bed.await_prompt(1, "turn", words);
+    wait_until(Duration::from_secs(10), "agy named this ask's words", || {
+        let a = read(&mut c);
+        a.ask == first && a.status == "handed"
+    });
+
+    // A mid-turn alt+m clears the box. Its subsequent model invocation
+    // names no new words, so the steer has no matching prompt receipt.
+    let steer = ask(&mut c, "Look at line three too.", Deliver::Immediately);
+    bed.await_prompt(2, "steer", "Look at line three too.");
+    assert_eq!(read(&mut c).status, "sent");
+    // Enter during the same turn queues another prompt inside agy. Wait
+    // until the board has observed the empty box before starting that turn.
+    let queued_words = "Read line four.";
+    let queued = ask(&mut c, queued_words, Deliver::Now);
+    wait_until(Duration::from_secs(15), "queued Enter acknowledged by the box", || {
+        let events = std::fs::read_to_string(bed.h.paths.state_dir.join("activity.jsonl")).unwrap();
+        let after = events.lines().skip_while(|line| !line.contains(&queued));
+        after.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|row| row["cmd"] == "queued_ask_delivered")
+    });
+    assert_eq!(read(&mut c).status, "sent");
+    bed.cue("stop");
+    bed.await_prompt(3, "queued", queued_words);
+    wait_until(Duration::from_secs(10), "queued turn names its ask", || {
+        let a = read(&mut c);
+        a.ask == queued && a.status == "handed"
+    });
+    bed.cue("stop");
+    wait_until(Duration::from_secs(15), "the asks settle", || {
+        let a = read(&mut c);
+        a.ask == queued
+            && a.status == "taken"
+            && a.earlier.iter().any(|e| e.ask == steer && e.status == "unknown")
+            && a.earlier.iter().any(|e| e.ask == first && e.status == "taken")
+    });
+    let follow_up = ask(&mut c, "Read line five.", Deliver::Idle);
+    assert_eq!(read(&mut c).ask, follow_up, "the crown can queue its next idle ask");
 }
 
 /// T-1235: an autonomous crown answers an agy worker's `ask_question` stops

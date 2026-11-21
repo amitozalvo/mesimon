@@ -1215,9 +1215,8 @@ pub struct Daemon {
     /// The `prompt_id` of the hook frame being handled, and its seat
     /// (T-983, round 1): the one id a begin inside that frame binds.
     frame_prompt: Option<(uuid::Uuid, String)>,
-    /// The prompt's text in the `UserPromptSubmit` frame being handled
-    /// (T-1025), for the ack of the crown's ask alone (`crownask::ack_edge`:
-    /// a hook that carries the ask's words is the agent's receipt of them).
+    /// Claude's prompt text, used to recognize task notifications and
+    /// the cause of a crown turn.
     /// Read, never kept (D11): set as the frame is handled, cleared after.
     frame_words: Option<String>,
     /// The crown's expectation of a turn's length, by ticket (T-973,
@@ -2980,6 +2979,8 @@ struct Owed {
     /// one is never kept unsent: nothing says whether the box took it, and
     /// the person's own screen does.
     screen_acked: bool,
+    /// Enter into a working agy composer queues the prompt for its own turn.
+    agy_queued: bool,
     /// What the board typed into the box ahead of these words: the composed
     /// spawn's title (T-987). A box holding exactly that is the board's own;
     /// a box holding anything else is a person's draft.
@@ -3105,6 +3106,7 @@ impl Owed {
             screen_after: now,
             sent_at: Some(now),
             screen_acked: false,
+            agy_queued: false,
             typed: None,
             held: false,
             cleared: false,
@@ -5759,7 +5761,7 @@ impl Daemon {
                 self.moves.asked_by_hand(ticket);
                 // The Codex counterpart of `UserPromptSubmit`: whatever was
                 // owed on this pane, a turn began.
-                self.ack_owed(id);
+                self.ack_owed(id, None);
                 self.lower_hand_on(ticket);
                 self.forget_told_hand(ticket);
             }
@@ -5842,7 +5844,7 @@ impl Daemon {
             if let Some(ticket) = self.owed.get(&id).filter(|o| o.steer.is_some()).map(|o| o.ticket)
             {
                 self.feed.board("daemon", "codex_steered", Some(ticket));
-                dirty |= self.ack_owed(id);
+                dirty |= self.ack_owed(id, None);
             }
         }
         for (id, ask, plan) in &asks {
@@ -6434,7 +6436,7 @@ impl Daemon {
         // The frame's own `prompt_id` is what a begin inside it may bind
         // (T-983, round 1), and only while it is handled: a begin anywhere
         // else is id-less, never the cache's earlier turn. Its prompt's
-        // text the same (T-1025), for the crown ask's ack alone.
+        // text has the same lifetime.
         self.frame_prompt = None;
         self.frame_words = (frame.event == "UserPromptSubmit")
             .then(|| frame.payload.get("prompt").and_then(serde_json::Value::as_str))
@@ -6657,7 +6659,7 @@ impl Daemon {
                     // Our own paste's ack — the owed Enter paid, by us or by
                     // the user typing their own — or the user talking to the
                     // agent while an ask waited, which drops it (2026-09-04).
-                    dirty |= self.ack_owed(id);
+                    dirty |= self.ack_prompt_hook(t, id, &frame);
                     // A raised hand has been answered (T-107). Same road,
                     // same reasoning: whoever typed, the agent is no longer
                     // waiting on a person.
@@ -7754,7 +7756,7 @@ impl Daemon {
     /// feed word; or the user's own while an ask waited on the ticket — which
     /// drops the ask: they talked to the agent ahead of it, and the parked
     /// words may now be moot. The one settling site for every road (T-244).
-    fn ack_owed(&mut self, id: uuid::Uuid) -> bool {
+    fn ack_owed(&mut self, id: uuid::Uuid, words: Option<&str>) -> bool {
         let ahead_of_steer =
             self.owed.get(&id).is_some_and(|o| o.steer.is_some() && o.sent_at.is_none());
         // A `/` command or a `!` line acked off the screen (T-876, T-894)
@@ -7882,8 +7884,7 @@ impl Daemon {
             // no other prompt does. The hook's own text, where it carries
             // one, says whether the words are the ask's (T-1025).
             if let Some(ask) = owed.ask {
-                let words = self.frame_words.take();
-                self.crown_ask_acked(ticket, id, ask, words.as_deref());
+                self.crown_ask_acked(ticket, id, ask, words);
             }
             changed = true;
         }
@@ -8240,7 +8241,7 @@ impl Daemon {
                 // for it, and the notification of a `!` run Claude Code put in
                 // the background no longer stands in for one.
                 let person = self.owed.get(&id).map(|o| (o.ticket, o.ack.word == Ack::PROMPT.word));
-                changed |= self.ack_owed(id);
+                changed |= self.ack_owed(id, None);
                 if let Some((ticket, true)) = person {
                     changed |= self.lower_hand_on(ticket);
                     self.forget_told_hand(ticket);
@@ -16270,6 +16271,7 @@ impl Daemon {
         // agy's receipt, as a command's is.
         if agy && !self.session_idle(id) {
             if let Some(owed) = self.owed.get_mut(&id) {
+                owed.agy_queued = !immediately && !owed.screen_acked;
                 owed.screen_acked = true;
             }
         }
