@@ -309,10 +309,13 @@ and the native `mcp_mesimon_get_ticket` as the first tool call. The answer
 must carry the nonce from the ticket description without a permission prompt.
 
 On agy 1.5.13, a passing `/mcp` check and a failing cold `brief` case can
-occur with the same workspace configuration. Interactive agy starts MCP
-servers in the background. The first request can therefore omit even an eager
-`get_ticket`. Opening `/mcp` before submitting the live title would warm the
-server and invalidate the cold-start check. [Antigravity CLI 1.1.9 changelog](https://antigravity.google/docs/changelog?tab=cli#:~:text=Improved%20interactive%20startup%20so%20a%20slow)
+occur with the same workspace configuration. Interactive agy does not start
+workspace MCP servers while waiting at its prompt box; it spawns them lazily
+when `/mcp` opens or when the first user message is sent, and on that send it
+resolves the first turn's agent config without blocking (`blocking:false`), so
+holding submit cannot warm the server either. The first request can therefore
+omit even an eager `get_ticket`. Opening `/mcp` before submitting the live
+title would warm the server and invalidate the cold-start check. [Antigravity CLI 1.1.9 changelog](https://antigravity.google/docs/changelog?tab=cli#:~:text=Improved%20interactive%20startup%20so%20a%20slow)
 
 ## Judging crown text (T-930)
 

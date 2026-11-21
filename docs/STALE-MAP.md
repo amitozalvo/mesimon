@@ -49061,3 +49061,36 @@ mod bridge supplies its own `ModAnswer`.
 | Final `crown_e2e`, six threads | Mod passed 123/123. Hooks passed 122/123 including the restart case. The unrelated `a_codex_crown_s_wake_waits_for_a_person_and_never_sends_their_words` counted ten lines instead of nine and passed on its isolated hooks rerun. |
 | R01–R20, final mod stress | All 20 passed with six concurrent fixtures after the other suites finished. |
 | `cargo ut` | 3,367 passed, 13 ignored. |
+
+## Holding agy's first submit cannot wait for `tools/list` (T-1381, 2026-11-21)
+
+**Refuted; no code change.** T-1381 proposed holding an agy seat's first submit
+until its `mesimon mcp` shim answered `tools/list` (or a 5 s bound), on the
+inference from T-1380 that agy 1.5.13 starts workspace MCP servers in the
+background at launch and had merely missed submit by 104 ms.
+
+Measured on agy 1.5.13:
+
+1. **No MCP shim runs before submit.** In a zero-model-call probe with a
+   pre-trusted workspace and `.agents/mcp_config.json` (`get_ticket` marked
+   `eager: true`), agy painted its composer at `t = 0.863 s`, spawned zero MCP
+   processes through `t = 6.868 s` (6.0 s at an empty box), and still spawned
+   zero through `t = 12.933 s` (another 6.0 s holding a bracketed-pasted draft
+   with no Enter). Clearing the line and sending `/mcp` spawned the server
+   141 ms later (`t = 13.288 s`) and completed `server/discover`, `initialize`,
+   `notifications/initialized` and `tools/list` by `t = 13.290 s`.
+2. **Submit resolves the first turn's config before spawning the shim.** On
+   T-1381's own seat (`gemini-4-carbon-high`), `agy` started at `01:50:36.787`,
+   reached `CLI ready for user input` at `01:50:37.502`, and started no shim
+   across 3.70 s before submit. `HandleUserInput` ran at `01:50:40.488`;
+   `SEND_USER_CASCADE_MESSAGE` completed at `01:50:40.515` with
+   `blocking:false` and `resolve_agent_config_latency_ms:0`; the seat's
+   `mesimon mcp` process started at `01:50:40.528` (`proc_pidinfo`, +40.4 ms
+   after `HandleUserInput`, +13.5 ms after the cascade send resolved its
+   config). Step 2 of the transcript carried the `SessionStart` brief and no
+   Mesimon MCP tool declarations.
+
+Holding the first prompt's submit until `tools/list` (or 5 s) would therefore
+wait out the full bound on every fresh agy start and still submit before any
+shim existed, leaving first-turn tool discovery unchanged. Closed as agy's own
+behaviour per the ticket's acceptance criteria, with zero live Neon turns.
