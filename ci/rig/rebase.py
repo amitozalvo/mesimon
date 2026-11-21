@@ -51,6 +51,7 @@ def train_fixture(rig, test):
         restored = False
         try:
             test["fixture_checkout"] = checkout
+            test["fixture_base"] = tip
             test["fixture_target"] = "branch:" + target
             rig.wire.set_merge_into(test["fixture_target"])
             try:
@@ -65,6 +66,7 @@ def train_fixture(rig, test):
         finally:
             test.pop("fixture_checkout", None)
             test.pop("fixture_target", None)
+            test.pop("fixture_base", None)
             final_tip = git(checkout, "rev-parse", "HEAD")
             git(rig.repo, "worktree", "remove", "--force", str(checkout))
             if restored:

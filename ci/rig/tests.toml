@@ -272,12 +272,13 @@
 #              second PR 43 running on the merged ticket, passes its
 #              pipeline, then merges it, each of those two a forge wake the
 #              step waits through the crown's turn on. `train_on` (T-919) arms the merge
-#              train and takes the test ticket off the person's hold every
-#              test is filed under, and with `block` puts an untracked file
-#              at the checkout's root where the worker commits the same
-#              path, so the train's merge is refused and nothing lands on
-#              the ticket branch the rig runs in; `train_off` disarms it,
-#              holds the ticket again and removes the file.
+#              train on the fixture branch. `hold` keeps the test ticket on
+#              its manual hold, and `block` puts a file in the destination
+#              checkout where the worker commits the same path, refusing the
+#              fast-forward. `notice` enables the worker's merged notice.
+#              `await_notice_finish` releases verification after the crown's
+#              merge receipt or its mid-notice keyed read on a train merge.
+#              `train_off` disarms the train, holds the ticket and removes the blocker.
 #              `person_in_crown` (T-918) puts a
 #              tmux client on the crown's session, as the board's focus
 #              would; `person_leaves` waits for the board to owe the crown
@@ -2978,3 +2979,66 @@ checks = ["started_by_crown", "woke_once:merged", "crown_line:MN1 landed:landed"
 
   [[test.steps]]
   rig = "merge_with_notice"
+
+[[test]]
+id = "MN2"
+title = "MN2 · a commit on the crown's ask"
+blind = true
+workspace = "worktree"
+merge_guard = "fixture"
+brief = 'Reply ready and end your turn. When asked to make a commit, do it in your own worktree. When the board tells you the branch has merged, run this foreground verification in Bash: gate=$(git rev-parse --git-path notice-released); for i in {1..90}; do test -f "$gate" && break; sleep 1; done; test -f "$gate". If it succeeds reply verified and end your turn.'
+expect = "The worker commits on the crown's ask. The train lands the commit and sends the notice. On the ask-ended wake the crown reads the merged branch during verification. The worker stops and the crown receives the finish."
+checks = ["road:mod", "started_by_crown", "crown:ask_agent=1", "crown:merge_ticket=0", "ask_train_merge", "fed:merge_train_merged=1", "woke:answered", "notice_finish", "replies:ready,committed,verified"]
+
+  [[test.steps]]
+  rig = "train_on"
+  notice = true
+
+  [[test.steps]]
+  crown = "Call start_agent for {key} with workspace worktree, then end your turn. When the worker is ready, acknowledge it and end your turn. Leave the worker running."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "Ask {key}'s agent to create MN2.txt containing ready, commit it, reply committed and end its turn. End your own turn. When the board tells you the turn on your ask ended, read {key} with get_ticket and report the branch state. Leave verification to the worker. When the board tells you verification has finished, reply with the single line: verification finished."
+  until = { fed = "merge_train_notified", state = "working" }
+  settle = false
+
+  [[test.steps]]
+  rig = "await_notice_finish"
+  by = "train"
+
+  [[test.steps]]
+  rig = "train_off"
+
+[[test]]
+id = "MN3"
+title = "MN3 · the crown merges a held ticket"
+blind = true
+workspace = "worktree"
+merge_guard = "fixture"
+brief = 'Create MN3.txt containing ready and commit it. Reply committed and end your turn. When the board tells you the branch has merged, run this foreground verification in Bash: gate=$(git rev-parse --git-path notice-released); for i in {1..90}; do test -f "$gate" && break; sleep 1; done; test -f "$gate". If it succeeds reply verified and end your turn.'
+expect = "The held ticket is the crown's to merge. Its merge_ticket receipt reports that the notice was sent. When verification ends the crown receives the finish."
+checks = ["road:mod", "started_by_crown", "crown:merge_ticket=1", "not_fed:merge_train_merged", "notice_finish", "replies:committed,verified"]
+
+  [[test.steps]]
+  rig = "train_on"
+  notice = true
+  hold = true
+
+  [[test.steps]]
+  crown = "Call start_agent for {key} with workspace worktree, then end your turn. When it delivers, acknowledge the delivery and end your turn. Leave its branch for review."
+  until = { stops = 1, state = "idle" }
+  wake = true
+
+  [[test.steps]]
+  crown = "Review approved. Merge {key} with merge_ticket, report the receipt and end your turn. Leave verification to the worker. When the board tells you verification has finished, reply with the single line: verification finished."
+  until = { state = "working" }
+  settle = false
+
+  [[test.steps]]
+  rig = "await_notice_finish"
+  by = "crown"
+
+  [[test.steps]]
+  rig = "train_off"

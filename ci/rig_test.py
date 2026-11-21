@@ -159,6 +159,12 @@ class PreflightTests(unittest.TestCase):
         case["workspace"] = "shared_checkout"
         self.refused(case, "HT1 setup: a commit on a shared checkout")
 
+    def test_notice_wait_requires_the_declared_merger_and_an_open_destination(self):
+        for mutation in ({"notice": False}, {"hold": True}, {"block": "MN2.txt"}):
+            case = self.case("MN2")
+            case["steps"][0].update(mutation)
+            self.refused(case, "the notice check needs notices on and its declared merger")
+
     def test_a_filed_child_and_a_later_sibling_cannot_produce_the_primary_wait(self):
         case = self.case("SF1")
         del case["steps"][0]["until"]["filed"]
@@ -418,8 +424,8 @@ REQ = "toolu_plan1"
 WHOLE = "1. a step of the design ┌──┐\n" * 40 + "\nThe code word is quince.\n"
 
 
-def plan_call(cid, name, plan=False, request=None):
-    args = {"key": "T-1"}
+def plan_call(cid, name, plan=False, request=None, *, key="T-1"):
+    args = {"key": key}
     if plan:
         args["plan"] = True
     if request:
@@ -430,6 +436,52 @@ def plan_call(cid, name, plan=False, request=None):
 def plan_result(cid, body, error=False):
     return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": cid,
                                                      "is_error": error, "content": body}]}}
+
+
+class NoticeObservationTests(unittest.TestCase):
+    answer = {"type": "user", "message": {"content": 'T-1 "fixture" ended its turn after your ask went in'}}
+    early = "2026-11-20T00:00:00Z"
+    during = "2026-11-20T00:00:01Z"
+
+    def read(self, key="T-1", state="merged", stamp=during):
+        return [dict(assistant(plan_call("r", "get_ticket", key=key)), timestamp=stamp),
+                dict(plan_result("r", json.dumps({"merge_state": state})), timestamp=self.during)]
+
+    def test_train_read_requires_the_wake_and_a_keyed_call_during_the_notice(self):
+        def observed(rows):
+            return rig.notice_observed(rows, "T-1", "fixture", rig.iso_ms(self.during), "train")
+
+        self.assertTrue(observed([self.answer, *self.read()]))
+        for rows in [self.read(), [*self.read(), self.answer],
+                     [self.answer, *self.read(stamp=self.early)], [self.answer, *self.read(key="T-2")],
+                     [self.answer, *self.read(state="ahead")]]:
+            self.assertFalse(observed(rows))
+
+    def test_the_single_finish_must_follow_stop_and_get_its_own_reply(self):
+        notice = rig.iso_ms(self.early)
+        stop = rig.iso_ms(self.during)
+        finish = {"type": "user", "timestamp": self.during,
+                  "message": {"content": 'T-1 "fixture" finished its turn (nothing new to merge)'}}
+        reply = assistant({"type": "text", "text": "Verification finished."})
+
+        def check(*rows):
+            return rig.notice_finish(rows, "T-1", "fixture", notice, stop)
+
+        self.assertEqual(check(finish, reply), stop)
+        self.assertIsNone(check(dict(finish, timestamp=self.early), reply))
+        self.assertIsNone(check(finish, reply, finish))
+        self.assertIsNone(check(finish, self.answer, reply))
+
+    def test_own_merge_requires_the_crowns_receipt_for_this_worker(self):
+        def observed(notice, key="T-1", error=False):
+            rows = [assistant(plan_call("m", "merge_ticket", key=key)),
+                    plan_result("m", json.dumps({"outcome": "merged", "notice": notice}), error=error)]
+            return rig.notice_observed(rows, "T-1", "fixture", rig.iso_ms(self.during), "crown")
+
+        self.assertTrue(observed("sent"))
+        self.assertFalse(observed("off"))
+        self.assertFalse(observed("sent", key="T-2"))
+        self.assertFalse(observed("sent", error=True))
 
 
 def head_body(request=REQ):

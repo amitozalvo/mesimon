@@ -22,12 +22,33 @@ renames before launch. A collision reports the case and branch before filing.
   the board feed).
 - Worktree starts declare `merge_guard = "train_off"` or `"fixture"`. The first
   requires the board's train to be off. The second selects a ticket-specific
-  merge branch with independent history and a checkout for the train's blocker.
+  merge branch with independent history and its own checkout. A `train_on`
+  step can set `block` to exercise a refused fast-forward or `notice = true`
+  to land a commit and tell the worker. With `hold = true` the crown owns
+  that ticket's merge while the train stays armed.
   The uncrowned and rebase fixtures already own their merge targets.
 
 These fields describe the fixture to the runner. Only the existing prompt,
 brief and verdict fields reach the model. The real-tier live run still measures
 changes to agent behavior.
+
+## Merge notices
+
+Run `python3 -B ci/rig.py --only MN2` and `python3 -B ci/rig.py --only MN3`
+separately for a fresh Opus crown in each case. Both workers verify the
+landed commit in a notice turn. A file in the worker's private Git directory
+lets the rig release that turn after observing the crown.
+
+| Case | Who lands the commit | What the rig reads |
+| --- | --- | --- |
+| MN1 | Person | The crown reports the landing while verification runs, then reports the finish. |
+| MN2 | Train | The worker commits on the crown's ask. The crown receives the ask-ended wake and reads `merge_state: merged` with a keyed `get_ticket` during the notice turn. |
+| MN3 | Crown | The held ticket's `merge_ticket` receipt reports `outcome: merged` and `notice: sent`. |
+
+MN2 and MN3 check the fixture branch's tip against the worker's commit.
+After release, the worker's Stop must precede the finish prompt in the crown's
+transcript, and the crown must answer it. The fixture disarms the train and
+holds the worker before restoring the board's merge target.
 
 ## Linked crowns
 

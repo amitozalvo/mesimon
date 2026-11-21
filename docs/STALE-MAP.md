@@ -49584,3 +49584,38 @@ All four named tests passed 20 consecutive rounds with 11 CPU workers active.
 The TUI crate passed on its unrestricted rerun (1,503 passed, six ignored).
 The sandboxed run failed in two Unix socket tests and two macOS applet tests,
 and the cleanup audit could not run `ps`.
+
+## A live crown reads a train merge during the worker's notice turn (T-1286, 2026-11-21)
+
+T-1372 gave the Claude rig an independent Git history and a checked-out merge
+destination. T-1366's MN1 used the person's merge command there. MN2 now arms
+the train with notices enabled on that destination. MN3 keeps its ticket on
+manual hold, so the crown owns the merge and gets the receipt. Both keep the
+worker's verification open until the crown observes the merge. T-1366 gives a
+free crown a landing and a later finish, so the close-out verdict looks for the
+finish alone after the worker's Stop.
+
+Each case ran once on Claude Code 2.1.330, with a fresh Opus 5.5 high crown
+and a Sonnet 5.5 low worker. In MN2 the worker committed on the ask, the train
+fast-forwarded once, and the crown's ask-ended wake said `merged since`. Its
+keyed read returned `merged` while verification was running. In MN3 the
+crown's single `merge_ticket` returned `notice: sent`. The train made no merge.
+The final verdict checks were also replayed against those same feeds and
+transcripts. The crown received and answered one finish for each notice, 4.497 s
+(MN2) and 5.144 s (MN3) after the worker's Stop. Both fixture audits were clean.
+
+**The two November 16 landings.** The retained board feed's state decisions and
+the `turn_ended` path in `0b1a845b` identify the missing finish. Times are local.
+
+| Worker | Notice Stop | Async release selected | Park changed to monitoring and delivery went out |
+| --- | --- | --- | --- |
+| T-1274 | 11:23:56 | 11:24:01, high-confidence background | 11:34:01 |
+| T-1281 | 14:52:14 | 14:52:18, high-confidence background | 15:02:18 |
+
+The async wait lasted seconds. Its replay of the Stop parked the seat on
+background work, which kept the merge step open. Ten minutes later the park
+clock moved each seat from background to monitoring at medium confidence.
+That transition called `turn_ended(false)` with the merge mark still present.
+`unproven_step` cleared the held landing's `finished` flag, producing
+`delivered (merge_state merged)`. Each later `finished` wake followed a new
+prompt and its own end-turn Stop.

@@ -526,6 +526,50 @@ def wake_count(rows, key, words):
     return sum(words in said for _, said in prompts_naming(rows, key))
 
 
+def notice_observed(rows, key, title, notice_ms, by):
+    """The crown's receipt, or its keyed read on the ask-ended wake during the notice."""
+    if by == "train":
+        clause = f'{key} "{title}" ended its turn after your ask went in'
+        answered = next((i for i, words in prompts_naming(rows, key) if clause in words), None)
+        if answered is None:
+            return False
+        rows = [r for r in rows[answered + 1:] if (row_ms(r) or 0) >= notice_ms]
+        tool, expected = "get_ticket", {"merge_state": "merged"}
+    else:
+        tool, expected = "merge_ticket", {"outcome": "merged", "notice": "sent"}
+    for result in keyed_calls(rows, tool, key):
+        if result["is_error"]:
+            continue
+        try:
+            receipt = json.loads(result["text"])
+        except ValueError:
+            continue
+        if isinstance(receipt, dict) and all(receipt.get(k) == v for k, v in expected.items()):
+            return True
+    return False
+
+
+def notice_finish(rows, key, title, notice_ms, stop_ms):
+    """One finish for this notice, answered in the crown turn that received it."""
+    clause = f'{key} "{title}" finished its turn'
+    finishes = [(i, words) for i, words in prompts_naming(rows, key)
+                if clause in words and (row_ms(rows[i]) or 0) >= notice_ms]
+    if len(finishes) != 1 or stop_ms is None:
+        return None
+    i, words = finishes[0]
+    at = row_ms(rows[i])
+    if at < stop_ms or "merge_state" in words:
+        return None
+    turn = []
+    for row in rows[i + 1:]:
+        if user_prompts([row]):
+            break
+        turn.append(row)
+    if "verification finished" in bare_replies(replies(turn)):
+        return at
+    return None
+
+
 def tool_calls(rows):
     """(tool name, its result) for every tool use in a transcript, in order;
     a result is `{is_error, text}`, or None while none came."""
@@ -2563,6 +2607,65 @@ Reply with the single word ready and end your turn."""
         self.closed()
         return True
 
+    def await_notice_finish(self, test, by, record):
+        from rebase import git as fixture_git
+        ticket, key = test["ticket"], test["key"]
+        board = self.board()
+        worker = self.agent_of(board, ticket)
+        crown = self.agent_of(board, self.crown)
+        checkout = test["fixture_checkout"]
+        branch = fixture_git(worker["cwd"], "symbolic-ref", "--short", "HEAD")
+        base = test["fixture_target"].removeprefix("branch:")
+        notice = f"Your branch {branch} has been merged into {base}."
+        gate = os.path.join(fixture_git(worker["cwd"], "rev-parse", "--absolute-git-dir"),
+                            "notice-released")
+
+        def observation():
+            notice_ms = next((iso_ms(at) for words, at in user_prompts(transcript(worker), at=True)
+                              if notice in words), None)
+            if not notice_ms or self.agent_of(self.board(), ticket)["state"]["state"] != "running":
+                return False
+            if notice_observed(transcript(crown), key, test["title"], notice_ms, by):
+                return notice_ms
+            return False
+
+        try:
+            notice_ms = self.wait_for("the crown to observe the merge while the worker verifies",
+                                      observation, 75, self.watch)
+            if not notice_ms:
+                record["failures"].append("missing crown receipt or mid-notice keyed read")
+                return False
+            worker_tip = fixture_git(worker["cwd"], "rev-parse", "HEAD")
+            if (self.board().get("merge_into") != test["fixture_target"]
+                    or fixture_git(checkout, "rev-parse", "HEAD") != worker_tip
+                    or fixture_git(checkout, "rev-parse", "HEAD^") != test["fixture_base"]):
+                record["failures"].append("the one worker commit did not land on the fixture")
+                return False
+        finally:
+            released = int(time.time() * 1000)
+            with open(gate, "w"):
+                pass
+
+        def close_out():
+            stop = next((l["at_ms"] for l in self.worker_lines(worker["id"])
+                         if l.get("event") == "Stop" and l["at_ms"] >= notice_ms), None)
+            if stop is not None and stop < released:
+                record["failures"].append("the worker stopped before verification was released")
+                return True
+            finish = notice_finish(transcript(crown), key, test["title"], notice_ms, stop)
+            if finish and self.crown_settled(after_ms=finish, quiet=0):
+                record["notice_turn"] = (notice_ms, stop)
+                self.log(f"{key} verification released after {released - notice_ms} ms; "
+                         f"finish reached the crown {finish - stop} ms after Stop")
+                return True
+            return False
+
+        if not self.wait_for("the crown's reply to the notice turn ending", close_out,
+                             STEP_TIMEOUT, self.watch):
+            record["failures"].append("no finish prompt and crown reply after the worker's Stop")
+            return False
+        return bool(record.get("notice_turn"))
+
     def restore_binary(self, record):
         """Put back the stamp `binary_moved` changed (DB1, T-941), on the
         file it changed alone: one a build replaced or rewrote since keeps its
@@ -2627,6 +2730,8 @@ Reply with the single word ready and end your turn."""
                 record["failures"].append("the crown did not report the notice turn ending")
                 return False
             return True
+        if what == "await_notice_finish":
+            return self.await_notice_finish(test, step["by"], record)
         if what == "rebase":
             import rebase
 
@@ -3430,7 +3535,8 @@ Reply with the single word ready and end your turn."""
             on = what == "train_on"
             block = step.get("block")
             try:
-                self.wire.request({"cmd": "set_automation", "merge_train": on, "merge_notice": False})
+                self.wire.request({"cmd": "set_automation", "merge_train": on,
+                                   "merge_notice": on and step.get("notice", False)})
                 self.wire.set_manual_merge(test["ticket"], not on or bool(step.get("hold")))
             except WireError as error:
                 record["failures"].append(f"{what}: {error}")
@@ -5156,6 +5262,20 @@ Reply with the single word ready and end your turn."""
                 # get_ticket still carries the hand it was told of.
                 ok, seen = told_hand_read(crown_all, key, arg)
                 check(c, ok, seen)
+            elif name == "ask_train_merge":
+                order = ["ask_agent_sent", "Stop", "merge_train_merged", "merge_train_notice_landed"]
+                events = []
+                for line in lines:
+                    if of_session(line, rec["id"]) and line.get("event") == "Stop":
+                        events.append("Stop")
+                    elif line.get("ticket") == tid and line.get("cmd") in order:
+                        events.append(line["cmd"])
+                check(c, is_subsequence(order, events), " → ".join(events))
+            elif name == "notice_finish":
+                notice_ms, stop_ms = record.get("notice_turn", (0, None))
+                at = notice_finish(crown_rows, key, title, notice_ms, stop_ms)
+                check(c, at, f"one finish received {at - stop_ms} ms after Stop and answered"
+                      if at else "missing, early, repeated or unanswered finish")
             elif name == "wake_said":
                 # `wake_said:<words>` (T-1278): a sentence the board woke the
                 # crown with about the ticket holds <words>.
