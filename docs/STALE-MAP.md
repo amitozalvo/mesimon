@@ -49775,34 +49775,75 @@ with zero answer buttons. The server change qualifies for the post-merge
 workspace suite on the crown's batch schedule.
 ## agy plan artifacts from the board and phone (T-1236, 2026-11-21)
 
-A column's agy plan setting and a plan-mode wake already supplied
-`--mode plan`. The board now recognizes that argv when offering plan acceptance.
-A lead `PostToolUse` for `write_to_file` (TargetFile) or `write_file` (Path)
-identifies a feedback-requesting, user-facing Markdown file. A subsequent
-`reviewing` title in plan mode opens needs-you/plan and writes the file text
-through the existing agent-note authorization. Repeated titles keep one note.
-The daemon reads at most the note limit, using the conversation's own
-directory and a regular file, without following a conversation or file symlink.
+A column's agy plan setting and a plan-mode wake supply `--mode plan`.
+On agy 1.5.13 with Gemini 4 Neon High, the lead's `write_file` requested
+feedback, `Stop/NO_TOOL_CALL` preceded `reviewing`, and the title counted
+one artifact. The bundled agent instructions in both 1.5.13 and 1.5.14
+give the plan's exact path as `{{ArtifactDirectoryPath}}/implementation_plan.md`.
+The live files' sidecars carry `userFacing`, `requestFeedback`, a summary
+and an update time. Those flags also qualify a walkthrough for review.
+Only the canonical filename gets needs-you/plan and the authorized ticket
+note. A different review artifact gets its own question card.
 
-On agy 1.5.13 with Gemini 4 Neon High, `write_file` carried ArtifactMetadata,
-`Stop/NO_TOOL_CALL` preceded `reviewing`, and the title reported one artifact.
-Ctrl+R opened the review panel. Its selected row named the file, and `y` or
-`n` submitted a new prompt immediately. Escape only closes the panel. Counting
-the Stop alone lost the plan. Typing revision words as the review decision
-could approve it. The board and phone therefore verify the empty composer,
-the one outstanding decision and its selected filename before sending a key.
-Feedback waits for agy's own rejection prompt before going to the same
-conversation. The board ask field takes Enter to accept and Ctrl+X to send
-back the plan with its words. The phone's plan card takes the same decisions.
-The person's artifact review policy and the provider switch stay theirs.
+A lead write records the filename. A reviewing title reads the regular file
+relative to the conversation directory, refusing symlinks. A missed write
+can be recovered from the directory and its sidecars. Subsequent titles retry
+an unreadable file. A preview longer than the note limit reserves room for a
+truncation marker with the full byte count. Each card binds a fresh nonce,
+the conversation, filename and inode revision. A rewrite or daemon restart
+retires the previous request, even when the hook's call ID repeats. An
+`[Approved]` or `[Rejected]` turn removes only its named entry. Other
+outstanding reviews remain available.
 
-The disposable live `plan` rig on 1.5.13 observed the note, board acceptance,
-and a reply from the continued turn. The updater replaced the disposable CLI
-before the `plan-revision` rig. On 1.5.14 it observed the rejection and the
-person's exact feedback in the transcript. The agy stand-in also exercises
-board rejection, both phone decisions through the encrypted control channel,
-and a plan-mode wake of the same conversation.
+The cold review reproduced the danger of treating acceptance as a queued ask:
+typing change requests approved the plan and could drop the words. The board
+now binds the request when the field opens. Empty Enter accepts. Words plus
+Enter reject and send those words to the same conversation after agy's
+rejection receipt. A refused delivery restores the draft. The phone's buttons
+carry the displayed request. Board, phone and crown recheck the file and
+recapture the artifact panel before sending a review key. The selected filename
+must match, and tmux checks its own attachment count when it dispatches the
+key. Escape closes the panel; typing feedback directly there can approve it.
 
-The full browser matrix passed its plan-card checks in Chromium and WebKit.
-The unrelated WebKit tablet terminal check reported a ResizeObserver loop
-notification. Its isolated rerun and that cell's three remaining flows passed.
+The original live rig accepted on 1.5.13 and sent a revision on 1.5.14.
+The cold-review rig on 1.5.14 drove both decisions through the actual board
+ask field. Its first pair reached the disposable board's setup screen. With
+setup dismissed, empty Enter produced an approved user turn and a reply;
+words plus Enter produced a rejected user turn followed by the exact feedback.
+The two cases are recorded in `20261121T130858Z/verdicts.json` under the
+agy rig output. Paired-phone coverage uses the encrypted channel to the
+stand-in. The person's artifact review policy remains theirs.
+
+Verification history for the cold review:
+
+- The first baseline `review_regression` run could not open the sandboxed
+  fixture sockets. Under the supervisor with tmux access, all six baseline
+  cases failed on their assertions. Both `review_refuses` cases and
+  `agy_review_enter_names_the_plan_that_opened_the_field` also failed on
+  the reviewed implementation.
+- The focused lifecycle/guard run passed eight of nine. The title-only
+  fixture had sent its review before the stand-in's initial prompt hook
+  finished. Waiting for the opening turn made `review_regression_missed_write`
+  pass. In that rerun, `board_and_phone_review_the_artifact_file_and_send_changes_after_rejection`
+  exposed an invalid tmux target in the new conditional dispatch. Using the
+  session's explicit pane target made its isolated rerun pass.
+- The Enter regression's first refusal check held a snapshot reply. It passed
+  in `cargo ut` with the decision reply held instead. The two-artifact phone
+  integration then exercised both outstanding rows, the non-plan card and
+  the unchanged implementation-plan note.
+- The requested Rust suites passed separately. The Mesophon navigation flow,
+  which contains the plan card, passed on desktop, tablet and phone in Chromium
+  and WebKit. The original pre-review browser matrix had one unrelated WebKit
+  tablet terminal resize notification; that terminal check passed in isolation.
+- After the final guarded-key and reply-wait changes, the disk reserve
+  stopped the supplemental crown pair after `the_crown_sends_a_plan_back_with_words`
+  passed. `the_crown_accepts_a_plan_by_default` passed on its isolated rerun.
+  The reserve also stopped the first unit rebuild and one integration rebuild
+  before tests ran. On the smaller non-incremental build, `cargo ut` passed
+  3,401 tests (13 ignored). The final combined rerun of `agy_e2e`,
+  `plan_mode_e2e` and `plan_accept_e2e` passed all 44 with a clean fixture
+  audit. The toolchain warned that its optional debug-symbol strip could not
+  load libLLVM.
+- Both live TUI cases passed again on the final verification build with agy
+  1.5.14, including the continued reply and exact revision text. The run is
+  `target/rig/agy/20261121T133344Z/verdicts.json`.

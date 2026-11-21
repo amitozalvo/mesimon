@@ -507,7 +507,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // the dialog's bottom edge does not repeat it. A ticket's ask names
         // the ticket by its key; a column's names the seats the words reach
         // — every seat in it, since T-405 starts the empty ones.
-        EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } => {
+        EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier, .. } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
@@ -533,7 +533,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 app.ask_interrupts(target, (*queued, *immediately), *accept_plan, *plan);
             let lit = interrupts && app.theme.delete_lit(app.spin_frame());
             let said = super::card::ask_said(
-                crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan),
+                if app.sending_plan_back() {
+                    "send plan back"
+                } else {
+                    crate::app::App::ask_mode_word(*accept_plan, *queued, *immediately, *plan)
+                },
                 crate::app::App::shell_line(ed.body.as_str()),
                 interrupts,
                 None,

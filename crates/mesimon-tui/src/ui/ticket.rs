@@ -1133,7 +1133,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 // after the words, with the key that cycles it.
                 let under = field_y + n;
                 if delivery && under < body_y + body_h {
-                    let word = App::ask_mode_word(accept_plan, queued, immediately, plan);
+                    let word = if app.sending_plan_back() {
+                        "send plan back"
+                    } else {
+                        App::ask_mode_word(accept_plan, queued, immediately, plan)
+                    };
                     let tier_word = app.field_tier_word(Some(ticket_id), tier);
                     let cycles = app.ask_queueable(ticket_id) && !app.ticket_plan_ready(ticket_id);
                     let interrupts = app.ask_interrupts(

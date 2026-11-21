@@ -346,7 +346,11 @@ pub(super) fn render_ask_field(
         let target = crate::app::AskTarget::Ticket(ticket);
         rows.push(render_ask_mode(
             ctx,
-            crate::app::App::ask_mode_word(accept_plan, queued, immediately, plan),
+            if app.sending_plan_back() {
+                "send plan back"
+            } else {
+                crate::app::App::ask_mode_word(accept_plan, queued, immediately, plan)
+            },
             app.ask_queueable(ticket) && !app.ticket_plan_ready(ticket),
             tier_word.as_deref(),
             app.ask_interrupts(&target, (queued, immediately), accept_plan, plan),

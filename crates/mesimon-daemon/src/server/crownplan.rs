@@ -232,7 +232,8 @@ impl Daemon {
         }
         let mut changed = false;
         for id in due {
-            let pressed = self.press_plan(id);
+            let request = self.crown_plans[&id].request.clone();
+            let pressed = self.press_plan(id, Some(&request));
             let Some(plan) = self.crown_plans.get_mut(&id) else { continue };
             match pressed {
                 Ok(_) => {

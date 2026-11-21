@@ -980,24 +980,52 @@ fn board_and_phone_review_the_artifact_file_and_send_changes_after_rejection() {
         c.await_state(id, "file awaiting review", |s| {
             *s == SessionState::RequiresAction { reason: Reason::Plan }
         });
-        let dialog = phone.await_dialog(t, "artifact on the phone");
+        let mut dialog = phone.await_dialog(t, "artifact on the phone");
+        if index == 2 {
+            // Same filename on screen and the previous card still projected:
+            // the file changed before either the write hook or the next title.
+            let file = bed.h.dir.join("agy-home/brain").join(MINTED).join("implementation_plan.md");
+            std::fs::write(&file, "A replacement plan").unwrap();
+            let (_, stale) = phone.call(api::Request::Dialog {
+                ticket: t.to_string(),
+                session: id.to_string(),
+                request: dialog.request.clone(),
+                response: DialogAnswer::Accept,
+            });
+            assert!(matches!(stale, Reply::Rejected {message} if message.contains("changed")));
+            std::fs::write(&file, &body).unwrap();
+            let before = dialog.request.clone();
+            hook_send(&bed.h.paths.hook_sock(), &id.to_string(), "AgyTitle",
+                &serde_json::json!({"conversation_id":MINTED,"cycle_mode":"plan","agent_state":"reviewing","artifact_count":1}).to_string());
+            wait_until(Duration::from_secs(5), "fresh card after rewrite", || {
+                if let Some(current) = phone.agent(t).dialog {
+                    dialog = current;
+                }
+                dialog.request != before
+            });
+        }
         assert_eq!(dialog.content, api::DialogContent::Plan { markdown: body.clone() });
         let note = c.record(id).plan_note.unwrap();
         assert!(
             matches!(c.request(Command::ReadNote {ticket:t, note}), Response::Note {text,..} if text == body)
         );
         if index == 0 {
-            assert!(matches!(
-                c.request(Command::RejectPlan {
-                    ticket: t,
-                    session: id,
-                    request: dialog.request.clone(),
-                    feedback: feedback.to_string()
-                }),
-                Response::Ok
-            ));
+            let receipt = c.request(Command::ReviewPlan {
+                ticket: t,
+                session: id,
+                request: dialog.request.clone(),
+                feedback: feedback.to_string(),
+            });
+            assert!(matches!(receipt, Response::Ok), "{receipt:?}");
         } else {
             assert_ne!(old, dialog.request);
+            let (_, stale) = phone.call(api::Request::Dialog {
+                ticket: t.to_string(),
+                session: id.to_string(),
+                request: old.clone(),
+                response: DialogAnswer::Accept,
+            });
+            assert!(matches!(stale, Reply::Rejected {message} if message.contains("changed")));
             let response = if feedback.is_empty() {
                 DialogAnswer::Accept
             } else {
@@ -1040,6 +1068,251 @@ fn board_and_phone_review_the_artifact_file_and_send_changes_after_rejection() {
     let rec = c.record(id);
     assert!(rec.launched_in_plan());
     assert_eq!(pair(&rec.argv, "--conversation"), [MINTED]);
+}
+
+#[test]
+fn the_phone_can_decide_both_artifacts_and_only_the_implementation_plan_becomes_a_note() {
+    let Some((bed, port)) = Bed::boot_with_relay("agy-two-artifacts") else { return };
+    let mut c = bed.h.client("two-artifacts");
+    agy_board(&mut c);
+    let mut phone = TestPhone::pair(&mut c, port);
+    let t = ticket(&mut c, "Write two artifacts");
+    let Response::Spawned { id, .. } = c.request(Command::SpawnSession {
+        ticket: t,
+        kind: SessionKind::Agy,
+        submit_prompt: true,
+        plan: true,
+    }) else {
+        panic!("spawn")
+    };
+    c.await_state(id, "opening turn", |s| *s == SessionState::Running);
+    bed.cue_with("plan-pair", "Implementation steps");
+    for (index, (name, answer)) in [
+        ("implementation_plan.md", DialogAnswer::Accept),
+        ("walkthrough.md", DialogAnswer::Choice { index: 0 }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dialog = phone.await_dialog(t, name);
+        assert!(dialog.request.ends_with(name), "{dialog:?}");
+        match dialog.content {
+            api::DialogContent::Plan { markdown } => assert_eq!(markdown, "Implementation steps"),
+            api::DialogContent::Questions { questions } => {
+                assert!(questions[0].question.contains("Walkthrough text"))
+            }
+            _ => panic!("wrong artifact card"),
+        }
+        let (status, reason) = phone.settle(api::Request::Dialog {
+            ticket: t.to_string(),
+            session: id.to_string(),
+            request: dialog.request,
+            response: answer,
+        });
+        assert!(matches!(status.as_str(), "answered" | "input_sent"), "{status}: {reason:?}");
+        bed.await_prompt(index + 1, "turn", &format!("[Approved] {name}"));
+    }
+    let note = c.record(id).plan_note.unwrap();
+    assert!(
+        matches!(c.request(Command::ReadNote {ticket:t,note}),Response::Note {text,..} if text == "Implementation steps")
+    );
+}
+
+const PLAN_FILE: &str = "implementation_plan.md";
+
+struct ReviewFixture {
+    bed: Bed,
+    client: TestClient,
+    ticket: ulid::Ulid,
+    session: uuid::Uuid,
+    dir: PathBuf,
+}
+
+impl ReviewFixture {
+    fn start(case: &str) -> Option<Self> {
+        let bed = Bed::boot(case, true, true)?;
+        let mut client = bed.h.client(case);
+        agy_board(&mut client);
+        let ticket = ticket(&mut client, "Review artifact");
+        let Response::Spawned { id: session, .. } = client.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Agy,
+            submit_prompt: true,
+            plan: true,
+        }) else {
+            panic!("spawn")
+        };
+        client.await_state(session, "opening prompt observed", |s| *s == SessionState::Running);
+        let dir = bed.h.dir.join("agy-home/brain").join(MINTED);
+        std::fs::create_dir_all(&dir).unwrap();
+        Some(Self { bed, client, ticket, session, dir })
+    }
+
+    fn hook(&self, event: &str, payload: serde_json::Value) {
+        hook_send(
+            &self.bed.h.paths.hook_sock(),
+            &self.session.to_string(),
+            event,
+            &payload.to_string(),
+        );
+    }
+
+    fn written(&self, name: &str) {
+        self.hook("AgyPostToolUse", serde_json::json!({
+            "conversationId": MINTED,
+            "artifactDirectoryPath": self.dir,
+            "toolCall": {"id":"same-call","name":"write_file","args":{
+                "Path":self.dir.join(name), "ArtifactMetadata":{"UserFacing":true,"RequestFeedback":true}
+            }}
+        }));
+    }
+
+    fn reviewing(&self) {
+        self.hook("AgyTitle", serde_json::json!({
+            "conversation_id":MINTED,"cycle_mode":"plan","agent_state":"reviewing","artifact_count":1
+        }));
+    }
+
+    fn note(&mut self) -> Option<String> {
+        let note = self.client.record(self.session).plan_note?;
+        match self.client.request(Command::ReadNote { ticket: self.ticket, note }) {
+            Response::Note { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
+    fn await_note(&mut self, text: &str) -> String {
+        wait_until(Duration::from_secs(5), "artifact note", || {
+            self.note().as_deref() == Some(text)
+        });
+        self.client.record(self.session).agy_plan_request.unwrap()
+    }
+
+    fn decide(&mut self, request: String) -> Response {
+        self.client.request(Command::ReviewPlan {
+            ticket: self.ticket,
+            session: self.session,
+            request,
+            feedback: "Keep these words".into(),
+        })
+    }
+
+    fn open_panel_request(&mut self) -> SessionRecord {
+        self.bed.cue_with("plan", "Visible plan");
+        self.await_note("Visible plan");
+        self.client.record(self.session)
+    }
+}
+
+#[test]
+fn review_refuses_an_attached_person() {
+    let Some(mut f) = ReviewFixture::start("attached") else { return };
+    let rec = f.open_panel_request();
+    let sock = f.bed.h.paths.tmux_sock();
+    let sid = rec.sid16();
+    let mut client = tmux(&sock)
+        .args(["-C", "attach", "-t", &sid])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until(Duration::from_secs(5), "client attached", || {
+        !tmux(&sock).args(["list-clients", "-t", &sid]).output().unwrap().stdout.is_empty()
+    });
+    let receipt = f.decide(rec.agy_plan_request.unwrap());
+    drop(client.stdin.take());
+    client.wait().unwrap();
+    assert!(matches!(receipt, Response::Err {message} if message.contains("pane open")));
+    assert_eq!(f.bed.prompts().len(), 1);
+}
+
+#[test]
+fn review_refuses_a_composer_draft() {
+    let Some(mut f) = ReviewFixture::start("draft") else { return };
+    let rec = f.open_panel_request();
+    f.bed.keys(&rec, &["draft"]);
+    wait_until(Duration::from_secs(5), "draft in the box", || f.bed.box_text() == "draft");
+    assert!(
+        matches!(f.decide(rec.agy_plan_request.unwrap()), Response::Err {message} if message.contains("draft"))
+    );
+    assert_eq!(f.bed.box_text(), "draft");
+    assert_eq!(f.bed.prompts().len(), 1);
+}
+
+fn rewritten_plan(restart: bool) {
+    let Some(mut f) = ReviewFixture::start("rewrite") else { return };
+    let file = f.dir.join(PLAN_FILE);
+    std::fs::write(&file, "First plan").unwrap();
+    f.written(PLAN_FILE);
+    f.reviewing();
+    let old = f.await_note("First plan");
+    if restart {
+        f.bed.h.restart_after(|| std::fs::write(&file, "Second plan").unwrap());
+        f.client = f.bed.h.client("resumed");
+    } else {
+        std::fs::write(&file, "Second plan").unwrap();
+        f.written(PLAN_FILE);
+    }
+    f.reviewing();
+    let new = f.await_note("Second plan");
+    assert_ne!(old, new);
+    assert!(matches!(f.decide(old), Response::Err {message} if message.contains("changed")));
+    if restart {
+        f.bed.h.restart();
+        f.client = f.bed.h.client("same-file-new-daemon");
+        f.reviewing();
+        wait_until(
+            Duration::from_secs(5),
+            "new request for unchanged content after restart",
+            || f.client.record(f.session).agy_plan_request.is_some_and(|request| request != new),
+        );
+    }
+}
+
+#[test]
+fn review_regression_restart() {
+    rewritten_plan(true);
+}
+
+#[test]
+fn review_regression_rewrite() {
+    rewritten_plan(false);
+}
+
+#[test]
+fn review_regression_missed_write() {
+    let Some(mut f) = ReviewFixture::start("missed-write") else { return };
+    std::fs::write(f.dir.join(PLAN_FILE), "Recovered").unwrap();
+    f.reviewing();
+    f.await_note("Recovered");
+}
+
+#[test]
+fn review_regression_failed_read() {
+    let Some(mut f) = ReviewFixture::start("retry-read") else { return };
+    f.written(PLAN_FILE);
+    f.reviewing();
+    wait_until(Duration::from_secs(5), "first title processed", || {
+        f.bed.h.feed().contains("AgyPostToolUse")
+            && f.bed.h.feed().rsplit("AgyPostToolUse").next().unwrap().contains("AgyTitle")
+    });
+    assert!(f.note().is_none());
+    std::fs::write(f.dir.join(PLAN_FILE), "Now readable").unwrap();
+    f.reviewing();
+    f.await_note("Now readable");
+}
+
+#[test]
+fn review_regression_truncation() {
+    let Some(mut f) = ReviewFixture::start("truncated") else { return };
+    std::fs::write(f.dir.join(PLAN_FILE), "x".repeat(40000)).unwrap();
+    f.written(PLAN_FILE);
+    f.reviewing();
+    wait_until(Duration::from_secs(5), "bounded note", || f.note().is_some());
+    let note = f.note().unwrap();
+    assert!(note.contains("40000 bytes") && note.contains("truncated"));
+    assert!(note.len() <= mesimon_core::board::NOTE_MAX_BYTES);
 }
 
 /// T-1235: a paired phone walks every captured agy confirmation and question

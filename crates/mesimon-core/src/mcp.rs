@@ -2187,7 +2187,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::FocusQuiet
         // A dialog's Enter is a person's answer (T-844): the board and a
         // paired phone press it for a person who asked, never an agent.
-        | Command::AcceptTrust { .. } | Command::RejectPlan { .. } => false,
+        | Command::AcceptTrust { .. } | Command::ReviewPlan { .. } => false,
     }
 }
 

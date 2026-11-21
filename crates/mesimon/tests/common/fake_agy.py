@@ -349,7 +349,7 @@ def main():
             "email": EMAIL,
         }
         if agent_state == "reviewing":
-            payload.update(cycle_mode="plan", artifact_count=1)
+            payload.update(cycle_mode="plan", artifact_count=len(st["artifacts"]))
         if pending:
             payload["tool_confirmation_pending"] = True
         run(title, payload)
@@ -433,7 +433,7 @@ def main():
             for words in st["queued"]:
                 rows.append("▸ " + words.replace("\n", " ") + " (alt+m to send immediately)")
             if st.get("review"):
-                rows.append("1 artifact · /artifact to review")
+                rows.append(f'{len(st["artifacts"])} artifacts · /artifact to review')
             rows.append(rule)
             lines = st["box"].split("\n") if st["box"] else [""]
             top = len(rows)
@@ -446,8 +446,12 @@ def main():
                 cursor = (top, 2)
             rows.append(rule)
             if st.get("review") == "panel":
-                rows.extend(["Action required (1 left)", "› □ new implementation_plan.md   open  approve reject",
-                             "Keyboard: ↑/↓ Navigate  y/n Approve/reject  shift+a Approve all  p Preview  esc Done",
+                rows.append(f'Action required ({len(st["artifacts"])} left)')
+                for index, name in enumerate(st["artifacts"]):
+                    selected = index == st["review_cursor"]
+                    rows.append(("› " if selected else "  ") + "□ new " + name +
+                                ("   open  approve reject" if selected else ""))
+                rows.extend(["Keyboard: ↑/↓ Navigate  y/n Approve/reject  shift+a Approve all  p Preview  esc Done",
                              "plan · Example · high"])
             elif st.get("review"):
                 rows.append("? for shortcuts                               plan · Example · high")
@@ -609,10 +613,20 @@ def main():
                 st["review"] = "panel"
                 i += 1
                 continue
+            if st.get("review") == "panel" and data[i:i+3] in (b"\x1b[A", b"\x1b[B"):
+                delta = 1 if data[i:i+3] == b"\x1b[B" else -1
+                st["review_cursor"] = max(0, min(len(st["artifacts"]) - 1, st["review_cursor"] + delta))
+                i += 3
+                continue
             if st.get("review") == "panel" and data[i:i+1] in (b"y", b"n"):
                 decision = "Approved" if data[i:i+1] == b"y" else "Rejected"
+                name = st["artifacts"].pop(st["review_cursor"])
                 st["review"] = None
-                begin(f"[{decision}] implementation_plan.md", "turn")
+                begin(f"[{decision}] {name}", "turn")
+                if st["artifacts"]:
+                    st.update(review="closed", review_cursor=0, working=False)
+                    paint()
+                    report("reviewing")
                 i += 1
                 continue
             if st["dialog"]:
@@ -753,16 +767,19 @@ def main():
                 if cue == "signed-in":
                     st["sign_in"] = False
                     paint()
-                elif cue == "plan":
+                elif cue in ("plan", "plan-pair"):
                     artifact_dir = os.path.realpath(os.path.join(HERE, "agy-home", "brain", st["conversation"]))
                     os.makedirs(artifact_dir, exist_ok=True)
-                    path = os.path.join(artifact_dir, "implementation_plan.md")
-                    with open(path, "w") as file:
-                        file.write(body)
-                    hook("PostToolUse", {"artifactDirectoryPath": artifact_dir, "toolCall": {
-                        "id": "write-" + str(st["steps"]), "name": "write_file", "args": {
-                            "Path": path, "ArtifactMetadata": {"UserFacing": True, "RequestFeedback": True}
-                        }}})
+                    st["artifacts"] = (["walkthrough.md"] if cue == "plan-pair" else []) + ["implementation_plan.md"]
+                    st["review_cursor"] = 0
+                    for name in st["artifacts"]:
+                        path = os.path.join(artifact_dir, name)
+                        with open(path, "w") as file:
+                            file.write(body if name == "implementation_plan.md" else "Walkthrough text")
+                        hook("PostToolUse", {"artifactDirectoryPath": artifact_dir, "toolCall": {
+                            "id": "write-" + str(st["steps"]), "name": "write_file", "args": {
+                                "Path": path, "ArtifactMetadata": {"UserFacing": True, "RequestFeedback": True}
+                            }}})
                     st["review"] = "closed"
                     st["working"] = False
                     hook("Stop", {"terminationReason": "NO_TOOL_CALL", "fullyIdle": True})

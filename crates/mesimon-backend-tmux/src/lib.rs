@@ -566,6 +566,27 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// The tmux server checks its own attachment count when dispatching the key.
+    /// An attach after the caller's screen capture still wins.
+    pub fn press_unattached_key(&self, sid: &str, key: &str) -> Result<bool> {
+        if sid.len() != 16
+            || !sid.bytes().all(|b| b.is_ascii_hexdigit())
+            || !matches!(key, "C-r" | "Up" | "Down" | "y" | "n")
+        {
+            bail!("invalid artifact key target");
+        }
+        let sent = self.run(&[
+            "if-shell",
+            "-F",
+            "-t",
+            sid,
+            "#{session_attached}",
+            "display-message -p attached",
+            &format!("send-keys -t {sid}: {key}"),
+        ])?;
+        Ok(sent.trim().is_empty())
+    }
+
     pub fn dialog_key(&self, sid16: &str, key: DialogKey) -> Result<()> {
         let key = match key {
             DialogKey::Up => "Up",

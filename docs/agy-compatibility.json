@@ -173,10 +173,15 @@
         "artifact_plan_review"
       ],
       "end_to_end": {
+        "board_plan_accept": {
+          "status": "passed",
+          "kind": "real_agy_mesimon_rig",
+          "claim": "Empty Enter in the board ask field approved the displayed implementation plan. The subsequent agent reply reached the conversation."
+        },
         "board_plan_revision": {
           "status": "passed",
           "kind": "real_agy_mesimon_rig",
-          "claim": "Rejecting the selected artifact produced a [Rejected] turn. Its conversation then received the feedback text from the board."
+          "claim": "Words plus Enter in the board ask field produced a [Rejected] turn followed by the exact feedback in the same conversation."
         }
       }
     }

@@ -290,6 +290,30 @@ class Case:
         self.mark("get_ticket identifies the person's step", "only the person" in view["reason"]
                   and "sign in" in view["reason"] and not view.get("request"), view["reason"])
 
+    def enter_plan_decision(self, feedback):
+        # A separate, detached terminal owns the board UI. No client attaches
+        # to the provider's pane. Alt+Enter opens the ask on legacy terminals.
+        board = "rig-review-ui"
+        self.tm("new-session", "-d", "-s", board, "-x", "160", "-y", "44", "-c", str(self.repo),
+                str(self.args.binary), "open", str(self.repo))
+        def screen():
+            return self.tm("capture-pane", "-p", "-t", board)
+        try:
+            self.wait("board or first-run setup", lambda: "quit setup" in screen() or "Write a short" in screen(), 30)
+            if "quit setup" in screen():
+                self.tm("send-keys", "-t", board, "q")
+            self.wait("ticket drawn on the board", lambda: "Write a short" in screen(), 15)
+            self.tm("send-keys", "-t", board, "M-Enter")
+            self.wait("ticket's plan ask field", lambda: "enter accepts the plan" in screen(), 10)
+            if feedback:
+                self.tm("send-keys", "-t", board, "-l", feedback)
+                self.wait("feedback in the ask field", lambda: "send plan back" in screen(), 10)
+            self.tm("send-keys", "-t", board, "Enter")
+        finally:
+            (self.out / "board.txt").write_text(screen())
+        # Leave the TUI on the fixture until the provider receipt. The fixture
+        # supervisor owns this tmux session along with the provider's.
+
     def check_plan(self):
         self.request("set_mcp_tools", on=False)
         self.request("set_column_settings", name="TODO", settings={"agy_mode": "plan"})
@@ -319,8 +343,7 @@ class Case:
         turn_start = len(read_transcript(path))
         if self.result["case"] == "plan-revision":
             feedback = "Use the greeting " + self.nonce + " in the revision."
-            self.request("reject_plan", ticket=ticket, session=self.sid,
-                         request=rec["agy_plan_request"], feedback=feedback)
+            self.enter_plan_decision(feedback)
             def rejected_with_feedback():
                 rows = read_transcript(path)[turn_start:]
                 return (any("[Rejected]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")
@@ -328,8 +351,7 @@ class Case:
             self.wait("rejection and feedback in the conversation", rejected_with_feedback, self.args.timeout)
             self.mark("board rejected the artifact and delivered the feedback", True)
             return
-        self.request("prompt_session", ticket=ticket, text="", queued=False, immediately=False,
-                     accept_plan=True, plan=False)
+        self.enter_plan_decision("")
         def accepted():
             rows = read_transcript(path)[turn_start:]
             return any("[Approved]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")

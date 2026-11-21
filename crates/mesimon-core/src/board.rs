@@ -457,6 +457,12 @@ pub struct SessionRecord {
     /// The feedback artifact written by this turn. The request ends in its basename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agy_plan_request: Option<String>,
+    /// Feedback requests in this conversation, newest first. Decisions remove only their row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agy_pending_artifacts: Vec<String>,
+    /// Revisions already answered. A reviewing title can rediscover files left on disk.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub agy_answered_artifacts: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     pub agy_reviewing: bool,
     /// Ephemeral observations of agy's lead turn and the work its title lists.
@@ -809,6 +815,8 @@ impl SessionRecord {
             codex_thread_id: None,
             agy_conversation_id: None,
             agy_plan_request: None,
+            agy_pending_artifacts: Vec::new(),
+            agy_answered_artifacts: Default::default(),
             agy_reviewing: false,
             agy_stop: AgyStop::None,
             agy_background_running: false,
@@ -4136,7 +4144,8 @@ impl Board {
     /// dialog, or launched planning. The daemon's column press and the
     /// TUI's ask field read this one answer.
     pub fn plan_seat(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.pane_target(ticket).filter(|s| s.on_plan_dialog() || s.launched_in_plan())
+        self.pane_target(ticket)
+            .filter(|s| s.on_plan_dialog() || (s.kind != SessionKind::Agy && s.launched_in_plan()))
     }
 
     /// The pane seat Claude Code's send-now can reach (T-601, T-685): the

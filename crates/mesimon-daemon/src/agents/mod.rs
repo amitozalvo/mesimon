@@ -305,6 +305,7 @@ pub struct HookObservation {
     pub signal: Option<mesimon_core::attention::Signal>,
     pub detail: Option<String>,
     pub plan: Option<String>,
+    pub review_artifact: Option<String>,
     pub metadata_changed: bool,
 }
 

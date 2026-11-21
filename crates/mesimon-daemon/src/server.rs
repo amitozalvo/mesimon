@@ -3922,7 +3922,7 @@ impl Daemon {
         let resource = match &env.command {
             Command::ImportTicket { column, .. } | Command::CreateTicketWithNote { column, .. } => Resource::Column { name: column.clone() },
             Command::ReadAttachment { ticket, .. } | Command::SaveNoteWithAttachments { ticket, .. } => Resource::Ticket { id: *ticket },
-            Command::RejectPlan { session, .. } | Command::ShareShell { session, .. }
+            Command::ReviewPlan { session, .. } | Command::ShareShell { session, .. }
             | Command::ShellCapture { session }
             | Command::ConfirmCloseShell { session, .. }
             | Command::PaneTail { session, .. } => Resource::Session { id: *session },
@@ -4358,8 +4358,8 @@ impl Daemon {
             // The board's `w` on a trust dialog (T-844): the walk Remote
             // Control's card asks for, from the terminal.
             Command::AcceptTrust { ticket } => self.accept_trust(ticket),
-            Command::RejectPlan { ticket, session, request, feedback } =>
-                self.reject_agy_plan(ticket, session, &request, feedback),
+            Command::ReviewPlan { ticket, session, request, feedback } =>
+                self.review_agy_plan(ticket, session, &request, feedback),
             Command::ShareShell { session, shared } => self.share_shell(session, shared),
             Command::ShellCapture { session } => self.local_shell_capture(session),
             Command::ConfirmCloseShell { session, request, close } => self.confirm_close_shell(session, request, close),
@@ -6573,7 +6573,12 @@ impl Daemon {
             self.control_release_permission(id, &frame);
         }
         self.control_observe_dialog(id, &frame);
-        self.control_observe_agy(id, &frame, agy_lead.as_deref(), observation.plan.as_deref());
+        self.control_observe_agy(
+            id,
+            &frame,
+            agy_lead.as_deref(),
+            observation.plan.as_deref().or(observation.review_artifact.as_deref()),
+        );
         let answered = self.dialog_answered(id, &frame);
         // An answer read against the held call (T-988): a sibling still to be
         // answered re-affirms its dialog, which cancels a leave to `Running`
@@ -17007,6 +17012,10 @@ impl Daemon {
             }
             self.persist_sessions();
         }
+        if accept_plan && self.board.pane_target(ticket).is_some_and(|s| s.kind == SessionKind::Agy)
+        {
+            return Response::Err { message: "open the current agy plan to decide it".into() };
+        }
         let seat = self.seat_of(ticket);
         // A pane that owes a switch takes its words through the relaunch,
         // and the relaunch waits for idle: sent now at a working pane, the
@@ -18468,7 +18477,7 @@ impl Daemon {
     /// confirms the press through its own hooks; `settle_plan_accepts` is
     /// the deadline on that.
     fn accept_plan(&mut self, session: uuid::Uuid, actor: &str) -> Result<(), &'static str> {
-        let ticket = self.press_plan(session)?;
+        let ticket = self.press_plan(session, None)?;
         self.feed.board(actor, "plan_accepted", Some(ticket));
         Ok(())
     }
@@ -18476,7 +18485,11 @@ impl Daemon {
     /// `accept_plan`'s press without its feed line, for a road that writes
     /// its own (the crown's, T-582): the checks, the screen, the Enter, the
     /// deadline. `Ok` is the ticket pressed for.
-    fn press_plan(&mut self, session: uuid::Uuid) -> Result<ulid::Ulid, &'static str> {
+    fn press_plan(
+        &mut self,
+        session: uuid::Uuid,
+        request: Option<&str>,
+    ) -> Result<ulid::Ulid, &'static str> {
         let Some(rec) = self.board.session(session) else {
             return Err("no such session");
         };
@@ -18499,14 +18512,14 @@ impl Daemon {
                 if self.dialog_delivery_pending(session) {
                     return Err("plan answer pending");
                 }
-                let (request, _) = self.control_plan(session).ok_or(NOT_RECOGNISED)?;
-                match artifact_view(&screen.lines.join("\n"), request).ok_or(NOT_RECOGNISED)? {
-                    ArtifactView::Closed => {
-                        self.backend.press_key(&sid, "C-r").map_err(|_| NOT_RECOGNISED)?;
-                        return Err("opening artifact review");
-                    }
-                    ArtifactView::Selected => self.backend.press_key(&sid, "y"),
+                let request = request.ok_or("open the current plan to decide it")?;
+                let view =
+                    artifact_view(&screen.lines.join("\n"), request).ok_or(NOT_RECOGNISED)?;
+                self.press_artifact_key(session, request, view, true)?;
+                if view != ArtifactView::Selected {
+                    return Err("opening artifact review");
                 }
+                Ok(())
             }
             SessionKind::Claude => {
                 crate::plan_dialog::claude_at_default(&screen.lines)?;

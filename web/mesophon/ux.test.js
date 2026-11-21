@@ -5546,8 +5546,19 @@ async function navigationFlow(browser, engineName, size, viewport, fullThemes) {
     });
     await page.getByLabel("Feedback if rejecting").fill("Keep the existing title");
     await attention("Reject plan").click();
-    assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response),
-      { answer: "text", text: "Keep the existing title" });
+    const lastReview = () => page.evaluate(() => {
+      const { request, response } = fixture.requests.filter((r) => r.op === "dialog").at(-1);
+      return [request, response];
+    });
+    assert.deepEqual(await lastReview(), ["agy-review", { answer: "text", text: "Keep the existing title" }]);
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.dialog = { request: "agy-rewrite", kind: "plan", markdown: "Revised greeting" };
+      fixture.update();
+    });
+    await until(page, () => document.querySelector("#attention").textContent.includes("Revised greeting"));
+    assert.equal(await page.getByLabel("Feedback if rejecting").inputValue(), "");
+    await attention("Accept plan").click();
+    assert.deepEqual(await lastReview(), ["agy-rewrite", { answer: "accept" }]);
     await page.evaluate(() => { fixture.tickets[0].agent.provider = "claude"; });
     // T-844: the folder trust dialog rides its own field, with one
     // button, and its answer is the dialog road's `accept`.

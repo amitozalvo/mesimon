@@ -4670,6 +4670,7 @@ fn golden_column_prompt_field_120() {
     }
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
@@ -4709,6 +4710,7 @@ fn golden_column_prompt_field_now_120() {
     app.cursor_row = None;
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Column("in progress".into()),
             walk: None,
@@ -4749,6 +4751,7 @@ fn golden_column_prompt_field_start_120() {
     );
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Column("todo".into()),
             walk: None,
@@ -4778,6 +4781,7 @@ fn golden_prompt_field_start_120() {
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
@@ -4820,6 +4824,7 @@ fn the_prompt_field_offers_the_brief_to_a_seat_that_never_took_a_prompt() {
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(1)),
             walk: None,
@@ -8491,6 +8496,7 @@ fn the_ask_room_at_accept_plan_says_what_the_send_does() {
     let room = |accept_plan: bool| {
         editor_on(
             crate::app::EditorPurpose::Ask {
+                review: None,
                 target: crate::app::AskTarget::Ticket(ulid_n(3)),
                 queued: true,
                 immediately: false,
@@ -8863,6 +8869,7 @@ fn golden_shell_line_in_the_ask_field_120() {
     // The grown editor (Tab): its heading and footer say so.
     let ed = editor_on(
         crate::app::EditorPurpose::Ask {
+            review: None,
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             queued: false,
             immediately: false,
@@ -8893,6 +8900,7 @@ fn golden_editor_ask_120() {
     app.cursor_row = Some(0);
     let mut ed = editor_on(
         crate::app::EditorPurpose::Ask {
+            review: None,
             target: crate::app::AskTarget::Ticket(ulid_n(3)),
             queued: false,
             immediately: false,
@@ -8929,6 +8937,7 @@ fn golden_editor_ask_column_120() {
     app.cursor_row = None;
     let mut ed = editor_on(
         crate::app::EditorPurpose::Ask {
+            review: None,
             target: crate::app::AskTarget::Column("in progress".into()),
             queued: true,
             immediately: false,
@@ -9724,6 +9733,7 @@ fn ask_field_on(app: &mut App, on: ulid::Ulid, text: &str, queued: bool, immedia
     }
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Ticket(on),
             walk: None,
@@ -10193,6 +10203,7 @@ fn test_no_banned_sgr() {
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt {
+                        review: None,
                         images: Vec::new(),
                         target: crate::app::AskTarget::Ticket(ulid_n(3)),
                         walk: None,
@@ -10523,6 +10534,7 @@ fn test_no_drawn_structure() {
             }
             p.mode = Mode::Input {
                 purpose: crate::app::InputPurpose::Prompt {
+                    review: None,
                     images: Vec::new(),
                     target: crate::app::AskTarget::Ticket(ulid_n(3)),
                     walk: None,
@@ -12443,6 +12455,7 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
     app.peek = true;
     app.mode = Mode::Input {
         purpose: InputPurpose::Prompt {
+            review: None,
             images: Vec::new(),
             target: crate::app::AskTarget::Ticket(ulid_n(7)),
             walk: None,
@@ -17560,7 +17573,8 @@ fn a_long_queued_ask_shows_three_rows_and_the_cut() {
 /// The words show only once Shift+Enter opens the field on them.
 #[test]
 fn a_kept_draft_is_named_on_the_closed_rule() {
-    let draft = |text: &str| crate::app::PageDraft { text: text.into(), images: Vec::new() };
+    let draft =
+        |text: &str| crate::app::PageDraft { review: None, text: text.into(), images: Vec::new() };
     let (mut app, path) = app_live("tlive-draft", false);
     app.rich_keys = true;
     let plain = render(&app, 120, 30);

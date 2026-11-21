@@ -309,7 +309,14 @@ impl Transport for Client {
         let (tx, rx) = channel();
         let repo_root = self.repo_root.clone();
         std::thread::spawn(move || {
-            let reply = open_existing(&repo_root).and_then(|mut c| c.request(command));
+            // A named artifact decision parks this RPC for the key walk
+            // (up to 8s) and the provider's acknowledgement (up to 5s).
+            let wait = if matches!(command, Command::ReviewPlan { .. }) {
+                Duration::from_secs(20)
+            } else {
+                RESPONSE_WAIT
+            };
+            let reply = open_existing(&repo_root).and_then(|mut c| c.request_within(command, wait));
             let _ = tx.send(reply);
         });
         rx

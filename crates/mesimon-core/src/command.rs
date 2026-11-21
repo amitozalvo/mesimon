@@ -951,9 +951,9 @@ pub enum Command {
     AcceptTrust {
         ticket: ulid::Ulid,
     },
-    /// Reject the named agy artifact. Feedback goes to the continuing turn
+    /// Decide the named agy plan. Empty feedback accepts. Words go to the continuing turn
     /// after agy reports the rejection.
-    RejectPlan {
+    ReviewPlan {
         ticket: ulid::Ulid,
         session: uuid::Uuid,
         request: String,
@@ -1799,7 +1799,7 @@ impl Command {
             | SleepSession { .. }
             | WakeSession { .. }
             | ReclaimAll => m(Mutate, true, None),
-            AcceptTrust { ticket } | RejectPlan { ticket, .. } => m(Mutate, true, Some(*ticket)),
+            AcceptTrust { ticket } | ReviewPlan { ticket, .. } => m(Mutate, true, Some(*ticket)),
             // Moves are recorded by `place_ticket` itself, with the mover;
             // the rest are session plumbing the feed does not narrate.
             MoveTicket { .. }

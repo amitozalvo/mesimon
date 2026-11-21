@@ -218,6 +218,9 @@ enum Deliverer {
     /// The board's own `w` on a trust dialog (T-844): a person at the
     /// terminal, whose receipt is the card's state and a feed line.
     Board,
+    BoardReview {
+        reply: Option<Sender<ClientReply>>,
+    },
     /// The crown's `answer_agent` (T-569). The shim's call waits on `reply`
     /// until the delivery settles; `answer` is the label or the text, for
     /// the feed and the card; `prior` is the turn's mark before the answer
@@ -237,7 +240,7 @@ impl Deliverer {
                 Principal::Paired { device: device.to_hex(), grant: grant.to_hex() }
             }
             Deliverer::Crown { session, .. } => Principal::Agent { session: *session },
-            Deliverer::Board => Principal::Local,
+            Deliverer::Board | Deliverer::BoardReview { .. } => Principal::Local,
         }
     }
 }
@@ -1818,10 +1821,17 @@ impl Daemon {
         };
         let kind = self.session_kind(id);
         let codex = codex_shapes(kind, dialog);
-        let accepts = if kind == SessionKind::Agy
-            && matches!(dialog.content, api::DialogContent::Plan { .. })
-        {
-            agy_plan_answer(&response) && !self.plan_accept.contains_key(&id)
+        let accepts = if kind == SessionKind::Agy && dialog.request.starts_with("agy-plan/") {
+            if !self
+                .board
+                .session(id)
+                .is_some_and(|rec| crate::agents::agy::artifacts::current(rec, request))
+            {
+                return Reply::Rejected {
+                    message: "artifact changed; read the current card".into(),
+                };
+            }
+            artifact_decision(dialog, &response).is_some() && !self.plan_accept.contains_key(&id)
         } else {
             dialog_plan(dialog, &response).is_some() && (!codex || codex_takes(dialog, &response))
         };
@@ -1847,9 +1857,40 @@ impl Daemon {
         Reply::delivery("awaiting_delivery")
     }
 
-    /// A local rejection takes exactly the walk the phone takes, bound to
-    /// the same artifact request even if the person leaves the field open.
-    pub(super) fn reject_agy_plan(
+    pub(super) fn press_artifact_key(
+        &self,
+        id: uuid::Uuid,
+        request: &str,
+        expected: crate::plan_dialog::ArtifactView,
+        accept: bool,
+    ) -> Result<(), &'static str> {
+        use crate::plan_dialog::{artifact_view, ArtifactView};
+        let rec = self.board.session(id).ok_or("session changed")?;
+        let sid = rec.sid16();
+        let screen = self.backend.capture_input_screen(&sid).map_err(|_| "pane unreachable")?;
+        if artifact_view(&screen.lines.join("\n"), request) != Some(expected) {
+            return Err("artifact panel changed; check the pane");
+        }
+        let key = match expected {
+            ArtifactView::Closed => "C-r",
+            ArtifactView::Selected if accept => "y",
+            ArtifactView::Selected => "n",
+            ArtifactView::Above => "Up",
+            ArtifactView::Below => "Down",
+        };
+        if !crate::agents::agy::artifacts::current(rec, request) {
+            return Err("artifact changed; read the current card");
+        }
+        match self.backend.press_unattached_key(&sid, key) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(A_PERSON_ATTACHED),
+            Err(_) => Err("could not send artifact decision"),
+        }
+    }
+
+    /// A local ask takes the same walk as the phone. Its RPC reply stays
+    /// with the walk so a refused send can return the original draft.
+    pub(super) fn review_agy_plan(
         &mut self,
         ticket: ulid::Ulid,
         id: uuid::Uuid,
@@ -1864,6 +1905,13 @@ impl Daemon {
         {
             return Response::Err { message: "plan changed".into() };
         }
+        if !self
+            .board
+            .session(id)
+            .is_some_and(|s| crate::agents::agy::artifacts::current(s, request))
+        {
+            return Response::Err { message: "plan changed; reopen the ask field".into() };
+        }
         if self.dialog_delivery_pending(id)
             || self.plan_accept.contains_key(&id)
             || self.control_input_in_flight(id)
@@ -1871,7 +1919,7 @@ impl Daemon {
             return Response::Err { message: "input is already pending".into() };
         }
         let answer = if feedback.is_empty() {
-            api::DialogAnswer::Reject
+            api::DialogAnswer::Accept
         } else {
             api::DialogAnswer::Text { text: feedback }
         };
@@ -1881,13 +1929,14 @@ impl Daemon {
         self.control.dialog_deliveries.insert(
             id,
             DialogDelivery::new(
-                Deliverer::Board,
+                Deliverer::BoardReview { reply: None },
                 ticket,
                 request.into(),
                 DeliveryAnswer::Dialog(answer),
                 ONE_WALK,
             ),
         );
+        self.answer_waits = Some(id);
         Response::Ok
     }
 
@@ -2027,7 +2076,7 @@ impl Daemon {
             return;
         };
         let authorized = match pending.by {
-            Deliverer::Board => true,
+            Deliverer::Board | Deliverer::BoardReview { .. } => true,
             Deliverer::Phone { grant, device, .. } => {
                 self.control_granted(grant, device)
                     && !authorize(
@@ -2136,7 +2185,7 @@ impl Daemon {
                     }
                     _ => self.crown_answer_allowed(*crown, *session, pending.ticket, id),
                 },
-                Deliverer::Board => self.dialog_waiting(id),
+                Deliverer::Board | Deliverer::BoardReview { .. } => self.dialog_waiting(id),
             };
             let standing = self.delivery_standing(id, &pending);
             // A session whose mod speaks `answer` takes the whole answer in
@@ -2197,6 +2246,9 @@ impl Daemon {
                 (Deliverer::Crown { .. }, DeliveryAnswer::Dialog(_))
             );
             let step = match standing {
+                None if pending.request.starts_with("agy-plan/") => {
+                    Err("artifact changed; read the current card")
+                }
                 None => Err("state_changed"),
                 Some(_) if !allowed => Err(held),
                 Some(_)
@@ -2227,6 +2279,32 @@ impl Daemon {
             // tick is remembered for one key, so the next screen must show it.
             pending.walk.toggled = None;
             let sent = step.and_then(|step| {
+                if kind == SessionKind::Agy && pending.request.starts_with("agy-plan/") {
+                    use crate::plan_dialog::ArtifactView;
+                    let (view, accept) = match step {
+                        DialogStep::OpenArtifacts => (ArtifactView::Closed, false),
+                        DialogStep::Up => (ArtifactView::Above, false),
+                        DialogStep::Down => (ArtifactView::Below, false),
+                        DialogStep::ReviewArtifact { accept } => (ArtifactView::Selected, accept),
+                        DialogStep::Wait => return Ok(false),
+                        _ => return Err("artifact panel changed"),
+                    };
+                    let board_accept = accept && matches!(pending.by, Deliverer::BoardReview { .. });
+                    if board_accept {
+                        let rec = self.board.session(id).ok_or("session changed")?;
+                        if !self.accept_holders(&rec.cwd).is_empty() || self.checkout_unresolved(&rec.cwd) {
+                            return Err("another agent holds this checkout");
+                        }
+                    }
+                    self.press_artifact_key(id, &pending.request, view, accept)?;
+                    if board_accept {
+                        self.plan_accept.insert(id, now_ms() + PLAN_ACCEPT_CONFIRM_MS);
+                    }
+                    pending.walk.artifacts_opened = true;
+                    pending.walk.review_pane =
+                        self.board.session(id).and_then(|s| s.pane_key.clone());
+                    return Ok(view == ArtifactView::Selected);
+                }
                 match step {
                     DialogStep::Up => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
                     DialogStep::Down => {
@@ -2238,15 +2316,8 @@ impl Daemon {
                             false
                         })
                     }
-                    DialogStep::OpenArtifacts => self.backend.press_key(&sid, "C-r").map(|_| {
-                        pending.walk.artifacts_opened = true;
-                        false
-                    }),
-                    DialogStep::ReviewArtifact { accept } => {
-                        pending.walk.artifacts_opened = true;
-                        pending.walk.review_pane =
-                            self.board.session(id).and_then(|s| s.pane_key.clone());
-                        self.backend.press_key(&sid, if accept { "y" } else { "n" }).map(|_| true)
+                    DialogStep::OpenArtifacts | DialogStep::ReviewArtifact { .. } => {
+                        return Err("artifact changed")
                     }
                     DialogStep::EscapeNext => {
                         self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| false)
@@ -2516,13 +2587,35 @@ impl Daemon {
                 );
                 self.feed.board_outcome(by.actor(), event, Some(pending.ticket), status);
             }
-            Deliverer::Board => {
-                let event = if pending.request.starts_with("agy-plan/") {
-                    "plan_rejected"
+            Deliverer::BoardReview { reply } => {
+                let event = if matches!(
+                    pending.answer,
+                    DeliveryAnswer::Dialog(api::DialogAnswer::Accept)
+                ) {
+                    "plan_accepted"
                 } else {
-                    "trust_accept"
+                    "plan_rejected"
                 };
                 self.feed.board_outcome(by.actor(), event, Some(pending.ticket), status);
+                if let Some(reply) = reply {
+                    let response = if matches!(status, "answered" | "input_sent") {
+                        Response::Ok
+                    } else {
+                        let message = match reason.as_deref() {
+                            Some(A_PERSON_ATTACHED) => "a person has the agent pane open",
+                            Some("shape_unrecognised") => {
+                                "check the artifact panel and clear any draft in the agent pane"
+                            }
+                            Some(why) => why,
+                            None => "plan decision unconfirmed",
+                        };
+                        Response::Err { message: message.into() }
+                    };
+                    let _ = reply.send(ClientReply { response, delivered: None, told: None });
+                }
+            }
+            Deliverer::Board => {
+                self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status)
             }
             Deliverer::Crown { crown, session, answer, reply, prior, .. } => {
                 let revise = matches!(pending.answer, DeliveryAnswer::Revise { .. });
@@ -2642,6 +2735,9 @@ impl Daemon {
         let api::DialogContent::Questions { questions } = &dialog.content else {
             return Err(format!("{key}'s dialog is a plan; accept_plan accepts a plan"));
         };
+        if rec.kind == SessionKind::Agy && request.starts_with("agy-plan/") {
+            return Err("a person decides an artifact review".into());
+        }
         let answers = crown_answers(key, questions, answer)?;
         let answer = answer_words(questions, &answers);
         let response = api::DialogAnswer::Answers { answers };
@@ -2683,7 +2779,7 @@ impl Daemon {
         reply: Sender<ClientReply>,
     ) -> Option<Sender<ClientReply>> {
         let slot = match self.control.dialog_deliveries.get_mut(&id).map(|d| &mut d.by) {
-            Some(Deliverer::Crown { reply, .. }) => Some(reply),
+            Some(Deliverer::Crown { reply, .. } | Deliverer::BoardReview { reply }) => Some(reply),
             _ => None,
         };
         super::crownplan::park_in(slot, reply)
@@ -3364,11 +3460,30 @@ impl Daemon {
             plan.zip(self.board.session(id).and_then(|s| s.agy_plan_request.clone()))
         {
             self.control_cancel_permission(id);
-            self.control_project(
-                id,
-                request,
-                api::DialogContent::Plan { markdown: markdown.into() },
-            );
+            let name = request.rsplit('/').next().unwrap_or_default();
+            let content = if name == "implementation_plan.md" {
+                api::DialogContent::Plan { markdown: markdown.into() }
+            } else {
+                api::DialogContent::Questions {
+                    questions: vec![api::Question {
+                        header: name.into(),
+                        question: format!("Review {name}\n\n{markdown}"),
+                        options: ["Approve artifact", "Reject artifact"]
+                            .map(|label| api::QuestionOption {
+                                label: label.into(),
+                                description: String::new(),
+                            })
+                            .into(),
+                        multi_select: false,
+                    }],
+                }
+            };
+            self.control_project(id, request, content);
+        } else if self.control.dialogs.get(&id).is_some_and(|d| d.request.starts_with("agy-plan/"))
+            && self.board.session(id).is_some_and(|s| !s.agy_reviewing)
+            && matches!(frame.event.as_str(), agy::POST_TOOL_USE | agy::TITLE)
+        {
+            self.close_agy_dialog(id, DialogEdge::Closed);
         }
         match frame.event.as_str() {
             agy::PRE_TOOL_USE => {
@@ -7580,6 +7695,19 @@ fn agy_plan_answer(response: &api::DialogAnswer) -> bool {
     }
 }
 
+fn artifact_decision(dialog: &api::Dialog, answer: &api::DialogAnswer) -> Option<bool> {
+    match (&dialog.content, answer) {
+        (api::DialogContent::Questions { .. }, api::DialogAnswer::Choice { index: 0 }) => {
+            Some(true)
+        }
+        (api::DialogContent::Questions { .. }, api::DialogAnswer::Choice { index: 1 }) => {
+            Some(false)
+        }
+        (_, a) if agy_plan_answer(a) => Some(matches!(a, api::DialogAnswer::Accept)),
+        _ => None,
+    }
+}
+
 fn agy_dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
     match &dialog.content {
         api::DialogContent::Questions { questions } => {
@@ -7602,17 +7730,15 @@ fn agy_dialog_step(
     screen: &str,
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
-    if matches!(dialog.content, api::DialogContent::Plan { .. }) {
+    if dialog.request.starts_with("agy-plan/") {
         use crate::plan_dialog::{artifact_view, ArtifactView};
-        let accept = match response {
-            api::DialogAnswer::Accept => true,
-            api::DialogAnswer::Reject | api::DialogAnswer::Text { .. } => false,
-            _ => return Err(Miss::ShapeUnrecognised),
-        };
+        let accept = artifact_decision(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
         return match artifact_view(screen, &dialog.request) {
             Some(ArtifactView::Closed) if walk.artifacts_opened => Ok(DialogStep::Wait),
             Some(ArtifactView::Closed) => Ok(DialogStep::OpenArtifacts),
             Some(ArtifactView::Selected) => Ok(DialogStep::ReviewArtifact { accept }),
+            Some(ArtifactView::Above) => Ok(DialogStep::Up),
+            Some(ArtifactView::Below) => Ok(DialogStep::Down),
             None => Err(Miss::ShapeUnrecognised),
         };
     }

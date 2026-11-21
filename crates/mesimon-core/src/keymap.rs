@@ -676,7 +676,6 @@ pub enum Verb {
     /// the daemon for the person, the screen read before each. The same
     /// walk a paired phone's trust card asks for. Never an automation.
     AcceptTrust,
-    RejectPlan,
     /// `S` on the ticket page: a second shell beside whatever is there.
     /// There is no Claude twin: a ticket holds ONE claude (2026-09-02), and a
     /// second seat is a shell — see STALE-MAP "One claude per ticket".
@@ -1634,6 +1633,7 @@ pub struct Ctx {
     /// `queued` beside a dialog reads as a choice and is not one (user,
     /// 2026-09-23: "queued doesn't make sense here and can confuse users").
     pub ask_plan_ready: bool,
+    /// This review draft has words, so its Enter sends the plan back.
     pub ask_agy_review: bool,
     /// The ask field's (or the ask room's) words are bound for ONE ticket's
     /// agent, not a column's seats (T-853): a picture belongs to a ticket,
@@ -8089,20 +8089,7 @@ fn ask_word(c: &Ctx) -> &'static str {
     }
 }
 
-const REJECT_PLAN: Binding = Binding {
-    keys: &[Key::Ctrl('x')],
-    verb: Verb::RejectPlan,
-    show: "^x",
-    hint: |_| "reject plan + send feedback",
-    avail: |c| c.ask_agy_review,
-    class: Class::Plain,
-    group: Group::Ticket,
-    mutates: true,
-    prio: 11,
-};
-
 static INPUT: &[Binding] = &[
-    REJECT_PLAN,
     Binding {
         keys: &[Key::Ctrl('o')],
         verb: Verb::AttachFile,
@@ -8123,7 +8110,9 @@ static INPUT: &[Binding] = &[
         // actually does, or the footer is teaching the wrong screen.
         hint: |c| {
             if c.prompting {
-                if c.ask_accepts_plan {
+                if c.ask_agy_review {
+                    "send plan back"
+                } else if c.ask_accepts_plan {
                     "accept plan"
                 } else {
                     ask_word(c)
@@ -8615,7 +8604,6 @@ static SEARCH: &[Binding] = &[
 /// note it walks them (T-440), and elsewhere it is unbound. `{ }` are text
 /// here — paging is `pgup`/`pgdn`.
 static EDITOR: &[Binding] = &[
-    REJECT_PLAN,
     Binding {
         keys: &[Key::Ctrl('o')],
         verb: Verb::AttachFile,

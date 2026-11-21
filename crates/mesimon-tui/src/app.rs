@@ -953,6 +953,7 @@ fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
 /// A ticket page's ask kept when the page was left mid-ask (T-1262).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageDraft {
+    pub review: Option<PlanReview>,
     pub text: String,
     pub images: Vec<crate::image_paste::DraftImage>,
 }
@@ -1225,6 +1226,7 @@ pub enum EditorPurpose {
     /// `plan` (T-434) is the field's `^p`, riding along like the rest.
     /// `tier` (T-443) is the field's `^r`, riding along the same way.
     Ask {
+        review: Option<PlanReview>,
         target: AskTarget,
         queued: bool,
         immediately: bool,
@@ -1686,6 +1688,7 @@ pub enum InputPurpose {
     /// `Ctx::composing` stays false and the input scope's `save` word
     /// becomes `send`.
     Prompt {
+        review: Option<PlanReview>,
         /// Who the words go to: one ticket's agent, or every agent seated
         /// in a column (T-378, the field opened on a column header).
         target: AskTarget,
@@ -1720,6 +1723,13 @@ pub enum InputPurpose {
         /// held here until the send puts up the ones the words still name.
         images: Vec<crate::image_paste::DraftImage>,
     },
+}
+
+/// The exact artifact the ask field was opened on, kept with its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanReview {
+    session: uuid::Uuid,
+    request: String,
 }
 
 /// The ask field's destination. A ticket's field hangs under its card and
@@ -7964,20 +7974,37 @@ impl App {
         self.board.pane_target(ticket).is_some_and(|s| s.on_plan_dialog())
     }
 
-    fn reject_plan(&mut self, ticket: ulid::Ulid, feedback: &str) -> Result<()> {
-        let Some(seat) = self.board.pane_target(ticket) else { return Ok(()) };
-        let Some(request) = seat.agy_plan_request.clone() else { return Ok(()) };
-        let command =
-            Command::RejectPlan { ticket, session: seat.id, request, feedback: feedback.into() };
-        match self.req(command) {
-            Response::Ok => {
-                self.status = "sending plan back".into();
-                self.mode = Mode::Normal;
+    fn review_plan(
+        &mut self,
+        ticket: ulid::Ulid,
+        review: PlanReview,
+        feedback: String,
+        draft: Mode,
+    ) -> Result<()> {
+        let accepting = feedback.is_empty();
+        let command = Command::ReviewPlan {
+            ticket,
+            session: review.session,
+            request: review.request,
+            feedback,
+        };
+        self.mode = Mode::Normal;
+        self.status = "sending plan decision".into();
+        self.submit(command, move |app, response| {
+            match response {
+                Response::Ok => {
+                    app.status = if accepting { "plan accepted" } else { "plan sent back" }.into()
+                }
+                response => {
+                    app.recover_submission(draft);
+                    app.status = match response {
+                        Response::Err { message } => message,
+                        _ => "plan decision unconfirmed".into(),
+                    };
+                }
             }
-            Response::Err { message } => self.status = message,
-            _ => {}
-        }
-        self.refresh_soon()
+            app.refresh_soon()
+        })
     }
 
     /// The ticket's paned agent sits on its folder trust dialog (T-844):
@@ -7993,7 +8020,9 @@ impl App {
     /// pane is not known to be planning, and its field opens at the
     /// board's default.
     pub(crate) fn ticket_planning(&self, ticket: ulid::Ulid) -> bool {
-        self.board.pane_target(ticket).is_some_and(|s| !s.on_plan_dialog() && s.launched_in_plan())
+        self.board.pane_target(ticket).is_some_and(|s| {
+            s.kind != SessionKind::Agy && !s.on_plan_dialog() && s.launched_in_plan()
+        })
     }
 
     /// The ask field's ring has an `accept plan` stop for this ticket.
@@ -8024,6 +8053,20 @@ impl App {
                 Self::shell_line(buffer.as_str())
             }
             Mode::Editor(e) if e.asking() => Self::shell_line(e.body.as_str()),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn sending_plan_back(&self) -> bool {
+        match &self.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { review: Some(_), .. }, buffer } => {
+                !buffer.as_str().trim().is_empty()
+            }
+            Mode::Editor(ed)
+                if matches!(ed.purpose, EditorPurpose::Ask { review: Some(_), .. }) =>
+            {
+                !ed.body.as_str().trim().is_empty()
+            }
             _ => false,
         }
     }
@@ -8273,7 +8316,7 @@ impl App {
         if !matches!(self.screen, Screen::Ticket { .. }) || !self.page_drafts.contains_key(&id) {
             return;
         }
-        let Mode::Input { purpose: InputPurpose::Prompt { target, images, .. }, buffer } =
+        let Mode::Input { purpose: InputPurpose::Prompt { target, images, review, .. }, buffer } =
             &mut self.mode
         else {
             return;
@@ -8284,6 +8327,9 @@ impl App {
         let Some(draft) = self.page_drafts.remove(&id) else { return };
         *buffer = history_field(&draft.text, false);
         *images = draft.images;
+        if draft.review.is_some() {
+            *review = draft.review;
+        }
     }
 
     /// The draft `^]` kept for `ticket`'s page (T-1262).
@@ -9414,21 +9460,7 @@ impl App {
                 }
                 _ => false,
             },
-            ask_agy_review: match &self.mode {
-                Mode::Input {
-                    purpose: InputPurpose::Prompt { target: AskTarget::Ticket(t), images, .. },
-                    ..
-                } if images.is_empty() => Some(t),
-                Mode::Editor(e) if e.images.is_empty() => match &e.purpose {
-                    EditorPurpose::Ask { target: AskTarget::Ticket(t), .. } => Some(t),
-                    _ => None,
-                },
-                _ => None,
-            }
-            .and_then(|t| self.board.pane_target(*t))
-            .is_some_and(|s| {
-                s.on_plan_dialog() && s.kind == SessionKind::Agy && s.agy_plan_request.is_some()
-            }),
+            ask_agy_review: self.sending_plan_back(),
             ask_plan_ready: match &self.mode {
                 Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
@@ -11284,6 +11316,7 @@ impl App {
                                     == mesimon_core::board::FollowUpMode::Queue);
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                review: None,
                                 images: Vec::new(),
                                 target: AskTarget::Column(name),
                                 walk: None,
@@ -11300,7 +11333,12 @@ impl App {
                     if ctx.ticket_unsent {
                         return self.resend_unsent(id);
                     }
-                    if ctx.ticket_queued {
+                    let review = self.board.pane_target(id)
+                        .filter(|s| s.kind == SessionKind::Agy && s.on_plan_dialog())
+                        .and_then(|s| s.agy_plan_request.clone().map(|request| PlanReview {
+                            session: s.id, request,
+                        }));
+                    if ctx.ticket_queued && review.is_none() {
                         // An ask is waiting: the field reopens on its words,
                         // at `queued`. Enter re-queues, a blank Enter drops.
                         // Words written in the room (T-380) have lines, and
@@ -11333,6 +11371,7 @@ impl App {
                         } else {
                             self.mode = Mode::Input {
                                 purpose: InputPurpose::Prompt {
+                                    review: None,
                                     images: Vec::new(),
                                     target,
                                     walk: None,
@@ -11363,6 +11402,7 @@ impl App {
                             };
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                review,
                                 images: Vec::new(),
                                 target: AskTarget::Ticket(id),
                                 walk: None,
@@ -11385,6 +11425,7 @@ impl App {
                         // checkout. Nothing spawns until Enter.
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
+                                review: None,
                                 images: Vec::new(),
                                 target: AskTarget::Ticket(id),
                                 walk: None,
@@ -11821,7 +11862,6 @@ impl App {
             | Verb::HistoryPrev
             | Verb::HistoryNext
             | Verb::PlanMode
-            | Verb::RejectPlan
             // ---- editor (handled in key_editor; unreachable here) ----------
             | Verb::EditorSave
             | Verb::EditorSaveStart
@@ -14203,24 +14243,44 @@ impl App {
             self.status = background::SUBMISSION_PENDING.into();
             return Ok(());
         }
-        match verb {
-            Some(Verb::RejectPlan) => {
-                if let InputPurpose::Prompt { target: AskTarget::Ticket(ticket), .. } = purpose {
-                    return self.reject_plan(ticket, buffer.as_str());
+        if matches!(verb, Some(Verb::Save | Verb::SaveStart)) {
+            if let InputPurpose::Prompt {
+                review: Some(review),
+                target: AskTarget::Ticket(ticket),
+                images,
+                ..
+            } = &purpose
+            {
+                if !images.is_empty() {
+                    self.status = "plan feedback takes text".into();
+                    return Ok(());
                 }
+                return self.review_plan(
+                    *ticket,
+                    review.clone(),
+                    buffer.as_str().trim().into(),
+                    Mode::Input { purpose, buffer },
+                );
             }
+        }
+        match verb {
             // `^]` in the ticket page's ask field (T-1262): the page's own
             // way back, the field's words and pictures kept for the page's
             // next Shift+Enter (`restore_page_draft`). A blank field keeps
             // nothing. Esc still closes the field and drops them.
             Some(Verb::Back) => {
-                if let InputPurpose::Prompt { target: AskTarget::Ticket(id), images, .. } = &purpose
+                if let InputPurpose::Prompt {
+                    target: AskTarget::Ticket(id), images, review, ..
+                } = &purpose
                 {
                     let text = buffer.into_text();
                     if text.trim().is_empty() && images.is_empty() {
                         self.page_drafts.remove(id);
                     } else {
-                        self.page_drafts.insert(*id, PageDraft { text, images: images.clone() });
+                        self.page_drafts.insert(
+                            *id,
+                            PageDraft { text, images: images.clone(), review: review.clone() },
+                        );
                     }
                 }
                 self.mode = Mode::Normal;
@@ -14290,6 +14350,7 @@ impl App {
                         editor
                     }
                     InputPurpose::Prompt {
+                        review,
                         target,
                         queued,
                         immediately,
@@ -14308,6 +14369,9 @@ impl App {
                             tier,
                             buffer.as_str(),
                         );
+                        if let EditorPurpose::Ask { review: bound, .. } = &mut room.purpose {
+                            *bound = review;
+                        }
                         // The new line is the key's own, not an edit: a
                         // clean Esc still folds back to the field's words.
                         if break_line {
@@ -14785,13 +14849,6 @@ impl App {
             ed.delete_armed = false;
         }
         match verb {
-            Some(Verb::RejectPlan) => {
-                if let EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } = ed.purpose {
-                    let feedback = ed.body.as_str().to_owned();
-                    self.mode = Mode::Editor(ed);
-                    return self.reject_plan(ticket, &feedback);
-                }
-            }
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
@@ -15109,7 +15166,15 @@ impl App {
         let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
         body.paste(text);
         Editor::new(
-            EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier },
+            EditorPurpose::Ask {
+                review: None,
+                target,
+                queued,
+                immediately,
+                accept_plan,
+                plan,
+                tier,
+            },
             EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
             body,
             Field::Body,
@@ -15121,7 +15186,7 @@ impl App {
     /// field held, so nothing is lost on the way back — a body that grew
     /// lines is dirty, and dirty takes the two-press discard.
     fn fold_ask(&mut self, ed: Editor) {
-        let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
+        let EditorPurpose::Ask { review, target, queued, immediately, accept_plan, plan, tier } =
             ed.purpose
         else {
             self.mode = Mode::Normal;
@@ -15129,6 +15194,7 @@ impl App {
         };
         self.mode = Mode::Input {
             purpose: InputPurpose::Prompt {
+                review,
                 target,
                 walk: None,
                 queued,
@@ -15174,12 +15240,21 @@ impl App {
             self.status = background::SUBMISSION_PENDING.into();
             return Ok(());
         }
-        let EditorPurpose::Ask { target, queued, immediately, accept_plan, plan, tier } =
+        let EditorPurpose::Ask { review, target, queued, immediately, accept_plan, plan, tier } =
             ed.purpose.clone()
         else {
             self.mode = Mode::Normal;
             return Ok(());
         };
+        if let (Some(review), AskTarget::Ticket(ticket)) = (review, &target) {
+            if !ed.images.is_empty() {
+                self.status = "plan feedback takes text".into();
+                self.mode = Mode::Editor(ed);
+                return Ok(());
+            }
+            let words = ed.body.as_str().trim().to_string();
+            return self.review_plan(*ticket, review, words, Mode::Editor(ed));
+        }
         if ed.shell_capture {
             if !self.catch_up()? {
                 self.mode = Mode::Editor(ed);
@@ -15228,6 +15303,7 @@ impl App {
                 }
             }
             let purpose = InputPurpose::Prompt {
+                review: None,
                 images: ed.images.clone(),
                 target,
                 walk: None,
@@ -15272,6 +15348,7 @@ impl App {
         self.mode = Mode::Normal;
         let sent = self.commit_prompt(
             InputPurpose::Prompt {
+                review: None,
                 images: Vec::new(),
                 target,
                 walk: None,
@@ -23560,6 +23637,7 @@ mod tests {
         let mut app = app_three_columns();
         app.mode = Mode::Input {
             purpose: InputPurpose::Prompt {
+                review: None,
                 images: Vec::new(),
                 target: AskTarget::Ticket(ulid::Ulid(1)),
                 walk: None,
@@ -27439,7 +27517,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agy_plan_field_accepts_on_enter_and_sends_feedback_on_ctrl_x() {
+    fn agy_review_enter_names_the_plan_that_opened_the_field() {
         for reject in [false, true] {
             let (mut app, sent, _) = app_with_claude(
                 SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan },
@@ -27450,20 +27528,28 @@ mod tests {
             seat.kind = SessionKind::Agy;
             seat.agy_plan_request = Some("agy-plan/lead/call/design.md".into());
             app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-            assert!(app.ctx().ask_accepts_plan && app.ctx().ask_agy_review);
+            app.board_mut().sessions[0].agy_plan_request =
+                Some("agy-plan/lead/replacement/design.md".into());
+            let hold = hold_background(&mut app);
             if reject {
                 for ch in "Change the greeting".chars() {
                     app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
                 }
-                app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
                 assert!(
-                    sent_contains(&sent, "RejectPlan")
+                    sent_contains(&sent, "ReviewPlan")
                         && sent_contains(&sent, "Change the greeting")
                 );
             } else {
                 app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-                assert!(sent_contains(&sent, "accept_plan: true"));
+                assert!(sent_contains(&sent, "ReviewPlan"));
             }
+            assert!(sent_contains(&sent, "agy-plan/lead/call/design.md"), "{:?}", sent.borrow());
+            let (_, reply) = hold.borrow_mut().replies.pop_front().expect("decision receipt");
+            reply.send(Ok(Response::Err { message: "artifact changed".into() })).unwrap();
+            app.poll_submission().unwrap();
+            assert_eq!(field_text(&app), if reject { "Change the greeting" } else { "" });
+            assert_eq!(app.status, "artifact changed");
         }
     }
 
