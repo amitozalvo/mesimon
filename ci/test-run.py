@@ -4,7 +4,8 @@
 Default: cargo nextest run --workspace (cargo's own parallelism; --jobs N caps
 build jobs and test threads together). Checks run once by default. --both-roads
 adds the mod road's pass to a recognized full-workspace suite: the `mesimon`
-integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine. The two
+integration tests under MESIMON_TEST_ROAD=mod, with a stand-in engine.
+Nextest skips exact cases audited as independent in mod-road-independent.txt. The two
 passes run side by side (T-1101): the mod pass waits on cargo's own lock while
 the first pass builds, then both run their tests at once, each at --jobs N
 threads, so both roads take about one road's time (the e2es wait on their own
@@ -32,6 +33,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -432,14 +434,35 @@ def full_workspace_suite(command):
     return workspace
 
 
+MOD_INDEPENDENT = Path(__file__).with_name("mod-road-independent.txt")
+
+
+def mod_filter(manifest):
+    """Subtract only exact binary/test pairs. A new test or binary runs on both roads."""
+    by_binary = {}
+    for line in manifest.read_text().splitlines():
+        entry = line.partition("#")[0].strip()
+        if not entry:
+            continue
+        match = re.fullmatch(r"(\w+)\s+(\w+(?:::\w+)*)", entry, re.ASCII)
+        if not match:
+            raise ValueError(f"Expected a binary and an exact test name in {manifest}: {entry}")
+        binary, name = match.groups()
+        by_binary.setdefault(binary, []).append(f"test(={name})")
+    selection = "package(mesimon) & kind(test)"
+    excluded = [f"(binary_id(=mesimon::{binary}) & ({' | '.join(tests)}))"
+                for binary, tests in by_binary.items()]
+    if excluded:
+        selection += " - (" + " | ".join(excluded) + ")"
+    return selection
+
+
 def road_pass(command, jobs):
     """The mod road's pass after a full-workspace suite (T-574), or None.
 
-    The e2e suite again with every Claude launch on the mod road: the stub
-    wrapped so the stand-in engine and the real `mesimon mod-bridge` run
-    beside it, and every hook frame sent with its mod twin first, so the
-    shadow pairs the whole suite's frames. A suite asked to run past its
-    first red (--no-fail-fast, as CI asks) asks the same of this pass, so
+    The harness selects the mod transport for unpinned Claude launches and
+    MCP tool calls. Nextest omits cases that exercise the same path on hooks.
+    A suite asked to run past its first red (--no-fail-fast) asks the same of this pass, so
     one run reports every red on both roads (T-1023)."""
     if not full_workspace_suite(command):
         return None
@@ -447,7 +470,7 @@ def road_pass(command, jobs):
         # The whole workspace, filtered, rather than `-p mesimon`: one
         # package alone unifies features differently and relinks for a
         # minute on a runner what the first pass just built (T-1023).
-        mod = ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)"]
+        mod = ["cargo", "nextest", "run", "--workspace", "-E", mod_filter(MOD_INDEPENDENT)]
         if jobs:
             mod += ["--test-threads", str(jobs)]
     elif command[1:2] == ["test"]:

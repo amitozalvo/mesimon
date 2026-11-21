@@ -49120,3 +49120,48 @@ Both provider regressions failed against the original daemon and passed
 against the fix. They exercise the ticket-page Enter command, including one
 submission of the brief on a new thread and the crown's read of a failed
 exact resume after a previously observed turn.
+## Count proven road-independent e2es once at release (T-1385, 2026-11-21)
+
+The person answered **yes on 2026-11-21**. Hooks runs the complete workspace. A proven
+road-independent e2e may run once on hooks when explicitly marked. Every new or uncertain
+e2e runs on both Claude transport roads. The nextest mod filter subtracts exact binary and
+test names from `package(mesimon) & kind(test)`. The release fixture exercises a new name
+with the same prefix and an identical name in a different binary.
+
+The mod pass had 456 runnable e2es. Auditing `test_road`, fixture overrides, Claude launches
+(including worktree and crown helpers), and the shim's `tools/call` found 157 exclusions.
+The green mod log at `a5ddaa07` recorded 1,019.158 summed test-seconds for these and
+4,700.351 for the other 299. The inventory with the names and timings is on the ticket.
+Of the exclusions, 69 fixtures pin their own transport, 40 exercise only Codex or agy,
+and 48 cover CLI, wire, persistence, shells, source inventory, plugin validation or refusal
+before launch. All 43 forge tests retain both roads. The ignored restart-skew subprocess
+helper is outside the 456. Comparing the actual nextest results by name confirmed all 456
+on hooks and exactly the audited 157 absent on mod.
+
+Four exclusive `--both-roads` runs used the same clean `a5ddaa07`, warmed test binaries and
+bundled tmux. The filtered runner was loaded from a separate directory so the tested Git
+commit stayed fixed. The road times below run from nextest's launch log opening to its final
+output. Gate wall includes any lock wait and automatic isolated reruns. Load is the three
+averages from `uptime` immediately before and after the command.
+
+| Jobs per road | Mod cases | Hooks wall (s) | Mod wall (s) | Gate wall (s) | Start load | End load | Hooks failures |
+|---|---:|---:|---:|---:|---|---|---:|
+| Default (11 logical CPUs) | 456 | 606.0 | 592.6 | 606.7 | 6.95 / 8.38 / 10.19 | 25.06 / 16.65 / 12.60 | 0 |
+| 8 | 456 | 811.3 | 785.6 | 825.6 | 25.06 / 16.65 / 12.60 | 15.96 / 17.46 / 14.61 | 1 |
+| 6 | 456 | 1,031.1 | 997.0 | 1,093.0 | 15.96 / 17.46 / 14.61 | 7.37 / 7.39 / 9.18 | 1 |
+| 6, filtered | 299 | 1,045.2 | 838.0 | 1,140.2 | 12.49 / 9.12 / 9.50 | 9.22 / 13.90 / 15.06 | 2 |
+
+At six jobs the filter saved **159.1 s (16.0%) on mod**. Hooks finished last in both runs.
+The unfiltered gate spent 41 s waiting for another ticket's check. Before starting the
+filtered command the preflight waited for other builds to finish. Load varied during the
+series. The timing supports proposing the runner's default parallelism for release
+preparation on this host, keeping the existing six-job setting pending that decision.
+
+All four mod passes were green. At eight jobs the hooks failure was
+`workspace_e2e::a_workspace_of_repos_stands_on_the_wire`. At six it was
+`crown_e2e::a_worker_s_dialog_outlives_a_daemon_restart`. In the filtered run they were
+`plan_accept_e2e::two_dialogs_in_one_message_hold_the_seat_until_the_second_is_answered` and
+`crown_e2e::a_plan_sent_back_leaves_needs_you_only_on_a_screen_without_it`. All four passed
+alone on hooks at the measured SHA. Every gate finished both roads and a clean fixture
+audit. Only the all-green default-thread run wrote a stamp. The 60 Python runner and
+supervisor tests passed, including the release fixture's green and red stamp controls.

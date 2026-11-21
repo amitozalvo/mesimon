@@ -106,7 +106,10 @@ Choose checks from the behaviour and dependencies changed, and say what each pro
     worktree at its merged commit. Rerun each red test alone. If it fails again, name it, fix
     forward on the same branch and deliver again. If it passes, name the rerun and leave it.
     No merged notice means no run; the release gate is behind it.
-  - The release gate runs the complete suite on both Claude transport roads.
+  - The release gate runs the complete workspace suite on the hooks road. Proven
+    road-independent e2es may run once, on hooks, when explicitly listed in
+    `ci/mod-road-independent.txt`. Every new or uncertain e2e defaults to both Claude
+    transport roads.
 - A full suite run carries `--no-fail-fast`, so one red does not cost a second run. Clippy on
   all targets is the release gate's; a ticket does not owe it. A command expected to take over
   2 minutes starts in the background.

@@ -27,16 +27,26 @@ spec.loader.exec_module(runner)
 
 class RoadPassTests(unittest.TestCase):
     def test_a_full_workspace_suite_is_followed_by_the_mod_road(self):
-        self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], None),
-                         ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)"])
+        mod = runner.road_pass(["cargo", "nextest", "run", "--workspace"], None)
+        self.assertEqual(mod[:-1], ["cargo", "nextest", "run", "--workspace", "-E"])
+        self.assertTrue(mod[-1].startswith("package(mesimon) & kind(test) - ("))
+        self.assertIn("test(=guard::every_test_file_is_a_module)", mod[-1])
         self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace"], 4)[-2:],
                          ["--test-threads", "4"])
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace"], None),
                          ["cargo", "test", "-p", "mesimon", "--tests"])
 
+    def test_mod_exclusions_must_name_an_exact_case(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "mod-road-independent.txt"
+            manifest.write_text("agents provider_e2e::*\n")
+            with self.assertRaisesRegex(ValueError, "exact test name"):
+                runner.mod_filter(manifest)
+
     def test_no_fail_fast_reaches_the_mod_road(self):
-        self.assertEqual(runner.road_pass(["cargo", "nextest", "run", "--workspace", "--no-fail-fast"], None),
-                         ["cargo", "nextest", "run", "--workspace", "-E", "package(mesimon) & kind(test)", "--no-fail-fast"])
+        command = ["cargo", "nextest", "run", "--workspace"]
+        self.assertEqual(runner.road_pass([*command, "--no-fail-fast"], None),
+                         [*runner.road_pass(command, None), "--no-fail-fast"])
         self.assertEqual(runner.road_pass(["cargo", "test", "--workspace", "--no-fail-fast"], None),
                          ["cargo", "test", "-p", "mesimon", "--tests", "--no-fail-fast"])
         # Past `--` it is not a recognized harness option, so coverage is unknown.
@@ -343,10 +353,22 @@ class ReleasePrepareTests(unittest.TestCase):
             (pkg / "CHANGELOG.md").write_text("## v0.1.0 — 2026-11-20\n")
             (pkg / ".gitignore").write_text("/target/\n")
             (pkg / "tests").mkdir()
+            (ci / "mod-road-independent.txt").write_text("gate audited\n")
             (pkg / "tests/gate.rs").write_text("""
 use std::{env, fs, path::PathBuf, thread, time::Duration};
 fn marker(name: &str) -> PathBuf { PathBuf::from(env::var_os("FIXTURE_MARKERS").unwrap()).join(name) }
 fn on_mod() -> bool { env::var("MESIMON_TEST_ROAD").as_deref() == Ok("mod") }
+
+#[test]
+fn audited() {
+    assert!(!on_mod(), "the explicitly audited test ran on mod");
+    fs::write(marker("audited-hooks"), "").unwrap();
+}
+
+#[test]
+fn audited_neighbor() {
+    if on_mod() { fs::write(marker("new-mod"), "").unwrap(); }
+}
 
 #[test]
 fn transient() {
@@ -376,6 +398,15 @@ fn transient_neighbor() {
     fs::File::create_new(marker(name)).expect("green test ran twice");
 }
 """)
+            (pkg / "tests/other.rs").write_text("""
+#[test]
+fn audited() {
+    if std::env::var("MESIMON_TEST_ROAD").as_deref() == Ok("mod") {
+        let root = std::env::var_os("FIXTURE_MARKERS").unwrap();
+        std::fs::write(std::path::Path::new(&root).join("other-mod"), "").unwrap();
+    }
+}
+""")
             # Shorten only the release shell's progress polling in this fixture.
             (root / "sleep").write_text(f"#!/bin/sh\nexec {shutil.which('sleep')} 0.1\n")
             (root / "sleep").chmod(0o755)
@@ -397,6 +428,8 @@ fn transient_neighbor() {
             log = (pkg / "target/release-prepare/gate.log").read_text()
             self.assertNotEqual(red.returncode, 0, red.stdout)
             self.assertTrue((root / "mod-finished").exists(), log)
+            for name in ("audited-hooks", "new-mod", "other-mod"):
+                self.assertTrue((root / name).exists(), name)
             summaries = [line for line in log.splitlines() if "Summary [" in line]
             self.assertTrue(summaries[0].lstrip().startswith("Summary"), log)
             self.assertTrue(summaries[1].startswith("mod |"), log)
