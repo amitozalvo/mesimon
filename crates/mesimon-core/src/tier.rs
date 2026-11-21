@@ -10,8 +10,7 @@
 //! Three built-ins, `claude`, `codex` and `agy`, are never stored: each is
 //! "that provider at the CLI's own defaults" — no `--model`, no `--effort` —
 //! which is what every launch was before tiers existed. The cycle offers
-//! them (agy's only where [`Book::agy`] says the switch is on); the editor
-//! never lists them.
+//! them all when there are no custom tiers. The editor never lists them.
 //!
 //! A ticket names its tier by ID, never by name, so renaming a machine tier
 //! does not orphan another board's tickets. An id that no longer resolves (a
@@ -27,9 +26,7 @@ use crate::board::{AgentProvider, Board, SessionKind};
 /// The built-in tiers' ids — and their names, which are the same word.
 pub const CLAUDE: &str = "claude";
 pub const CODEX: &str = "codex";
-/// agy's built-in (T-1225): resolved by id, and by a board whose provider is
-/// agy; listed beside the other two only where the switch is on (T-1234,
-/// [`Book::with_agy`]).
+/// agy's built-in tier id.
 pub const AGY: &str = "agy";
 
 /// A tier name is a word on a card: short, one token, no spaces.
@@ -136,7 +133,7 @@ impl Effort {
 /// One tier. `model` empty and `effort` `Default` are "the CLI decides".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tier {
-    /// A ULID string for a tier a person made; `claude`/`codex` for the
+    /// A ULID string for a tier a person made; `claude`/`codex`/`agy` for the
     /// built-ins. The reference a ticket stores.
     pub id: String,
     pub name: String,
@@ -291,30 +288,16 @@ impl Source {
 pub struct Book<'a> {
     pub machine: &'a MachineTiers,
     pub board: &'a Board,
-    /// Whether agy's built-in is listed (T-1234): the caller's read of
-    /// `board::AGY_SWITCH`, since this crate reads no environment. Off, agy's
-    /// built-in still resolves by id; it is only never offered.
-    pub agy: bool,
 }
 
 impl<'a> Book<'a> {
     pub fn new(machine: &'a MachineTiers, board: &'a Board) -> Self {
-        Self { machine, board, agy: false }
+        Self { machine, board }
     }
 
-    /// The same book with agy's built-in listed where `on`.
-    pub fn with_agy(self, on: bool) -> Self {
-        Self { agy: on, ..self }
-    }
-
-    /// The built-ins a list offers, in the provider ring's order: Claude
-    /// Code, Codex, and agy where [`Self::agy`].
+    /// The built-ins in the provider ring's order.
     pub fn builtins(&self) -> Vec<Tier> {
-        BUILTIN_PROVIDERS
-            .into_iter()
-            .filter(|p| self.agy || *p != AgentProvider::Agy)
-            .map(Tier::builtin)
-            .collect()
+        BUILTIN_PROVIDERS.into_iter().map(Tier::builtin).collect()
     }
 
     /// The tiers a person made, resolved: machine tiers in their order (a
@@ -449,7 +432,7 @@ impl<'a> Book<'a> {
     /// tiers a person made, in the tiers list's order. The built-ins ride
     /// only where they must (T-562, user: "skip built-ins in ^n") — the
     /// default when it is one, so a pick can always come back to it, and
-    /// both while nobody has made a tier.
+    /// all while nobody has made a tier.
     pub fn cycle(&self, seat: Option<AgentProvider>) -> Vec<Tier> {
         let custom: Vec<Tier> = self.custom().into_iter().map(|(t, _)| t).collect();
         let tiers = if custom.is_empty() {
@@ -470,9 +453,9 @@ impl<'a> Book<'a> {
     /// as `list_board` lists them: `^r`'s ring for an empty seat
     /// ([`Self::cycle`]) — the tiers a person made, in the tiers list's
     /// order, with the default first when it is a built-in. While nobody
-    /// made a tier the ring is both built-ins, and only the default is
-    /// offered: a built-in carries no words to pick it by, and the other
-    /// one is a CLI this person may not run.
+    /// made a tier the ring holds all built-ins, and only the default is
+    /// offered: a built-in carries no words to pick it by, and the others
+    /// may name CLIs this person does not run.
     pub fn offered(&self) -> Vec<Tier> {
         let mut tiers = self.cycle(None);
         if self.custom().is_empty() {
@@ -1085,7 +1068,7 @@ mod tests {
         );
         assert_eq!(custom[1].0.effort, Effort::Max, "the board's copy wins");
         let all: Vec<_> = book.all().into_iter().map(|t| t.id).collect();
-        assert_eq!(all, ["claude", "codex", "A", "B", "C"]);
+        assert_eq!(all, ["claude", "codex", "agy", "A", "B", "C"]);
     }
 
     #[test]
@@ -1170,7 +1153,7 @@ mod tests {
         };
         assert_eq!(ids(&board), ["B", "A"], "a parked claude: its provider's, in order");
         assert_eq!(ids(&Board { sessions: Default::default(), ..board.clone() }), ["B", "A", "C"]);
-        // Nobody made a tier: the two built-ins are the whole cycle.
+        // Nobody made a tier: the built-ins are the whole cycle.
         let none = MachineTiers::default();
         assert_eq!(
             Book::new(&none, &Board::default())
@@ -1178,7 +1161,7 @@ mod tests {
                 .into_iter()
                 .map(|t| t.id)
                 .collect::<Vec<_>>(),
-            [CLAUDE, CODEX]
+            [CLAUDE, CODEX, AGY]
         );
         // A pick of another provider's tier (edited since) launches on the
         // seat's own built-in, never on a model that CLI does not know.
@@ -1396,20 +1379,14 @@ mod tests {
         assert_eq!(at("--yolo", Effort::High).agy_model_arg(), None, "never a flag");
     }
 
-    /// T-1234: agy's built-in is listed only where the caller says the
-    /// switch is on, and resolves by id either way.
     #[test]
-    fn agys_built_in_is_listed_only_behind_the_switch() {
+    fn agys_built_in_is_listed_and_resolves_by_id() {
         let (machine, board) = (MachineTiers::default(), Board::default());
-        let ids = |book: Book<'_>| book.all().into_iter().map(|t| t.id).collect::<Vec<_>>();
-        let off = Book::new(&machine, &board);
-        assert_eq!(ids(off), [CLAUDE, CODEX]);
-        assert_eq!(off.get(AGY).map(|t| t.provider), Some(AgentProvider::Agy));
-        let on = off.with_agy(true);
-        assert_eq!(ids(on), [CLAUDE, CODEX, AGY]);
-        let cycle: Vec<String> = on.cycle(None).into_iter().map(|t| t.id).collect();
-        assert_eq!(cycle, [CLAUDE, CODEX, AGY], "nobody made a tier: every built-in");
-        assert_eq!(on.offered().len(), 1, "and only the default is offered to an agent");
+        let book = Book::new(&machine, &board);
+        assert_eq!(book.get(AGY).map(|t| t.provider), Some(AgentProvider::Agy));
+        let ids: Vec<_> = book.all().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, [CLAUDE, CODEX, AGY]);
+        assert_eq!(book.offered().len(), 1, "and only the default is offered to an agent");
     }
 
     #[test]

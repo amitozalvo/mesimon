@@ -53,7 +53,6 @@ fn mesimon_binary() -> &'static str {
 /// `std::env::set_var` (the recipe until 2026-09-05) would otherwise run its
 /// daemon on default timings and pass, or fail, for the wrong reason.
 pub const DAEMON_SEAMS: &[&str] = &[
-    "MESIMON_AGY",
     "MESIMON_AGY_BIN",
     "MESIMON_AGY_HOME",
     "MESIMON_ARCHIVE_SUGGEST_MS",
@@ -143,6 +142,7 @@ impl TestFixture {
         fixture.set_env("MESIMON_HOOK_BIN", mesimon_binary());
         fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
         fixture.set_env("MESIMON_CLAUDE_HOME", fixture.dir.join("claude-home"));
+        fixture.set_env("MESIMON_AGY_BIN", fixture.dir.join("no-such-agy"));
         fixture.set_env("CODEX_HOME", fixture.dir.join("codex-home"));
         fixture.set_env("MESIMON_CLAUDE_ROAD", test_road());
         fixture

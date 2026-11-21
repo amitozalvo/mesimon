@@ -3,7 +3,6 @@
   "adapter_revision": "agy-hooks-title-1",
   "provider": "agy",
   "auto_updates_at_launch": true,
-  "switch": "MESIMON_AGY=1",
   "versions": {
     "1.5.8": {
       "captured_at": "2026-11-14",
@@ -149,7 +148,6 @@
       ],
       "limitations": [
         "agy updates itself in the background at every launch, so installed versions move ahead of recorded captures without manual upgrades.",
-        "Starting agy sessions requires MESIMON_AGY=1.",
         "Selected version-scoped observations do not certify all models, enterprise policies or future upstream releases."
       ],
       "end_to_end": {

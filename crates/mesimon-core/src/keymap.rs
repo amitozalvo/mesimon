@@ -734,7 +734,7 @@ pub enum Verb {
     /// its `r` and the page's, which reads every provider the settings name
     /// now. The seven after it are the page's rows, each a `prefs.json`
     /// key, per machine: what the line shows, its three windows, when it
-    /// names a reset, and its two providers.
+    /// names a reset, and its providers.
     Usage,
     UsageRefresh,
     /// `$` on the board, and the Usage settings' last row: a card's corner
@@ -762,8 +762,7 @@ pub enum Verb {
     UsageResets,
     UsageClaude,
     UsageCodex,
-    /// agy's windows on the line (T-1237); listed only where agy is
-    /// switched on (`MESIMON_AGY=1`).
+    /// agy's windows on the line (T-1237).
     UsageAgy,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
@@ -857,8 +856,8 @@ pub enum Verb {
     McpTools,
     /// The Settings row for the default agent tier (T-443) — what a ticket
     /// that picked nothing starts on, which is also who starts it. It took
-    /// the `Provider` row's place: the built-ins `claude` and `codex` ARE
-    /// the two providers at their own defaults. Machine or board scope.
+    /// the `Provider` row's place: the built-ins run each provider at its own
+    /// defaults. Machine or board scope.
     DefaultTier,
     /// The Settings door to the tiers list (T-443).
     Tiers,
@@ -1716,8 +1715,7 @@ pub struct Ctx {
     pub tier_edit_enter_word: &'static str,
     pub tier_on_step: bool,
     pub tier_on_model: bool,
-    /// `r` on an agy tier's page (T-1327): agy is switched on and no `agy
-    /// models` read is already running.
+    /// `r` on an agy tier's page (T-1327): no `agy models` read is already running.
     pub tier_models_refresh: bool,
     /// The tiers list's cursor is on a tier its scope orders, beside another
     /// one (T-562): the machine's tiers, or a board's own.
@@ -1790,8 +1788,6 @@ pub struct Ctx {
     pub usage_claude: bool,
     pub usage_codex: bool,
     pub usage_agy: bool,
-    /// agy is switched on for this process (`MESIMON_AGY=1`, T-1225).
-    pub agy: bool,
     /// A read is in flight: `r` would only start a second.
     pub usage_reading: bool,
     /// The cards' corner shows each ticket's cost, not its age (`$`).
@@ -5698,7 +5694,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::UsageAgy,
         label: |_| "agy".into(),
         detail: |_| "its sessions' own reports ∙ none while no agy runs".into(),
-        avail: |c| c.agy,
+        avail: always,
         key: "",
     },
     // Where the README is (T-850): what mesimon does, the agent brief word
@@ -11735,10 +11731,7 @@ mod tests {
         assert!(!verbs.contains(&Verb::Usage));
         let usage = Ctx { settings_section: SettingsSection::Usage, ..ctx.clone() };
         assert_eq!(settings_items(&usage).first().map(|m| m.verb), Some(Verb::Usage));
-        // agy's row is listed only where agy is switched on (T-1237).
-        let rows = |c: &Ctx| settings_items(c).iter().map(|m| m.verb).collect::<Vec<_>>();
-        assert!(!rows(&usage).contains(&Verb::UsageAgy));
-        assert!(rows(&Ctx { agy: true, ..usage.clone() }).contains(&Verb::UsageAgy));
+        assert!(settings_items(&usage).iter().any(|m| m.verb == Verb::UsageAgy));
         assert_eq!(resolve(Scope::Board, Key::Char(','), &ctx), Some(Verb::Settings));
         // The preferences are one level down, in the Settings dialog's
         // sections, and not in the menu proper: a menu row is an action or a

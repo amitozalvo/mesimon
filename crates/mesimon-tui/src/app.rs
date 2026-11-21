@@ -1945,7 +1945,7 @@ pub struct App {
     /// The machine's agent tiers (T-443), off the snapshot: the layer under
     /// `board.tiers`. Read through `App::tiers()`, never alone.
     pub machine_tiers: mesimon_core::tier::MachineTiers,
-    /// Where the two providers keep their model lists (T-951), set in
+    /// Where the providers keep their model lists (T-951), set in
     /// `lib.rs::run`; a test app has none, so no test or golden reads a
     /// developer's `~/.claude` or `~/.codex`.
     pub(crate) model_homes: Option<tiers::ModelHomes>,
@@ -2589,10 +2589,6 @@ pub struct App {
     /// developer's environment. False shuts the two doors and nothing else:
     /// a shell already on a ticket is listed, previewed and slept as before.
     pub ticket_shells: bool,
-    /// `MESIMON_AGY=1` (T-1234): agy's built-in in the tier lists and agy
-    /// on the provider ring. Set by `lib.rs::run`, never `App::new`, the
-    /// `ticket_shells` rule.
-    pub agy_switch: bool,
     /// This terminal's `$SHELL` (T-1201), read once: the shell-env chip
     /// asks it every frame. Set by `lib.rs::run`, never `App::new`, the
     /// `ticket_shells` rule.
@@ -2920,7 +2916,6 @@ impl App {
             terminal: crate::title::Terminal::Other,
             icons: None,
             ticket_shells: false,
-            agy_switch: false,
             shell: None,
             appearance: None,
             appearance_probe: None,
@@ -3570,8 +3565,7 @@ impl App {
             t.acts_seen = Some(self.crown_acts.version);
             let lines = crate::transcript::acts_of(
                 &self.board,
-                &mesimon_core::tier::Book::new(&self.machine_tiers, &self.board)
-                    .with_agy(self.agy_switch),
+                &mesimon_core::tier::Book::new(&self.machine_tiers, &self.board),
                 &self.crown_acts.all(),
                 t.ticket,
             );
@@ -9549,7 +9543,6 @@ impl App {
             usage_claude: self.prefs.usage_claude,
             usage_codex: self.prefs.usage_codex,
             usage_agy: self.prefs.usage_agy,
-            agy: self.agy_switch,
             usage_reading: !self.usage.reading.is_empty(),
             card_cost: self.prefs.card_corner == crate::prefs::CardCorner::Cost,
             board_table: self.table_view(),
@@ -24782,7 +24775,7 @@ mod tests {
     }
 
     /// The Default tier row (T-443) took the Provider row's place: with no
-    /// tiers made it walks the two built-ins — which ARE the two providers —
+    /// tiers made it walks the built-ins in provider order
     /// and a session that exists keeps its own.
     #[test]
     fn default_tier_row_cycles_and_preserves_existing_sleeping_session() {
@@ -24791,8 +24784,8 @@ mod tests {
         app.settings_section = keymap::SettingsSection::Agents;
         let idx = app.settings_row(Verb::DefaultTier);
         app.mode = Mode::Settings { idx };
-        // Machine scope: claude → codex → claude.
-        for expected in [AgentProvider::Codex, AgentProvider::ClaudeCode] {
+        // Machine scope: claude → codex → agy → claude.
+        for expected in [AgentProvider::Codex, AgentProvider::Agy, AgentProvider::ClaudeCode] {
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
             assert_eq!(app.tiers().default_tier().provider, expected);
             assert_eq!(app.mode, Mode::Settings { idx });
@@ -24801,7 +24794,7 @@ mod tests {
             assert_eq!(old.state, SessionState::Sleeping);
             assert!(app.status.contains("default tier"), "{}", app.status);
         }
-        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetDefaultTier")).count(), 2);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetDefaultTier")).count(), 3);
         // Board scope starts at inherit and sets this board's own.
         press(&mut app, 'b');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -24836,7 +24829,7 @@ mod tests {
         let detail = keymap::item_detail(row, &c);
         assert!(detail.starts_with("set on this board ∙ machine: codex"), "{detail}");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.tiers().machine_default().name, "claude", "Enter moved the machine's");
+        assert_eq!(app.tiers().machine_default().name, "agy", "Enter moved the machine's");
         assert!(app.status.contains("this board keeps claude"), "{}", app.status);
     }
 
@@ -25141,7 +25134,6 @@ mod tests {
     fn an_agy_tiers_effort_steps_over_its_models_levels() {
         use mesimon_core::tier::Effort;
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        app.agy_switch = true;
         app.settings_section = keymap::SettingsSection::Agents;
         app.mode = Mode::Settings { idx: app.settings_row(Verb::Tiers) };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -25290,7 +25282,6 @@ mod tests {
                 },
             ];
         });
-        app.agy_switch = true;
         app.model_homes = Some(ModelHomes {
             claude: root.join("claude"),
             codex: root.join("codex"),
@@ -25549,9 +25540,9 @@ mod tests {
 
     /// T-1234: an agy board's column has an agy mode row of its own, which
     /// steps agy's mode and leaves Claude's; and agy's built-in joins the
-    /// Default tier row's ring only behind its switch.
+    /// Default tier row's ring.
     #[test]
-    fn an_agy_board_steps_its_own_mode_and_lists_its_built_in_behind_the_switch() {
+    fn an_agy_board_steps_its_own_mode_and_lists_its_built_in() {
         use mesimon_core::board::{AgentProvider, AgyMode, ClaudeMode};
         let mut board = board_three_columns();
         board.agent_provider = AgentProvider::Agy;
@@ -25560,8 +25551,6 @@ mod tests {
         let ids = |app: &App| {
             app.default_ring().0.into_iter().flatten().map(|t| t.id).collect::<Vec<_>>()
         };
-        assert_eq!(ids(&app), ["claude", "codex"], "switched off");
-        app.agy_switch = true;
         assert_eq!(ids(&app), ["claude", "codex", "agy"]);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

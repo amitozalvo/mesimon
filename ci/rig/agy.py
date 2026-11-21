@@ -148,7 +148,7 @@ class Case:
         trusted = [] if result["case"] == "worktree-trust" else [str(self.repo.resolve())]
         (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": trusted}))
         binary = signed_out_cli(guard.root, args.agy) if result["case"] == "sign-in" else args.agy
-        env.update(TERM="xterm-256color", MESIMON_AGY="1", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
+        env.update(TERM="xterm-256color", MESIMON_AGY_HOME=str(trust), MESIMON_TMUX_BIN=args.tmux,
                    MESIMON_HOOK_BIN=str(args.binary), MESIMON_NO_DAEMON_AUTORESTART="1",
                    MESIMON_AGY_BIN=binary)
         if result["case"] == "ask-receipt":

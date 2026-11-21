@@ -95,13 +95,6 @@ multi_replace_file_content|edit_file|sed_file|notebook_edit|edit_notebook|delete
 /// `mesimon hook` aborts itself at 500 ms; agy's own bound is seconds.
 const HOOK_TIMEOUT_SECS: u32 = 5;
 
-/// Whether this process may start an agy session: `MESIMON_AGY=1`
-/// ([`mesimon_core::board::AGY_SWITCH`]). Off, nothing of agy's launches,
-/// whatever a board or a tier names.
-pub fn enabled() -> bool {
-    std::env::var(mesimon_core::board::AGY_SWITCH).as_deref() == Ok("1")
-}
-
 /// agy's own data folder, read and never written: `MESIMON_AGY_HOME` (the
 /// test seam), else `~/.gemini/antigravity-cli`.
 pub fn home() -> PathBuf {

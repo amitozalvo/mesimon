@@ -1,7 +1,6 @@
  BOARD   mesimon › kanban-tui   6 tickets
   ╭─ SETTINGS ∙ USAGE ───────────────────────────────────╮
   │                                                      │
-  │                                                      │
   │ QUOTA LINE                                           │
   │  Show                near a limit                    │
   │                                                      │
@@ -14,7 +13,8 @@
   │ PROVIDERS                                            │
   │  Claude              ● on                            │
   │  Codex               ● on                            │
+  │  agy                 ● on                            │
   │                                                      │
-  │ a session's own reports, else a quiet app-server     │
+  │ its sessions' own reports ∙ none while no agy runs   │
   ╰────────────── jk select ∙ enter change ∙ r read now ─╯
  SETTINGS                                            ? keys

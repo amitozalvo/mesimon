@@ -80,21 +80,20 @@ impl<T: store::MachineFile> MachineFileCache<T> {
 }
 
 impl Daemon {
-    /// The two layers, for one question. agy's built-in is listed where
-    /// this daemon runs with its switch (T-1234).
+    /// The two layers, for one question.
     pub(super) fn tier_book(&self) -> Book<'_> {
-        Book::new(&self.machine_tiers.value, &self.board).with_agy(crate::agents::agy::enabled())
+        Book::new(&self.machine_tiers.value, &self.board)
     }
 
     /// Read `agy models` for the tier page's Model row (T-1234), once the
     /// shell environment has landed (the launcher's `PATH` finds agy), on a
-    /// thread of its own: it is a network call. Only behind agy's switch,
+    /// thread of its own: it is a network call. Read
     /// only where the file is missing or older than its TTL, one at a time.
     /// A read that lists nothing leaves the last good file in place.
     pub(super) fn warm_agy_models(&mut self) {
         use crate::agents::agy;
         let file = agy::models_file();
-        if !agy::enabled() || self.agy_models_reading || !agy::models_due(&file, now_ms()) {
+        if self.agy_models_reading || !agy::models_due(&file, now_ms()) {
             return;
         }
         self.start_agy_models_read(file);
@@ -105,9 +104,6 @@ impl Daemon {
     /// one fresh pass behind it, so a sign-in completed mid-read is still seen.
     pub(super) fn refresh_agy_models(&mut self) -> Response {
         use crate::agents::agy;
-        if !agy::enabled() {
-            return Response::Err { message: "agy is switched off on this daemon".into() };
-        }
         if self.agy_models_reading {
             self.agy_models_again = true;
             return Response::Ok;
@@ -147,7 +143,7 @@ impl Daemon {
             Ok(n) => self.journal.line(&format!("agy models: {n} listed")),
             Err(e) => self.journal.line(&format!("agy models not read: {e}")),
         }
-        if std::mem::take(&mut self.agy_models_again) && crate::agents::agy::enabled() {
+        if std::mem::take(&mut self.agy_models_again) {
             self.start_agy_models_read(crate::agents::agy::models_file());
             return;
         }

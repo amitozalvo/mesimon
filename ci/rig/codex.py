@@ -670,7 +670,7 @@ def adapter(base):
                 if not agy:
                     raise Inconclusive("installed agy is required")
                 from agy import signed_out_cli
-                self.env.update(MESIMON_AGY="1", MESIMON_AGY_BIN=signed_out_cli(self.guard.root, agy))
+                self.env.update(MESIMON_AGY_BIN=signed_out_cli(self.guard.root, agy))
             if stub:
                 self.env.update(MESIMON_FORGE_EVERY_MS="2000", MESIMON_FORGE_BUSY_MS="2000")
             # The board's state follows HOME; it lies inside the fixture root.

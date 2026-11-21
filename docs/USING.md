@@ -32,7 +32,7 @@ The [README](../README.md) gets you to a first agent. This page is the rest.
   Allow it: the private tmux server then keeps that access after the terminal that opened the
   board has quit. If it is ever refused, `mesimon doctor` says so on its `private server`
   line, and the board's Esc menu offers to restart the server.
-- **Claude Code or Codex** on your `PATH`, authenticated through its native CLI.
+- **Claude Code, Codex or Google’s Antigravity CLI (`agy`)** on your `PATH`, authenticated through its native CLI.
   Codex runtime integration is tested against `codex-cli 0.153.4`, and its question and
   approval dialogs, which Remote Control and the crown answer, were measured on `0.163.0`;
   `mesimon doctor` reports installed versions and the measured compatibility boundary.
@@ -282,7 +282,7 @@ the same Remote Control button as Claude Code's (its `Trust and continue` row); 
 review asks you to open the agent's pane. The ticket's prompt waits until the native composer
 is ready. Mesimon never answers a dialog by itself and never edits your Codex trust settings.
 
-What you step into is the agent itself: Claude Code or Codex exactly as you run it without
+What you step into is the agent itself: Claude Code, Codex or agy exactly as you run it without
 mesimon, with the same prompt, the same slash commands and the same permission dialogs. Type to
 it, answer its questions, interrupt it: mesimon never sits between you and it.
 
@@ -474,13 +474,13 @@ something else, and any key closes it.
 ## Agents and follow-ups
 
 Choose the provider for new sessions with **Settings › Agents › Default tier**: `claude` runs
-Claude Code and `codex` runs Codex. Claude Code is the initial default. Settings opens on the
+Claude Code, `codex` runs Codex and `agy` runs Antigravity CLI. Claude Code is the initial default. Settings opens on the
 machine's settings and `b` switches it to this board's; either way a row shows what this board
 runs, and where the board sets its own value the row's description names the machine's beside
 it. Switching providers
 leaves existing sessions, including sleeping ones, with their original provider. Accepted queued
 starts keep their choice.
-Each ticket has one live agent seat across both providers.
+Each ticket has one live agent seat.
 Where Claude Code is 2.1.287 or newer, mesimon loads its own mod into each Claude session it
 starts, in place of the hooks and the MCP server it generates for an older one; `mesimon doctor`
 says which of the two a session got. The mod reports the session's events to the board, refuses
@@ -879,7 +879,7 @@ with the command that fixes it (`gh auth login --hostname github.com`).
 ## Sleeping idle agents
 
 A column can opt its own tickets in: **Agent behaviour › Sleep after** in the column's
-settings sleeps a Claude or Codex agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
+settings sleeps a Claude Code, Codex or agy agent on a ticket in that column after 1, 5, 15 or 60 minutes idle.
 It is off by default and works even with the TUI closed; the daemon checks every ten seconds.
 Any agent idle at its prompt counts, including one you woke or interrupted that has not
 finished a turn since; anything running, waiting on you or with background work stays awake.
@@ -891,9 +891,9 @@ awake until you leave or go quiet for that long. On disk this is the column's
 
 ## Your plan's quota
 
-When Claude Code or Codex says a quota window is close to its limit, the board says so on the
+When a quota window for Claude Code, Codex or agy nears its limit, the board says so on the
 right of the row above the keys: `claude 5h 86% resets 17:50`. The numbers are the provider's
-own, the same ones Claude Code's `/usage` and Codex's `/status` show, and the line stays grey;
+own. Claude Code shows its numbers in `/usage` and Codex in `/status`. The line stays grey;
 it is silent while every window is calm. **Settings › Usage** opens on every window each
 provider reports, how old the reading is, and why a provider has none (signed out, an API key
 with no plan limits, a CLI too old to say); `r` reads again now. Its **Details** row adds each
@@ -903,7 +903,7 @@ labelled experimental.
 The rest of **Settings › Usage** decides what the line shows: near a limit (the default), every window,
 each provider's headline, or nothing. It also picks which windows it may use (the 5-hour
 window, the week, per-model weeks such as Fable or Codex-Spark), when it names a reset time,
-and whether Claude and Codex are read at all.
+and whether Claude and Codex are read at all. The agy row shows quota reported by its running sessions.
 
 The board reads only while it is open. For Claude it runs `claude -p` once, asks for the
 `/usage` numbers over Claude Code's own SDK protocol, and closes it: no prompt, no tokens, no
@@ -1087,5 +1087,5 @@ which is the gentler version.
 
 `mesimon state explain [session-prefix] --repo <repo>` shows the current state,
 confidence, recent inference decisions and board-movement decisions. The
-compatibility manifests it ran against are `docs/claude-compatibility.json` and
-`docs/codex-compatibility.json`.
+compatibility manifests it ran against are `docs/claude-compatibility.json`,
+`docs/codex-compatibility.json` and `docs/agy-compatibility.json`.

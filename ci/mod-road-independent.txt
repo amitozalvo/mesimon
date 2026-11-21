@@ -3,7 +3,6 @@
 
 # Agy only
 agents agy_e2e::agy_keeps_the_ticket_in_progress_until_the_whole_seat_finishes
-agents agy_e2e::agy_starts_nowhere_without_its_switch
 agents agy_e2e::an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board
 agents agy_e2e::an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation
 agents agy_e2e::an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box

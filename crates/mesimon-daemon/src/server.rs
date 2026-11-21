@@ -279,9 +279,6 @@ const PROMPT_WAITING: &str = "a prompt is already waiting for this session";
 const BRIEF_WAITING: &str = "its start's brief has not gone in yet";
 /// Why a command is refused on a young seat whose box is not drawn (T-961).
 const BOX_NOT_DRAWN: &str = "the prompt box is not drawn yet";
-/// Why an agy start or wake is refused where its switch is off (T-1225).
-const AGY_SWITCHED_OFF: &str =
-    "agy sessions are switched off in this build ∙ MESIMON_AGY=1 in the daemon's environment turns them on";
 /// How long a subscriber's own socket writer waits for the client
 /// before the subscriber is dropped (T-838). Long enough for a board
 /// answer to a client reading it under load; a client that reads nothing
@@ -20297,13 +20294,6 @@ impl Daemon {
                     .into(),
             };
         }
-        // An agy start's words go by the paste road once its box is drawn
-        // (T-1233), never on argv: a prompt there would be stored with the
-        // record, shown to every `ps`, and run by agy before its own folder
-        // trust dialog is answered (1.5.8).
-        if kind == SessionKind::Agy && !crate::agents::agy::enabled() {
-            return Response::Err { message: AGY_SWITCHED_OFF.into() };
-        }
         // One claude per ticket (2026-09-02). Everything that has to pick
         // "the" agent of a ticket — the board's prompt, the merge notice,
         // Enter's focus, automove, the card glyph — assumed one, and with two
@@ -22831,9 +22821,6 @@ impl Daemon {
         };
         if !rec.kind.is_agent() {
             return Response::Err { message: "only agent sessions resume".into() };
-        }
-        if rec.kind == SessionKind::Agy && !crate::agents::agy::enabled() {
-            return Response::Err { message: AGY_SWITCHED_OFF.into() };
         }
         let mut startup_retry = false;
         let cleanup_generation = if rec.codex_stopping {

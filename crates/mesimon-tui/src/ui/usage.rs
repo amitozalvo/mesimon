@@ -51,12 +51,6 @@ fn enabled(p: &Prefs, provider: Provider) -> bool {
     }
 }
 
-/// Whether a provider has a place on the page at all: agy only where it
-/// is switched on (`App::agy_switch`, T-1225), as its Settings row is.
-fn listed(app: &App, provider: Provider) -> bool {
-    provider != Provider::Agy || app.agy_switch
-}
-
 /// What a provider with no reading yet says: agy is never asked (T-1237),
 /// only heard while one of its sessions runs.
 fn unread(provider: Provider) -> &'static str {
@@ -305,7 +299,7 @@ pub(super) fn readout(app: &App, width: usize) -> Vec<Line<'static>> {
     let name_w = 12;
     let head = |word: &str| Span::styled(format!("{word:<name_w$}"), theme.base());
     for provider in Provider::ALL {
-        if !enabled(&app.prefs, provider) || !listed(app, provider) {
+        if !enabled(&app.prefs, provider) {
             continue;
         }
         let u = app.usage.get(provider);
@@ -399,7 +393,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         }
         Line::from(spans)
     };
-    for (i, provider) in Provider::ALL.into_iter().filter(|p| listed(app, *p)).enumerate() {
+    for (i, provider) in Provider::ALL.into_iter().enumerate() {
         if i > 0 {
             lines.push(Line::default());
         }

@@ -50,14 +50,9 @@ impl Drop for Bed {
 }
 
 impl Bed {
-    /// A daemon whose `agy` is the stand-in. `on` is the switch; `trusted`
-    /// writes the person's own agy settings naming the checkout, so no
-    /// dialog stands at a start there.
-    fn boot(name: &str, on: bool, trusted: bool) -> Option<Self> {
-        let mut env = vec![("MESIMON_SLEEP_MIN_AGE_MS", "0"), ("MESIMON_PANE_QUIET_MS", "600000")];
-        if on {
-            env.push(("MESIMON_AGY", "1"));
-        }
+    /// The stand-in reads a trusted checkout from its own agy settings.
+    fn boot(name: &str, trusted: bool) -> Option<Self> {
+        let env = [("MESIMON_SLEEP_MIN_AGE_MS", "0"), ("MESIMON_PANE_QUIET_MS", "600000")];
         let h = Harness::boot_staged(name, None, &env, |owner, repo| {
             init_repo(repo, "README.md", "agy fixture.\n");
             let fake = owner.dir.join("fake_agy.py");
@@ -79,11 +74,7 @@ impl Bed {
     /// A daemon wired to `fake_relay.py` on loopback so a paired `TestPhone`
     /// speaks the sealed control channel end-to-end.
     fn boot_with_relay(name: &str) -> Option<(Self, u16)> {
-        let env = [
-            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
-            ("MESIMON_PANE_QUIET_MS", "600000"),
-            ("MESIMON_AGY", "1"),
-        ];
+        let env = [("MESIMON_SLEEP_MIN_AGE_MS", "0"), ("MESIMON_PANE_QUIET_MS", "600000")];
         let mut relay_child: Option<Child> = None;
         let mut http_port: u16 = 0;
         let h = Harness::boot_staged(name, None, &env, |owner, repo| {
@@ -230,7 +221,7 @@ fn agy_board(c: &mut TestClient) {
 /// finish its own invocation while the title still lists a running child.
 #[test]
 fn agy_keeps_the_ticket_in_progress_until_the_whole_seat_finishes() {
-    let Some(bed) = Bed::boot("agy-subagents", true, true) else { return };
+    let Some(bed) = Bed::boot("agy-subagents", true) else { return };
     let mut c = bed.h.client("agy-subagents");
     agy_board(&mut c);
     let t = ticket(&mut c, "Inspect the project");
@@ -265,7 +256,7 @@ fn agy_keeps_the_ticket_in_progress_until_the_whole_seat_finishes() {
 /// conversation agy minted. Nothing is written into the checkout.
 #[test]
 fn an_agy_seat_takes_words_by_its_box_and_wakes_into_its_conversation() {
-    let Some(bed) = Bed::boot("agy-turn", true, true) else { return };
+    let Some(bed) = Bed::boot("agy-turn", true) else { return };
     let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     // The board's tools and the brief, both on (T-1232).
@@ -533,7 +524,7 @@ claude-opus-5-5-high\tClaude Opus 5.5 (High)\n";
 /// sign-in kept anywhere the board shows.
 #[test]
 fn an_agy_seat_s_transcript_cost_context_and_quota_reach_the_board() {
-    let Some(bed) = Bed::boot("agy-words", true, true) else { return };
+    let Some(bed) = Bed::boot("agy-words", true) else { return };
     let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     let title = "Count the parser's words";
@@ -666,7 +657,7 @@ fn agy_sign_in_waits_for_the_person_then_delivers_the_launch() {
 
 #[test]
 fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
-    let Some(bed) = Bed::boot("agy-trust", true, false) else { return };
+    let Some(bed) = Bed::boot("agy-trust", false) else { return };
     let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     agy_board(&mut c);
     let title = "Rename the flag";
@@ -694,7 +685,7 @@ fn an_agy_trust_dialog_is_accepted_and_the_title_waits_in_the_box() {
 /// same get_ticket view the MCP shim serializes.
 #[test]
 fn an_agy_worktree_trust_stop_names_its_checkout_on_the_board_and_in_get_ticket() {
-    let Some(bed) = Bed::boot("agy-tree-trust", true, false) else { return };
+    let Some(bed) = Bed::boot("agy-tree-trust", false) else { return };
     let mut c = bed.h.client("agy-tree-trust");
     agy_board(&mut c);
     let Response::Created { id: ticket, .. } = c.request(Command::CreateTicket {
@@ -722,21 +713,36 @@ fn an_agy_worktree_trust_stop_names_its_checkout_on_the_board_and_in_get_ticket(
     assert_eq!(view.needs_you.unwrap().reason, format!("trust ∙ {hint}"));
 }
 
-/// Without its switch nothing of agy's starts, whatever names it.
 #[test]
-fn agy_starts_nowhere_without_its_switch() {
-    let Some(bed) = Bed::boot("agy-off", false, false) else { return };
-    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
-    // A board may name agy all the same: a start's kind follows its tier.
-    assert!(matches!(
-        c.request(Command::SetAgentProvider { provider: AgentProvider::Agy }),
-        Response::Ok
-    ));
-    let t = ticket(&mut c, "Quiet");
-    err_containing(start(&mut c, t, false), "switched off");
-    assert!(c.board().sessions.is_empty());
-    assert!(bed.launches().is_empty());
-    assert!(!bed.h.dir.join("agy-models.log").exists(), "no `agy models` either");
+fn a_missing_agy_starts_and_exits_like_a_missing_codex() {
+    use mesimon_core::board::ExitReason;
+
+    let Some(h) = Harness::boot_staged("agy-missing", None, &[], |owner, repo| {
+        init_repo(repo, "README.md", "missing agents fixture.\n");
+        owner.set_env("MESIMON_CODEX_BIN", owner.dir.join("no-such-codex"));
+    }) else {
+        return;
+    };
+    let mut c = TestClient::connect(&h.paths.orch_sock());
+    for provider in [AgentProvider::Codex, AgentProvider::Agy] {
+        let t = ticket(&mut c, "Missing CLI");
+        let tier = mesimon_core::tier::builtin_id(provider);
+        assert!(matches!(
+            c.request(Command::SetTicketTier { id: t, tier: Some(tier.into()) }),
+            Response::Ok
+        ));
+        let response = c.request(Command::SpawnSession {
+            ticket: t,
+            kind: provider.session_kind(),
+            submit_prompt: false,
+            plan: false,
+        });
+        let Response::Spawned { id, .. } = response else { panic!("{response:?}") };
+        c.await_state(id, "missing CLI exited", |s| {
+            matches!(s, SessionState::Exited { reason: ExitReason::Crashed })
+        });
+        assert_eq!(c.record(id).kind, provider.session_kind());
+    }
 }
 
 struct TestPhone {
@@ -1094,7 +1100,7 @@ struct ReviewFixture {
 
 impl ReviewFixture {
     fn start(case: &str) -> Option<Self> {
-        let bed = Bed::boot(case, true, true)?;
+        let bed = Bed::boot(case, true)?;
         let mut client = bed.h.client(case);
         agy_board(&mut client);
         let ticket = ticket(&mut client, "Review artifact");
@@ -1811,7 +1817,7 @@ fn intervening_working_titles_preserve_the_command_and_refused_calls_never_type(
 
 #[test]
 fn a_crown_ask_is_handed_by_agys_words_and_taken_when_its_turn_ends() {
-    let Some(bed) = Bed::boot("agy-ask-receipt", true, true) else { return };
+    let Some(bed) = Bed::boot("agy-ask-receipt", true) else { return };
     let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
@@ -1886,7 +1892,7 @@ fn a_crown_ask_is_handed_by_agys_words_and_taken_when_its_turn_ends() {
 /// and is refused on a permission stop, which stays the person's alone.
 #[test]
 fn an_autonomous_crown_answers_agy_questions_and_never_approvals() {
-    let Some(bed) = Bed::boot("agy-crown", true, true) else { return };
+    let Some(bed) = Bed::boot("agy-crown", true) else { return };
     let mut c = TestClient::connect(&bed.h.paths.orch_sock());
     assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
     assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));

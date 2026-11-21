@@ -8,15 +8,9 @@ pub enum AgentProvider {
     #[default]
     ClaudeCode,
     Codex,
-    /// Google's Antigravity CLI, `agy` (T-1225). Reached only where
-    /// [`AGY_SWITCH`] is set, until its input, dialog and cost roads land.
+    /// Google's Antigravity CLI, `agy`.
     Agy,
 }
-
-/// The environment switch that lets a board pick [`AgentProvider::Agy`]
-/// (T-1225): `MESIMON_AGY=1`. Read by the TUI's provider toggle and by the
-/// daemon's `SetAgentProvider`, never here (this crate does no I/O).
-pub const AGY_SWITCH: &str = "MESIMON_AGY";
 
 impl AgentProvider {
     pub fn session_kind(self) -> SessionKind {
@@ -35,14 +29,12 @@ impl AgentProvider {
         }
     }
 
-    /// The provider toggle's next value. `agy` is [`AGY_SWITCH`] as the
-    /// caller read it: without it the ring is Claude Code and Codex, and a
-    /// board already on agy steps back onto it.
-    pub fn next(self, agy: bool) -> Self {
-        match self {
-            Self::ClaudeCode => Self::Codex,
-            Self::Codex if agy => Self::Agy,
-            Self::Codex | Self::Agy => Self::ClaudeCode,
+    /// Step around the tier editor's provider ring in either direction.
+    pub fn step(self, forward: bool) -> Self {
+        match (self, forward) {
+            (Self::ClaudeCode, true) | (Self::Agy, false) => Self::Codex,
+            (Self::Codex, true) | (Self::ClaudeCode, false) => Self::Agy,
+            (Self::Agy, true) | (Self::Codex, false) => Self::ClaudeCode,
         }
     }
 
@@ -4817,19 +4809,16 @@ mod tests {
         assert!(!claude.pane_died() && !claude.codex_stopping);
     }
 
-    /// T-1225: agy joins the provider ring only behind its switch, a board
-    /// already on it steps back onto the ring either way, and its words are
-    /// its own on disk.
     #[test]
-    fn agy_is_on_the_provider_ring_only_behind_its_switch() {
+    fn all_providers_cycle_in_order() {
         use AgentProvider::*;
         assert_eq!(
-            [ClaudeCode.next(false), Codex.next(false), Agy.next(false)],
-            [Codex, ClaudeCode, ClaudeCode]
+            [ClaudeCode.step(true), Codex.step(true), Agy.step(true)],
+            [Codex, Agy, ClaudeCode]
         );
         assert_eq!(
-            [ClaudeCode.next(true), Codex.next(true), Agy.next(true)],
-            [Codex, Agy, ClaudeCode]
+            [ClaudeCode.step(false), Codex.step(false), Agy.step(false)],
+            [Agy, ClaudeCode, Codex]
         );
         assert_eq!(serde_json::to_string(&Agy).unwrap(), "\"agy\"");
         assert_eq!(serde_json::to_string(&SessionKind::Agy).unwrap(), "\"agy\"");
@@ -4842,7 +4831,7 @@ mod tests {
     fn sleeping_agents_reserve_the_same_seat_across_provider_switches() {
         let ticket = ulid::Ulid::new();
         for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex, AgentProvider::Agy] {
-            let mut board = Board { agent_provider: provider.next(true), ..Board::default() };
+            let mut board = Board { agent_provider: provider.step(true), ..Board::default() };
             board.sessions.push(SessionRecord::new(
                 uuid::Uuid::new_v4(),
                 SessionKind::Bash,

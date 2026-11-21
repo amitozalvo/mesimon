@@ -36,7 +36,7 @@ fn tree_entries(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn run_mesimon(cwd: &Path, home: &Path, env: &[(&str, &Path)], flags: &[(&str, &str)], args: &[&str]) -> (i32, String) {
+fn run_mesimon(cwd: &Path, home: &Path, env: &[(&str, &Path)], args: &[&str]) -> (i32, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mesimon"));
     cmd.current_dir(cwd)
         .args(args)
@@ -46,9 +46,6 @@ fn run_mesimon(cwd: &Path, home: &Path, env: &[(&str, &Path)], flags: &[(&str, &
         .env("SHELL", "/bin/sh")
         .env("TERM", "xterm-256color");
     for (k, v) in env {
-        cmd.env(k, v);
-    }
-    for (k, v) in flags {
         cmd.env(k, v);
     }
     let out = cmd.output().expect("run mesimon");
@@ -75,17 +72,20 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
     let before_home = tree_entries(&home);
     let before_repo = tree_entries(&repo);
 
-    // Without MESIMON_AGY or an agy tier, doctor stays quiet about agy.
-    let (code, quiet) = run_mesimon(&repo, &home, &[], &[], &["doctor", "agents"]);
-    assert!(!quiet.contains("agy version"), "{quiet}");
-    let _ = code;
+    let (_, absent) = run_mesimon(&repo, &home, &[], &["doctor", "agents"]);
+    for provider in ["agy", "codex"] {
+        assert!(
+            absent.lines().any(|line| line.split_whitespace().take(2).eq(["WARN", provider])
+                && line.contains("optional provider unavailable")),
+            "{absent}"
+        );
+    }
 
-    // With MESIMON_AGY=1 and MESIMON_AGY_BIN, doctor reports both rows.
+    // An installed agy has path and version rows.
     let (code, shown) = run_mesimon(
         &repo,
         &home,
         &[("MESIMON_AGY_BIN", &fake_agy), ("MESIMON_AGY_HOME", &agy_home)],
-        &[("MESIMON_AGY", "1")],
         &["doctor", "agents", "--verbose"],
     );
     // Claude/Codex are absent from `/usr/bin:/bin`: Claude is default so exit is 1,
@@ -106,7 +106,6 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
         &repo,
         &home,
         &[("MESIMON_AGY_BIN", &missing)],
-        &[("MESIMON_AGY", "1")],
         &["doctor", "agents", "--verbose"],
     );
     assert_eq!(code, 1, "{failed}");
@@ -119,7 +118,6 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
         &repo,
         &home,
         &[("MESIMON_AGY_BIN", &fake_agy)],
-        &[("MESIMON_AGY", "1")],
         &["doctor", "agents"],
     );
     assert_eq!(code, 0, "{green}");
@@ -130,7 +128,7 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
     // `<state>/agy/<session>.json`, `~/.gemini/`, and the agy write gate.
     let before_mcp_home = tree_entries(&home);
     let before_mcp_repo = tree_entries(&repo);
-    let (code, mcp) = run_mesimon(&repo, &home, &[], &[], &["doctor", "--mcp"]);
+    let (code, mcp) = run_mesimon(&repo, &home, &[], &["doctor", "--mcp"]);
     assert_eq!(code, 0, "{mcp}");
     assert!(mcp.is_ascii(), "{mcp}");
     for needle in [
@@ -150,7 +148,7 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
 
     // `mesimon state compatibility agy <version>` reads the compiled manifest offline.
     let (code, compat) =
-        run_mesimon(&repo, &home, &[], &[], &["state", "compatibility", "agy", "1.5.13"]);
+        run_mesimon(&repo, &home, &[], &["state", "compatibility", "agy", "1.5.13"]);
     assert_eq!(code, 0, "{compat}");
     let parsed: serde_json::Value = serde_json::from_str(&compat).unwrap();
     assert_eq!(parsed["provider"], "agy");
@@ -158,7 +156,7 @@ fn doctor_reports_agy_binary_version_and_launch_files_without_mutating_anything(
     assert_eq!(parsed["auto_updates_at_launch"], true);
 
     let (code, unknown) =
-        run_mesimon(&repo, &home, &[], &[], &["state", "compatibility", "agy", "9.9.9"]);
+        run_mesimon(&repo, &home, &[], &["state", "compatibility", "agy", "9.9.9"]);
     assert_eq!(code, 0, "{unknown}");
     let parsed: serde_json::Value = serde_json::from_str(&unknown).unwrap();
     assert_eq!(parsed["status"], "untested");

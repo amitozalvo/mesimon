@@ -10466,7 +10466,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         assert_eq!(shell(&board, &terminals, &foregrounds, b), None, "a dead shell");
     }
 
-    /// A phone is offered the desk's `^r` ring (T-643): both built-ins while
+    /// A phone is offered the desk's `^r` ring (T-643): all built-ins while
     /// nobody made a tier, then the tiers a person made with the default in
     /// front when it is a built-in, each with its provider's word.
     #[test]
@@ -10483,7 +10483,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
         };
         assert_eq!(
             words(&board),
-            [("claude".into(), "claude".into()), ("codex".into(), "codex".into())]
+            [
+                ("claude".into(), "claude".into()),
+                ("codex".into(), "codex".into()),
+                ("agy".into(), "agy".into())
+            ]
         );
         board.tiers.push(Tier {
             id: "01K".into(),

@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mesimon — terminal kanban for Claude Code and Codex agents</title>
-<meta name="description" content="A terminal kanban board that orchestrates Claude Code and Codex agents: one key starts an agent on a ticket in its own git worktree, and a card lights when one needs you.">
+<title>mesimon — terminal kanban for Claude Code, Codex and Antigravity CLI agents</title>
+<meta name="description" content="A terminal kanban board that orchestrates Claude Code, Codex and Antigravity CLI agents: one key starts an agent on a ticket in its own git worktree, and a card lights when one needs you.">
 <link rel="canonical" href="https://mesimon.dev/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="mesimon">
-<meta property="og:title" content="mesimon — terminal kanban for Claude Code and Codex agents">
-<meta property="og:description" content="Orchestrate coding agents from a kanban board in your terminal: one key starts Claude Code or Codex on a ticket, and a card lights when it needs you.">
+<meta property="og:title" content="mesimon — terminal kanban for Claude Code, Codex and Antigravity CLI agents">
+<meta property="og:description" content="Orchestrate coding agents from a kanban board in your terminal: one key starts Claude Code, Codex or agy on a ticket, and a card lights when it needs you.">
 <meta property="og:url" content="https://mesimon.dev/">
 <meta property="og:image" content="https://mesimon.dev/og.png">
 <meta property="og:image:width" content="1132">
@@ -23,7 +23,7 @@
   "name": "mesimon",
   "alternateName": "משימון",
   "url": "https://mesimon.dev/",
-  "description": "A terminal kanban board that orchestrates coding agents: Claude Code and Codex, one agent per ticket, each in its own git worktree.",
+  "description": "A terminal kanban board that orchestrates coding agents: Claude Code, Codex and Antigravity CLI, one agent per ticket, each in its own git worktree.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
   "offers": {
@@ -64,7 +64,7 @@
   </svg>
   <h1>mesimon <span class="he" lang="he">משימון</span></h1>
   <p class="lede">A terminal kanban board that runs your coding agents.</p>
-  <p>Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have
+  <p>Your agent is the real Claude Code, Codex or Google’s Antigravity CLI (agy), in its own terminal: step into it and you have
   the same prompt, the same slash commands and the same permission dialogs, and mesimon never
   sits between you and it.</p>
 </header>
@@ -76,7 +76,7 @@
   <div class="cmd"><code>brew install amitozalvo/tap/mesimon</code><button type="button" class="copy" hidden>Copy</button></div>
   <p>Then run <code>mesimon doctor</code>. It checks your setup and prints fixes, and changes
   nothing. You need macOS on Apple Silicon or Linux (x86_64 or aarch64, WSL2 included), git,
-  and Claude Code or Codex, signed in.
+  and Claude Code, Codex or agy, signed in.
   <a href="https://github.com/amitozalvo/mesimon/blob/main/docs/USING.md#requirements">Requirements in detail</a>.</p>
 </section>
 
@@ -88,11 +88,11 @@
 
 <section aria-labelledby="what">
   <h2 id="what">A kanban board that orchestrates coding agents</h2>
-  <p>Each ticket on the board can run its own Claude Code or Codex agent, beside the others,
+  <p>Each ticket on the board can run its own Claude Code, Codex or agy agent, beside the others,
   from the terminal you already work in.</p>
   <ul>
     <li><strong>Start an agent on a ticket with one key.</strong> Your ticket's title and
-    description are its first prompt. Claude Code and Codex both work.</li>
+    description are its first prompt. Choose Claude Code, Codex or agy.</li>
     <li><strong>Each agent can work in its own worktree</strong>, on its own branch, so several
     agents can change the same repo at once without touching each other's files.</li>
     <li><strong>The card lights when the agent needs you.</strong> The board stays quiet while

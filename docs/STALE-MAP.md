@@ -49963,3 +49963,21 @@ early after two title reports arrived two milliseconds apart. It passed on
 its isolated rerun.
 The complete file rerun with four threads passed 29/29 with a clean fixture
 audit.
+
+## agy is available on every board (T-1409, 2026-11-21)
+
+`MESIMON_AGY=1` guarded agy starts and wakes, its place in the provider and
+tier pickers, its Usage rows, and automatic and manual reads of `agy models`.
+Doctor previously hid agy unless the switch, a tier or a binary override named
+it. The switch bought time to finish the integration. Plan review, phone
+approvals, sign-in, ask receipts, the write gate and doctor have landed.
+
+The picker now offers agy on the same terms as Codex. A column shows agy mode
+when its default or a custom tier uses agy. A missing CLI can be selected and
+its launch exits as a crash. Doctor warns for an unavailable optional provider
+and fails if the missing provider is the default for new sessions. agy's schema
+stamps still protect files that older builds cannot read.
+
+Two limits remain. The first agy turn receives its brief and the board's tools
+arrive from its second turn (T-1381, first-turn warm-up shelved). When several
+artifacts await review, the person decides them in agy's pane (T-1236).

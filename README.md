@@ -10,11 +10,11 @@
 [mesimon.dev](https://mesimon.dev)
 
 **mesimon** (Hebrew משימון, "the task instrument" — pronounced me-si-**MON**) is a terminal kanban
-board that runs your coding agents. Like Kubernetes is to containers, mesimon is to Claude Code
-and Codex: a kanban for orchestrating coding agents, several at once, one per ticket, each on
+board that runs your coding agents. Like Kubernetes is to containers, mesimon is to Claude Code,
+Codex and Google’s Antigravity CLI (agy): a kanban for orchestrating coding agents, several at once, one per ticket, each on
 its own branch.
 
-Your agent is the real Claude Code or Codex, in its own terminal: step into it and you have the
+Your agent is the real Claude Code, Codex or agy, in its own terminal: step into it and you have the
 same prompt, the same slash commands and the same permission dialogs, and mesimon never sits
 between you and it.
 
@@ -37,7 +37,7 @@ in the [CHANGELOG](CHANGELOG.md).
 ## What it does
 
 - **Start an agent on a ticket with one key.** Your ticket's title and description are its
-  first prompt. Claude Code and Codex both work.
+  first prompt. Choose Claude Code, Codex or agy.
 - **Each agent can work in its own worktree**, on its own branch, so several agents can change
   the same repo at once without touching each other's files.
 - **The card lights when the agent needs you.** The board stays quiet while agents work, and a
@@ -67,7 +67,7 @@ brew install amitozalvo/tap/mesimon
 Then run `mesimon doctor`. It checks your setup and prints fixes, and changes nothing.
 
 You need macOS on Apple Silicon or Linux (x86_64 or aarch64, WSL2 included), git, and Claude
-Code or Codex, signed in. mesimon brings its own tmux on every platform. [Requirements in detail](docs/USING.md#requirements) covers the rest, and
+Code, Codex or agy, signed in. mesimon brings its own tmux on every platform. [Requirements in detail](docs/USING.md#requirements) covers the rest, and
 [Updating](docs/USING.md#updating) says how new versions arrive.
 
 ## First run
@@ -94,7 +94,7 @@ its agent, and type the task into it.
 ## Tour
 
 **Your agent, your way.** `enter` on a ticket with a working agent takes you into the agent
-itself: Claude Code or Codex, exactly as you know it.
+itself: Claude Code, Codex or agy, exactly as you know it.
 
 ![From the board into the agent's own terminal, a message typed to it, and back to the board](assets/demo/agent.gif)
 

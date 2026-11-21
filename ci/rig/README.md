@@ -317,7 +317,7 @@ python3 -B ci/rig.py --provider agy --live --model gemini-4-neon-high
 python3 -B -m unittest ci/rig_agy_test.py     # the verdict, offline
 ```
 
-Behind `MESIMON_AGY=1`, which the rig sets for its daemon. One disposable board
+One disposable board
 per case under `ci/test-run.py`; agy keeps the person's own home and sign-in, so
 a live brief case leaves one conversation in agy's list. Each fixture provides
 its own trust list through `MESIMON_AGY_HOME`. The brief fixture trusts its

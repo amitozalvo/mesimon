@@ -102,7 +102,7 @@ fn between_turns(rec: &SessionRecord) -> bool {
 impl App {
     /// The two layers, for one question.
     pub(crate) fn tiers(&self) -> Book<'_> {
-        Book::new(&self.machine_tiers, &self.board).with_agy(self.agy_switch)
+        Book::new(&self.machine_tiers, &self.board)
     }
 
     /// The layer the Settings dialogs write: `b` flips it.
@@ -428,8 +428,7 @@ impl App {
                     _ => false,
                 };
                 c.tier_on_model = field == Some(TierField::Model);
-                c.tier_models_refresh = self.agy_switch
-                    && !self.agy_models.reading
+                c.tier_models_refresh = !self.agy_models.reading
                     && self.edited_tier().is_some_and(|(t, _)| t.provider == AgentProvider::Agy);
                 c.tier_edit_enter_word = match field {
                     Some(TierField::Name | TierField::Description) => "edit",
@@ -573,14 +572,12 @@ impl App {
     /// `r` on an agy tier's page (T-1327): ask the daemon to run `agy models`
     /// on a worker now, after a sign-in change, without waiting out the TTL.
     pub(super) fn refresh_tier_models(&mut self) -> Result<()> {
-        if !self.agy_switch
-            || self.agy_models.reading
+        if self.agy_models.reading
             || !self.edited_tier().is_some_and(|(t, _)| t.provider == AgentProvider::Agy)
         {
             return Ok(());
         }
         match self.req(Command::RefreshAgyModels) {
-            Response::Err { message } if message.contains("switched off") => self.status = message,
             Response::Err { message } => {
                 self.status =
                     format!("reading agy models needs the new daemon ∙ U reloads ∙ {message}");
@@ -948,8 +945,7 @@ impl App {
         let Some((mut t, _)) = self.edited_tier() else { return Ok(()) };
         match self.tier_fields().get(idx) {
             Some(TierField::Provider) => {
-                // agy rides the ring only behind its switch (T-1225).
-                t.provider = t.provider.next(self.agy_switch);
+                t.provider = t.provider.step(forward);
                 t.model.clear();
                 self.tier_kept_model.clear();
                 if !Effort::ring(t.provider).contains(&t.effort) {

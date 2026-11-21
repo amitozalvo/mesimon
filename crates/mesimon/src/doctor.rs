@@ -656,18 +656,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     if let Some(line) = tiers_line(&book) {
         records.push(rec(Level::Note, "tiers", line));
     }
-    // agy's rows (T-1234, T-1238) only where something could start it: behind
-    // its switch, an explicit MESIMON_AGY_BIN, or a board or custom tier that
-    // already names it, so nobody else reads an "optional provider unavailable"
-    // for a CLI they never chose.
-    let agy = mesimon_daemon::agents::agy::enabled()
-        || selected == AgentProvider::Agy
-        || book.custom().iter().any(|(t, _)| t.provider == AgentProvider::Agy)
-        || std::env::var_os("MESIMON_AGY_BIN").is_some();
     for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex, AgentProvider::Agy] {
-        if provider == AgentProvider::Agy && !agy {
-            continue;
-        }
         let binary = mesimon_daemon::agents::cli_bin(provider);
         let path = which(&binary);
         let version = path.as_deref().and_then(|path| tool_version(path, &["--version"]));
