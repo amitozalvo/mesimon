@@ -49543,3 +49543,23 @@ passed with the previous round’s nine cases.
 **Known open (low).** When a fork’s Bash approval has no call ID and
 the command finishes quickly, the lead can still show Permission after
 `PostToolUse` until the next transcript poll clears the wait.
+
+## Wait for the replayed Stop before parking the prompt fixture (T-1298, 2026-11-21)
+
+The box-not-yet-drawn test accepted any idle state after sending `Stop`.
+On its first park, `SessionStart` had already set `Idle { Unknown }`.
+The snapshot could observe that state before the daemon processed the hook,
+then `SleepSession` could reach the daemon during its turn-end process check.
+
+A diagnostic run alone took the startup idle snapshot, sent the recorded
+`Stop`, waited for the board's hook wait, and issued one sleep. It returned
+`waiting for turn-end child processes and their rewake grace` with the
+session and its pane still present. This accounts for the first-park failure
+in the retained logs and refutes the T-1319 note's missing-session explanation.
+The fixture now waits for the recorded Stop's `Idle { EndTurn }` before each
+park and prints the actual response if that single sleep request fails.
+
+The first corrected isolated run was interrupted by the supervisor's disk
+reserve. Its one retry passed in 64.69 s. The full hooks workspace suite ran
+once with `--no-fail-fast`: 3,841 passed, 14 skipped, 482 fixture owners
+clean. The box-not-yet-drawn test passed in 63.71 s under parallel load.

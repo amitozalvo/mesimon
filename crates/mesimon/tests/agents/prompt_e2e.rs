@@ -847,8 +847,13 @@ fn a_person_s_prompt_waits_for_a_box_not_yet_drawn() {
     // undrawn while `nopaint` exists.
     let fresh_pane = |c: &mut TestClient| {
         send("Stop", None);
-        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
-        assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+        // SessionStart already reports Idle(Unknown). Sleep can park the seat
+        // once this Stop's turn-end process check has finished.
+        c.await_state(sid, "end of turn", |s| {
+            *s == SessionState::Idle { stop_reason: StopReason::EndTurn }
+        });
+        let slept = c.request(Command::SleepSession { id: sid });
+        assert!(matches!(slept, Response::Ok), "{slept:?}");
         send("SessionEnd", Some("other"));
         c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
         for f in ["got.txt", "first.txt", "cleared.txt"] {
