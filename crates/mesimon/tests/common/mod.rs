@@ -1178,7 +1178,7 @@ pub fn init_repo(dir: &Path, file: &str, body: &str) {
     git(dir, &["config", "user.email", "e2e@t"]);
     git(dir, &["config", "user.name", "e2e"]);
     std::fs::write(dir.join(file), body).unwrap();
-    git(dir, &["add", "."]);
+    git(dir, &["add", "--", file]);
     git(dir, &["commit", "-qm", "init"]);
 }
 

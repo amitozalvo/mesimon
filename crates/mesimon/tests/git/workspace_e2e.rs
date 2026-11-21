@@ -36,9 +36,12 @@ fn a_workspace_of_repos_stands_on_the_wire() {
     }
     let Some(h) = Harness::boot("workspace", None) else { return };
     let root = h.repo.clone();
-    // The author's shape: a meta repo that tracks its own notes and ignores
-    // every child, over independent repositories.
+    // A board temp path vanishes after the initial commit. If init_repo staged
+    // it, its deletion will still count after the meta repo ignores children.
+    let scratch = root.join(".mesimon/board/fixture.tmp");
+    std::fs::write(&scratch, "in flight\n").unwrap();
     init_repo(&root, "CLAUDE.md", "# workspace\n");
+    std::fs::remove_file(scratch).unwrap();
     std::fs::write(root.join(".gitignore"), "*/\n").unwrap();
     git(&root, &["add", ".gitignore"]);
     git(&root, &["commit", "-qm", "ignore children"]);

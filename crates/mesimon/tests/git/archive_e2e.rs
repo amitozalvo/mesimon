@@ -13,7 +13,7 @@ use common::*;
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{ColumnOffers, SessionKind, SessionState};
+use mesimon_core::board::{ColumnOffers, SessionKind, SessionState, StopReason};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -106,15 +106,10 @@ fn archive_gates_suggests_and_restores() {
         "Stop",
         r#"{"stop_hook_active":false,"background_tasks":[]}"#,
     );
-    let deadline = Instant::now() + Duration::from_secs(6);
-    loop {
-        let (board, _) = snapshot_of(c.request(Command::Snapshot));
-        if board.sessions.iter().any(|s| matches!(s.state, SessionState::Idle { .. })) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "session never settled idle");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    // SessionStart already reports idle. Price sleep only after Stop settles.
+    c.await_state(sid, "the Stop to settle", |state| {
+        *state == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
 
     // 1. Awake (idle still holds a pane): archive refuses.
     err_containing(c.request(Command::ArchiveTicket { id: cold }), "awake");

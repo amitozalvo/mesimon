@@ -49363,3 +49363,43 @@ and accepts `--jobs N` as an override. The next release measures the new default
   phone (`390x844`) approved a live `run_command` (`printf AGY_LIVE_PHONE_APPROVED >
   live_approved.txt`), `agy` wrote the file and finished its turn cleanly, and
   `~/.gemini/antigravity-cli/settings.json` kept its exact SHA-256 before and after.
+
+## The initial e2e Git commit and the archive sleep offer (T-1202, 2026-11-21)
+
+The parked-worker forge fixture and the workspace fixture start their daemons
+before `git init`. Both used `init_repo`, whose `git add .` could index live
+board files. Two orders reproduced the original symptoms without machine load.
+
+- During the add, a Git clean filter on an earlier path renamed
+  `.mesimon/board/columns.tmp` to `columns.toml`. Git exited 128 when it tried
+  to stat the vanished path.
+- After the add, the same rename left a tracked deletion alongside the four
+  intended edits. The meta repo's later `*/` ignore cannot hide a tracked
+  deletion. Holding a fixture temp path across the initial commit reproduced
+  `changed: 5` on the mod wire test. T-1197's snapshot recorded the count
+  alone, so the identity of its fifth path is an inference.
+
+`init_repo` now stages only its named file. The workspace case keeps the
+temp-path ordering as a regression test. The promotion case deliberately
+tracks `columns.toml` and now adds it explicitly. An established checkout's
+`git check-ignore -v -- .mesimon/board/columns.tmp` identified the board's
+`/.mesimon/` rule in `.git/info/exclude`. The workspace reproduction needed
+no change to the product's Git count.
+
+The archive failure's feed showed `SessionStart` reporting idle before
+`Stop` put the session through running and settled it at `Idle(EndTurn)`.
+Letting the original wait see the first idle and pricing sleep during the
+Stop reproduced `reclaim_sessions: 0`. The fixture now waits for the second
+state on the session it spawned, before changing offers.
+
+T-1197's watched-PR forge failure was a timeout at its first fast-forward.
+T-1339 (`544de213`) recorded the initial unmerged state at provision. Holding
+the first Git flags read until after that merge passed on this branch, as did
+T-1339's existing unit case for the same order.
+
+Checks covered 3,373 unit tests and 294 affected hooks e2es. The first hooks
+run passed 293. The promotion fixture's second `git add` refused the ignored
+parent directory. Committing the already tracked setting by name passed the
+isolated promotion rerun. Parked squash merge, workspace count and archive
+also passed on mod. The first sandboxed workspace and unit attempts lacked
+local socket access and were rerun with that access.

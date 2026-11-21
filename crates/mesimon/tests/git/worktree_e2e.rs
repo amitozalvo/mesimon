@@ -28,14 +28,18 @@ fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
 #[test]
 fn promotion_is_person_local_fast_forward_and_refuses_a_diverged_main() {
     use mesimon_core::command::{PendingAction, PromotionOutcome};
-    let Some(h) = Harness::boot("promotion", None) else { return };
+    let Some(h) = Harness::boot_staged("promotion", None, &[], |_, repo| {
+        init_repo(repo, "a.txt", "base\n");
+    }) else {
+        return;
+    };
     let mut c = h.client("promotion");
     let crown = c.create_ticket("review the batch");
     assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
     let repo = h.repo.clone();
-    // Booting before git init deliberately leaves the board files tracked.
-    // Normal repository startup excludes .mesimon through info/exclude.
-    init_repo(&repo, "a.txt", "base\n");
+    // Track this setting deliberately so changing it dirties the destination.
+    git(&repo, &["add", "-f", "--", ".mesimon/board/columns.toml"]);
+    git(&repo, &["commit", "-qm", "track column settings"]);
     git(&repo, &["branch", "staging"]);
     assert!(matches!(
         c.request(Command::SetMergeInto { into: MergeInto::Branch("staging".into()) }),
@@ -53,8 +57,16 @@ fn promotion_is_person_local_fast_forward_and_refuses_a_diverged_main() {
 
     // The tracked setting must be committed and included in the batch;
     // promotion never exempts it from the clean-destination requirement.
-    git(&repo, &["add", ".mesimon/board/columns.toml"]);
-    git(&repo, &["commit", "-qm", "select staging integration target"]);
+    git(
+        &repo,
+        &[
+            "commit",
+            "-qm",
+            "select staging integration target",
+            "--",
+            ".mesimon/board/columns.toml",
+        ],
+    );
     let staging_wt = h.dir.join("staging-wt");
     git(&repo, &["worktree", "add", "-q", staging_wt.to_str().unwrap(), "staging"]);
     git(&staging_wt, &["merge", "--ff-only", "main"]);
