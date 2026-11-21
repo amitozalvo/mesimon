@@ -285,7 +285,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     chrome::draw_header(f, header, app, None);
     // The crown's word while its bolt is lit (T-1162): which crown did what
     // to this ticket, or what the crown's words did across boards.
-    if let Some(label) = crate::strike::page_label(app, ticket_id, now) {
+    if let Some(label) = crate::strike::page_label(app, ticket_id, (app.now)()) {
         let (x, y) = crate::strike::page_label_at(header, &label);
         let rect = Rect { x, y, width: header.right().saturating_sub(x), height: 1 };
         f.render_widget(Paragraph::new(Span::styled(label, theme.crown_text())), rect);

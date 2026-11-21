@@ -100,7 +100,7 @@ impl App {
         if let Some(ticket) = owner {
             let after = self.cached_count(ticket);
             if after.total > 0 && before != Some(after) {
-                let at_ms = mesimon_core::clock::now_ms();
+                let at_ms = (self.now)();
                 self.summary_pulses.insert(ticket, SummaryPulse { at_ms, from: before });
             }
         }

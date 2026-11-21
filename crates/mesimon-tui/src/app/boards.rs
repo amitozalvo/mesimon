@@ -296,7 +296,7 @@ impl App {
 
     /// Is a bolt between the crown and a board's name mid-flight?
     pub(crate) fn link_striking(&self) -> bool {
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.motion()
             && matches!(self.screen, Screen::Board | Screen::Ticket { .. })
             && self.link_strikes.iter().any(|s| s.moving(now))

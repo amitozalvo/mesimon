@@ -510,7 +510,7 @@ pub(crate) fn draw(f: &mut Frame, app: &App, header: Rect, area: Rect) {
     if !app.motion() {
         return;
     }
-    let now = mesimon_core::clock::now_ms();
+    let now = (app.now)();
     let spots = app.spots.borrow();
     let theme = &app.theme;
     // A bolt lands on a title, one pad past the tag bar.
@@ -663,7 +663,7 @@ pub(crate) fn draw_page(f: &mut Frame, app: &App, ticket: ulid::Ulid, zone: Rect
     if !app.motion() {
         return;
     }
-    let now = mesimon_core::clock::now_ms();
+    let now = (app.now)();
     // Nothing lit, the common frame: no word, shin or crown row is looked for.
     let lit = |seen: u64| now.saturating_sub(seen) < BOLT_MS;
     let crowned = app.board.crown == Some(ticket);

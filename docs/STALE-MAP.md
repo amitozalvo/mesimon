@@ -49563,3 +49563,24 @@ The first corrected isolated run was interrupted by the supervisor's disk
 reserve. Its one retry passed in 64.69 s. The full hooks workspace suite ran
 once with `--no-fail-fast`: 3,841 passed, 14 skipped, 482 fixture owners
 clean. The box-not-yet-drawn test passed in 63.71 s under parallel load.
+
+## Four TUI animation tests hold their frames under load (T-1323, 2026-11-21)
+
+The refusal test backdated an `Instant` by 30 ms. Its title, bar, bystander and
+golden each drew a fresh board, so a 30 ms scheduling delay could move the later
+assertions into the next 60 ms shake step. The card and ticket-title tests now
+use the start recorded by the refused keypress and hold the monotonic frame at
+30, 90 and 400 ms after it.
+
+The summary test dated its pulses from one wall-clock sample and rendered them
+against later samples. It now advances the TUI's rendering clock through the
+sweep, completion glint and first-read reveal, including their exact end times.
+The crown strike and page bolt also read that clock for their phases. Their
+fixtures fix the touch timestamp, which seeds the bolt's shape as well.
+The live board keeps its existing clocks and durations. The original shake
+golden passed without a remint.
+
+All four named tests passed 20 consecutive rounds with 11 CPU workers active.
+The TUI crate passed on its unrestricted rerun (1,503 passed, six ignored).
+The sandboxed run failed in two Unix socket tests and two macOS applet tests,
+and the cleanup audit could not run `ps`.

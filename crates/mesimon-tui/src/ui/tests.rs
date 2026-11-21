@@ -8077,7 +8077,6 @@ fn test_summary_change_sweeps_the_row() {
     use crate::app::SummaryPulse;
     use crate::theme::SUMMARY_SWEEP_MS;
     use mesimon_core::summary::Count;
-    let now = mesimon_core::clock::now_ms();
     let row_of = |app: &App| {
         let buf = cells(app, 120, 30);
         let lines = lines_of(&buf);
@@ -8099,29 +8098,22 @@ fn test_summary_change_sweeps_the_row() {
     };
     // Two of five, one of them just ticked: mid-sweep.
     let mut app = app_summary();
+    let settled = runs(&app);
     let from = Some(Count { done: 1, total: 5 });
-    app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
+    app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: 0, from });
+    app.now = || 0;
+    let old = runs(&app);
+    app.now = || SUMMARY_SWEEP_MS / 2;
     assert!(app.animating(), "the board keeps its frames coming");
     // It plays on the open card too, over the rows.
-    let mut open = app_summary();
-    open.peek = true;
-    open.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS / 2, from });
-    assert!(heads(&open) >= 1, "the wave crosses the open card's title");
+    app.peek = true;
+    assert!(heads(&app) >= 1, "the wave crosses the open card's title");
+    app.peek = false;
     assert!((1..=2).contains(&heads(&app)), "the head, one cell and its brightest glow");
-    let settled = {
-        let mut rest = app_summary();
-        rest.summary_pulses.clear();
-        runs(&rest)
-    };
-    let old = {
-        let mut was = app_summary();
-        was.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now, from });
-        runs(&was)
-    };
     let mid = runs(&app);
     assert!(old < mid && mid <= settled, "old {old} < mid {mid} <= settled {settled}");
     // Played out: the plain new state, and nothing animates.
-    app.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - 10 * SUMMARY_SWEEP_MS, from });
+    app.now = || SUMMARY_SWEEP_MS;
     assert_eq!(heads(&app), 0);
     assert_eq!(runs(&app), settled);
     assert!(!app.animating());
@@ -8134,20 +8126,19 @@ fn test_summary_change_sweeps_the_row() {
     );
     done.board_mut().tickets.iter_mut().find(|t| t.id == ulid_n(3)).expect("T-3").notes[0].rev = 2;
     let from = Some(Count { done: 4, total: 5 });
-    done.summary_pulses
-        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3 / 2, from });
+    done.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: 0, from });
+    done.now = || SUMMARY_SWEEP_MS * 3 / 2;
     assert!(done.animating());
     assert!((1..=2).contains(&heads(&done)), "the second pass's head");
-    done.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_SWEEP_MS * 3, from });
+    done.now = || SUMMARY_SWEEP_MS * 2;
     assert!(!done.animating());
     // The board's first read fades in from bare, slowly and with no head:
     // ahead of the front nothing, behind it the resting underline eased
     // in from the ground's colour, once, whatever it reveals.
     use crate::theme::SUMMARY_REVEAL_MS;
     let mut fresh = app_summary();
-    fresh
-        .summary_pulses
-        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_REVEAL_MS / 2, from: None });
+    fresh.summary_pulses.insert(ulid_n(3), SummaryPulse { at_ms: 0, from: None });
+    fresh.now = || SUMMARY_REVEAL_MS / 2;
     let count_under = |app: &App| {
         let (buf, y) = row_of(app);
         (0..120u16).filter(|x| buf[(*x, y)].modifier.contains(Modifier::UNDERLINED)).count()
@@ -8157,9 +8148,7 @@ fn test_summary_change_sweeps_the_row() {
     assert!(underlined > 0 && underlined < whole, "part way: {underlined} of {whole}");
     assert_eq!(heads(&fresh), 0, "no head: the fade is soft");
     assert!(fresh.animating());
-    fresh
-        .summary_pulses
-        .insert(ulid_n(3), SummaryPulse { at_ms: now - SUMMARY_REVEAL_MS - 50, from: None });
+    fresh.now = || SUMMARY_REVEAL_MS;
     assert!(!fresh.animating(), "one pass");
     assert_eq!(count_under(&fresh), whole);
 }
@@ -12112,21 +12101,18 @@ fn test_archive_refused_shakes_the_card() {
     assert_ne!(bar, ratatui::style::Color::Reset, "the cursor card wears its bar");
     press(&mut app, 'a');
     assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
-    let id = ulid_n(3);
-    let seed = |app: &mut App, ms: u64| {
-        app.refused = Some((id, std::time::Instant::now() - std::time::Duration::from_millis(ms)));
-    };
-    seed(&mut app, 30); // step 0: one cell right
+    let (_, start) = app.refused.expect("the refused press started a shake");
+    app.frame_instant = Some(start + std::time::Duration::from_millis(30)); // step 0: one cell right
     assert_eq!(at(&app, "Fix OSC-11"), (rest + 1, y), "first step is one cell right");
     let buf = cells(&app, 120, 30);
     assert_ne!(buf[(bar_x, y)].bg, bar, "the bar moved with the card");
     assert_eq!(buf[(bar_x + 1, y)].bg, bar, "and stands one cell right");
     assert_eq!(at(&app, "Adopt drawer"), bystander, "bystanders hold still");
     golden("board_archive_refused_120x30", &render(&app, 120, 30));
-    seed(&mut app, 90); // step 1: one cell left, into the gutter
+    app.frame_instant = Some(start + std::time::Duration::from_millis(90)); // step 1: one cell left, into the gutter
     assert_eq!(at(&app, "Fix OSC-11"), (rest - 1, y), "second step is one cell left");
     assert_eq!(at(&app, "Adopt drawer"), bystander, "bystanders hold still");
-    seed(&mut app, 400); // past the last step: settled
+    app.frame_instant = Some(start + std::time::Duration::from_millis(400)); // past the last step: settled
     assert_eq!(at(&app, "Fix OSC-11"), (rest, y), "settled back in place");
     assert!(!app.animating(), "a settled shake no longer asks for fast frames");
 }
@@ -12145,15 +12131,12 @@ fn test_archive_refused_shakes_the_ticket_title() {
     let rest = x_at(&app);
     press(&mut app, 'a');
     assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
-    let id = ulid_n(3);
-    let seed = |app: &mut App, ms: u64| {
-        app.refused = Some((id, std::time::Instant::now() - std::time::Duration::from_millis(ms)));
-    };
-    seed(&mut app, 30);
+    let (_, start) = app.refused.expect("the refused press started a shake");
+    app.frame_instant = Some(start + std::time::Duration::from_millis(30));
     assert_eq!(x_at(&app), rest + 1);
-    seed(&mut app, 90);
+    app.frame_instant = Some(start + std::time::Duration::from_millis(90));
     assert_eq!(x_at(&app), rest - 1);
-    seed(&mut app, 400);
+    app.frame_instant = Some(start + std::time::Duration::from_millis(400));
     assert_eq!(x_at(&app), rest);
 }
 
@@ -13067,7 +13050,8 @@ fn struck(board: Board, from: ulid::Ulid, target: ulid::Ulid, action: &str, ago:
     let mut app = app_graphite(b);
     app.burnt.extend(burnt);
     (app.cursor_col, app.cursor_row) = (3, Some(0));
-    let at = mesimon_core::clock::now_ms() - ago;
+    app.now = || 1_000_000;
+    let at = (app.now)() - ago;
     app.crown_touches.push(mesimon_core::command::CrownTouch {
         ticket: target,
         action: action.into(),
@@ -15974,7 +15958,8 @@ fn narrow_transcripts_wrap_both_rename_titles_literally() {
 #[test]
 fn the_crown_s_bolt_runs_from_the_header_to_its_row() {
     let (mut app, path) = app_crowned_worker("tcrown-bolt");
-    let at = mesimon_core::clock::now_ms() - 300;
+    app.now = || 1_000_000;
+    let at = (app.now)() - 300;
     app.strikes.push(crate::strike::Strike {
         target: ulid_n(3),
         from: Some(ulid_n(1)),

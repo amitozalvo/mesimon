@@ -1300,7 +1300,7 @@ impl Editor {
 
     /// The title row's refusal-shake offset this frame, 0 at rest.
     pub fn title_dx(&self) -> i16 {
-        self.title_shake.map_or(0, shake_offset)
+        self.title_shake.map_or(0, |at| shake_offset(at.elapsed()))
     }
 
     /// The one field the keys type into.
@@ -1789,9 +1789,9 @@ const SPOKE_EVERY: Duration = Duration::from_secs(1);
 const SHAKE_OFFSETS: [i16; 6] = [1, -1, 1, -1, 1, -1];
 const SHAKE_STEP: Duration = Duration::from_millis(60);
 
-/// A refusal shake's offset in cells, `at` its start: 0 once it settled.
-fn shake_offset(at: Instant) -> i16 {
-    let step = (at.elapsed().as_millis() / SHAKE_STEP.as_millis()) as usize;
+/// A refusal shake's offset in cells at this age, or 0 once it settled.
+fn shake_offset(elapsed: Duration) -> i16 {
+    let step = (elapsed.as_millis() / SHAKE_STEP.as_millis()) as usize;
     SHAKE_OFFSETS.get(step).copied().unwrap_or(0)
 }
 /// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
@@ -1961,6 +1961,9 @@ pub struct App {
     /// The rendering clock for quota and crown/summary animation. The system
     /// clock; visual comparisons can pin it to replay identical frames.
     pub now: fn() -> u64,
+    /// The monotonic instant of a frame held by a rendering test.
+    #[cfg(test)]
+    pub(crate) frame_instant: Option<Instant>,
     /// Cards the crown touched that the cursor has not rested on since —
     /// the residue the light leaves, on the unread done mark's rule.
     pub crown_residue: std::collections::HashSet<ulid::Ulid>,
@@ -2826,6 +2829,8 @@ impl App {
             usage_pushed: None,
             clock: |secs| Some(mesimon_core::usage::utc_of(secs)),
             now: mesimon_core::clock::now_ms,
+            #[cfg(test)]
+            frame_instant: None,
             crown_residue: std::collections::HashSet::new(),
             crowned_at: None,
             uncrowned_at: None,
@@ -3634,7 +3639,7 @@ impl App {
 
     /// Is a strike moving on the board right now?
     fn striking(&self) -> bool {
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.motion()
             && matches!(self.screen, Screen::Board | Screen::Ticket { .. })
             && self.strikes.iter().any(|s| s.moving(now))
@@ -3648,7 +3653,7 @@ impl App {
         if !self.motion() {
             return Vec::new();
         }
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.strikes
             .iter()
             .filter(|s| s.trailing(now))
@@ -3733,7 +3738,7 @@ impl App {
         if !self.motion() {
             return Vec::new();
         }
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.strikes
             .iter()
             .filter(|s| s.burning(now))
@@ -3807,7 +3812,7 @@ impl App {
         if let Some(ms) = self.crowning_ms(ticket) {
             return Crown::Coming(ms);
         }
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         self.strikes
             .iter()
             .filter(|s| s.from == Some(ticket) && s.target != ticket)
@@ -3851,12 +3856,19 @@ impl App {
         self.refresh()
     }
 
+    fn frame_elapsed(&self, at: Instant) -> Duration {
+        #[cfg(test)]
+        if let Some(now) = self.frame_instant {
+            return now.saturating_duration_since(at);
+        }
+        at.elapsed()
+    }
+
     /// Is a refusal shake still running?
     fn shaking(&self) -> bool {
-        let running = |at: Instant| at.elapsed() < SHAKE_STEP * SHAKE_OFFSETS.len() as u32;
-        self.refused.is_some_and(|(_, at)| running(at))
-            || self.box_refused.is_some_and(running)
-            || matches!(&self.mode, Mode::Editor(ed) if ed.title_shake.is_some_and(running))
+        self.refused.is_some_and(|(_, at)| shake_offset(self.frame_elapsed(at)) != 0)
+            || self.box_shake_dx() != 0
+            || matches!(&self.mode, Mode::Editor(ed) if ed.title_dx() != 0)
     }
 
     /// How far `ticket` is drawn off its place this frame: the refusal
@@ -3865,7 +3877,7 @@ impl App {
     /// row moves within its band.
     pub fn shake_dx(&self, ticket: ulid::Ulid) -> i16 {
         match self.refused {
-            Some((t, at)) if t == ticket => shake_offset(at),
+            Some((t, at)) if t == ticket => shake_offset(self.frame_elapsed(at)),
             _ => 0,
         }
     }
@@ -3873,7 +3885,7 @@ impl App {
     /// How far the held box's key cap is drawn off its place this frame
     /// (T-1258): the refusal shake's offset, 0 once it settled.
     pub fn box_shake_dx(&self) -> i16 {
-        self.box_refused.map_or(0, shake_offset)
+        self.box_refused.map_or(0, |at| shake_offset(at.elapsed()))
     }
 
     /// The reading zone the screen's `{ }` and `j`/`k` move (T-246): the
@@ -8560,7 +8572,7 @@ impl App {
         burnt: Vec<Ticket>,
     ) {
         let cursor = self.subject();
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         for t in &touches {
             if self.crown_touches.iter().any(|k| k.at_ms == t.at_ms && k.ticket == t.ticket) {
                 continue;
@@ -8596,7 +8608,7 @@ impl App {
         self.burnt.retain(|c| strikes.iter().any(|s| s.target == c.id));
         self.crown_touches = touches;
         if self.board.crown != crown_was {
-            let now = mesimon_core::clock::now_ms();
+            let now = (self.now)();
             self.crowned_at = self.board.crown.map(|id| (id, now));
             self.uncrowned_at = crown_was.map(|id| (id, now));
         }
@@ -8608,7 +8620,7 @@ impl App {
     /// the lightning is on (T-544) — the residue a touch left, or nothing.
     pub(crate) fn crown_mark(&self, id: ulid::Ulid) -> crate::ui::CrownMark<'_> {
         use crate::ui::CrownMark;
-        let now = mesimon_core::clock::now_ms();
+        let now = (self.now)();
         let strike = if self.motion() {
             self.strikes.iter().filter(|s| s.target == id).max_by_key(|s| s.seen)
         } else {
