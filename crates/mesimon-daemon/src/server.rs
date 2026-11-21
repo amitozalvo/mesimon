@@ -3922,7 +3922,7 @@ impl Daemon {
         let resource = match &env.command {
             Command::ImportTicket { column, .. } | Command::CreateTicketWithNote { column, .. } => Resource::Column { name: column.clone() },
             Command::ReadAttachment { ticket, .. } | Command::SaveNoteWithAttachments { ticket, .. } => Resource::Ticket { id: *ticket },
-            Command::ShareShell { session, .. }
+            Command::RejectPlan { session, .. } | Command::ShareShell { session, .. }
             | Command::ShellCapture { session }
             | Command::ConfirmCloseShell { session, .. }
             | Command::PaneTail { session, .. } => Resource::Session { id: *session },
@@ -4358,6 +4358,8 @@ impl Daemon {
             // The board's `w` on a trust dialog (T-844): the walk Remote
             // Control's card asks for, from the terminal.
             Command::AcceptTrust { ticket } => self.accept_trust(ticket),
+            Command::RejectPlan { ticket, session, request, feedback } =>
+                self.reject_agy_plan(ticket, session, &request, feedback),
             Command::ShareShell { session, shared } => self.share_shell(session, shared),
             Command::ShellCapture { session } => self.local_shell_capture(session),
             Command::ConfirmCloseShell { session, request, close } => self.confirm_close_shell(session, request, close),
@@ -6571,7 +6573,7 @@ impl Daemon {
             self.control_release_permission(id, &frame);
         }
         self.control_observe_dialog(id, &frame);
-        self.control_observe_agy(id, &frame, agy_lead.as_deref());
+        self.control_observe_agy(id, &frame, agy_lead.as_deref(), observation.plan.as_deref());
         let answered = self.dialog_answered(id, &frame);
         // An answer read against the held call (T-988): a sibling still to be
         // answered re-affirms its dialog, which cancels a leave to `Running`
@@ -18492,11 +18494,31 @@ impl Daemon {
             .capture_input_screen(&sid)
             .map_err(|_| crate::plan_dialog::NOT_RECOGNISED)?;
         match kind {
-            SessionKind::Claude => crate::plan_dialog::claude_at_default(&screen.lines)?,
-            SessionKind::Codex => crate::plan_dialog::codex_at_default(&screen)?,
+            SessionKind::Agy => {
+                use crate::plan_dialog::{artifact_view, ArtifactView, NOT_RECOGNISED};
+                if self.dialog_delivery_pending(session) {
+                    return Err("plan answer pending");
+                }
+                let (request, _) = self.control_plan(session).ok_or(NOT_RECOGNISED)?;
+                match artifact_view(&screen.lines.join("\n"), request).ok_or(NOT_RECOGNISED)? {
+                    ArtifactView::Closed => {
+                        self.backend.press_key(&sid, "C-r").map_err(|_| NOT_RECOGNISED)?;
+                        return Err("opening artifact review");
+                    }
+                    ArtifactView::Selected => self.backend.press_key(&sid, "y"),
+                }
+            }
+            SessionKind::Claude => {
+                crate::plan_dialog::claude_at_default(&screen.lines)?;
+                self.backend.send_enter(&sid)
+            }
+            SessionKind::Codex => {
+                crate::plan_dialog::codex_at_default(&screen)?;
+                self.backend.send_enter(&sid)
+            }
             _ => return Err("no plan waiting"),
         }
-        self.backend.send_enter(&sid).map_err(|_| "could not press enter")?;
+        .map_err(|_| "could not send plan decision")?;
         self.plan_accept.insert(session, now_ms() + PLAN_ACCEPT_CONFIRM_MS);
         self.plan_accept_tries.remove(&session);
         Ok(ticket)

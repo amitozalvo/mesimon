@@ -951,6 +951,14 @@ pub enum Command {
     AcceptTrust {
         ticket: ulid::Ulid,
     },
+    /// Reject the named agy artifact. Feedback goes to the continuing turn
+    /// after agy reports the rejection.
+    RejectPlan {
+        ticket: ulid::Ulid,
+        session: uuid::Uuid,
+        request: String,
+        feedback: String,
+    },
     /// Take the header's sleep offer: sleep every eligible session on
     /// sleep-safe tickets (2026-08-30 rescope — was board-wide; the key must
     /// sleep exactly what the suggestion names, nothing broader).
@@ -1791,7 +1799,7 @@ impl Command {
             | SleepSession { .. }
             | WakeSession { .. }
             | ReclaimAll => m(Mutate, true, None),
-            AcceptTrust { ticket } => m(Mutate, true, Some(*ticket)),
+            AcceptTrust { ticket } | RejectPlan { ticket, .. } => m(Mutate, true, Some(*ticket)),
             // Moves are recorded by `place_ticket` itself, with the mover;
             // the rest are session plumbing the feed does not narrate.
             MoveTicket { .. }

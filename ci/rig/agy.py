@@ -29,7 +29,7 @@ import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-CASES = ("brief", "worktree-trust", "sign-in", "file")
+CASES = ("brief", "worktree-trust", "sign-in", "file", "plan", "plan-revision")
 TITLE = "Answer the question on this ticket"
 BRIEF_MARK = "This session was started by mesimon on a ticket."
 
@@ -140,6 +140,8 @@ class Case:
         # settings are written here; agy keeps its own home and sign-in.
         trust = guard.root / "agy-trust"
         trust.mkdir(mode=0o700)
+        if result["case"] in ("plan", "plan-revision"):
+            (trust / "brain").symlink_to(agy_home() / "brain", target_is_directory=True)
         trusted = [] if result["case"] == "worktree-trust" else [str(self.repo.resolve())]
         (trust / "settings.json").write_text(json.dumps({"trustedWorkspaces": trusted}))
         binary = signed_out_cli(guard.root, args.agy) if result["case"] == "sign-in" else args.agy
@@ -196,6 +198,9 @@ class Case:
         self.request("set_system_prompt", on=True)
         if self.result["case"] == "sign-in":
             self.check_sign_in()
+            return
+        if self.result["case"] in ("plan", "plan-revision"):
+            self.check_plan()
             return
         if self.result["case"] == "worktree-trust":
             self.check_worktree_trust()
@@ -285,6 +290,55 @@ class Case:
         self.mark("get_ticket identifies the person's step", "only the person" in view["reason"]
                   and "sign in" in view["reason"] and not view.get("request"), view["reason"])
 
+    def check_plan(self):
+        self.request("set_mcp_tools", on=False)
+        self.request("set_column_settings", name="TODO", settings={"agy_mode": "plan"})
+        title = ("Write a short implementation plan artifact for greeting the reader in README.md. "
+                 "Request review and wait. After approval reply with " + self.nonce +
+                 ". No shell commands or workspace edits are needed.")
+        ticket = self.request("create_ticket", column="TODO", title=title,
+                              workspace="shared_checkout")["id"]
+        if self.args.model:
+            tier = dict(id="rig-agy", name="rig-agy", provider="agy", model=self.args.model)
+            self.request("save_tier", scope="board", tier=tier)
+            self.request("set_ticket_tier", id=ticket, tier=tier["id"])
+        self.sid = self.request("spawn_session", ticket=ticket, kind="agy", submit_prompt=True,
+                                plan=False)["id"]
+        self.pane = None
+        self.pane = self.wait("agy's pane", lambda: self.panes()[:1], 30)[0]
+        argv = self.session()["argv"]
+        self.mark("column launched agy in plan mode", argv[argv.index("--mode") + 1] == "plan")
+        self.wait("plan review", lambda: self.session()["state"] ==
+                  {"state": "requires_action", "reason": "plan"}, self.args.timeout)
+        rec = self.session()
+        reply = self.request("read_note", ticket=ticket, note=rec["plan_note"])
+        text = reply["text"]
+        artifact = agy_home() / "brain" / rec["agy_conversation_id"] / rec["agy_plan_request"].split("/")[-1]
+        self.mark("ticket note matches the artifact", text.strip() == artifact.read_text().strip())
+        path = transcript_path(rec["agy_conversation_id"])
+        turn_start = len(read_transcript(path))
+        if self.result["case"] == "plan-revision":
+            feedback = "Use the greeting " + self.nonce + " in the revision."
+            self.request("reject_plan", ticket=ticket, session=self.sid,
+                         request=rec["agy_plan_request"], feedback=feedback)
+            def rejected_with_feedback():
+                rows = read_transcript(path)[turn_start:]
+                return (any("[Rejected]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")
+                        and any(feedback in r.get("content", "") for r in rows))
+            self.wait("rejection and feedback in the conversation", rejected_with_feedback, self.args.timeout)
+            self.mark("board rejected the artifact and delivered the feedback", True)
+            return
+        self.request("prompt_session", ticket=ticket, text="", queued=False, immediately=False,
+                     accept_plan=True, plan=False)
+        def accepted():
+            rows = read_transcript(path)[turn_start:]
+            return any("[Approved]" in r.get("content", "") for r in rows if r.get("type") == "USER_INPUT")
+        self.wait("approval in the conversation", accepted, 60)
+        self.mark("board accepted the artifact", True)
+        self.wait("reply after approval", lambda: any(self.nonce in r.get("content", "")
+                  for r in read_transcript(path)[turn_start:] if r.get("type") == "PLANNER_RESPONSE"), self.args.timeout)
+        self.mark("agy continued after approval", True)
+
     def check_worktree_trust(self):
         ticket = self.request("create_ticket", column="TODO", title="Inspect the worktree",
                               workspace="worktree")["id"]
@@ -322,8 +376,8 @@ def run(repo, args, parser):
     print(f"agy rig: {', '.join(cases)}; {'live' if args.live else 'no model call'}", flush=True)
     if args.lay:
         return 0
-    if "file" in cases and not args.live:
-        parser.error("the file case needs --live to verify the agent's answer")
+    if {"file", "plan", "plan-revision"}.intersection(cases) and not args.live:
+        parser.error("the file and plan cases need --live to verify the agent's answer")
     if not os.environ.get("MESIMON_TEST_RUN"):
         command = [sys.executable, "-B", str(ROOT / "ci/test-run.py"), "--cargo-manifest", str(Path(repo) / "Cargo.toml"),
                    "--timeout", "900", "--",

@@ -1818,7 +1818,14 @@ impl Daemon {
         };
         let kind = self.session_kind(id);
         let codex = codex_shapes(kind, dialog);
-        if dialog_plan(dialog, &response).is_none() || (codex && !codex_takes(dialog, &response)) {
+        let accepts = if kind == SessionKind::Agy
+            && matches!(dialog.content, api::DialogContent::Plan { .. })
+        {
+            agy_plan_answer(&response) && !self.plan_accept.contains_key(&id)
+        } else {
+            dialog_plan(dialog, &response).is_some() && (!codex || codex_takes(dialog, &response))
+        };
+        if !accepts {
             return Reply::Rejected {
                 message: "this dialog shape is not verified; answer in the pane".into(),
             };
@@ -1840,6 +1847,50 @@ impl Daemon {
         Reply::delivery("awaiting_delivery")
     }
 
+    /// A local rejection takes exactly the walk the phone takes, bound to
+    /// the same artifact request even if the person leaves the field open.
+    pub(super) fn reject_agy_plan(
+        &mut self,
+        ticket: ulid::Ulid,
+        id: uuid::Uuid,
+        request: &str,
+        feedback: String,
+    ) -> Response {
+        if self
+            .board
+            .pane_target(ticket)
+            .is_none_or(|s| s.id != id || !s.on_plan_dialog() || s.kind != SessionKind::Agy)
+            || self.control_plan(id).is_none_or(|(r, _)| r != request)
+        {
+            return Response::Err { message: "plan changed".into() };
+        }
+        if self.dialog_delivery_pending(id)
+            || self.plan_accept.contains_key(&id)
+            || self.control_input_in_flight(id)
+        {
+            return Response::Err { message: "input is already pending".into() };
+        }
+        let answer = if feedback.is_empty() {
+            api::DialogAnswer::Reject
+        } else {
+            api::DialogAnswer::Text { text: feedback }
+        };
+        if !agy_plan_answer(&answer) {
+            return Response::Err { message: "plan feedback needs one line of plain words".into() };
+        }
+        self.control.dialog_deliveries.insert(
+            id,
+            DialogDelivery::new(
+                Deliverer::Board,
+                ticket,
+                request.into(),
+                DeliveryAnswer::Dialog(answer),
+                ONE_WALK,
+            ),
+        );
+        Response::Ok
+    }
+
     /// A delivery whose last key is in (T-567): settled by its edge, its
     /// standing or its window, else put back to look again.
     fn control_confirm_delivery(
@@ -1848,6 +1899,13 @@ impl Daemon {
         mut pending: DialogDelivery,
         until: Instant,
     ) {
+        if pending.walk.artifacts_opened
+            && self.session_kind(id) == SessionKind::Agy
+            && matches!(pending.answer, DeliveryAnswer::Dialog(api::DialogAnswer::Text { .. }))
+        {
+            self.send_artifact_feedback(id, pending, until);
+            return;
+        }
         if let DeliveryAnswer::Approval { .. } = pending.answer {
             if self.delivery_standing(id, &pending).is_none() {
                 self.control_settle_dialog(id, pending, "answered", None, "");
@@ -1954,6 +2012,69 @@ impl Daemon {
                 pending.next = Instant::now() + Duration::from_millis(250);
                 self.control.dialog_deliveries.insert(id, pending);
             }
+        }
+    }
+
+    /// agy submits the rejection as a turn. Only its own prompt hook for the
+    /// exact filename releases the feedback into the continuing conversation.
+    fn send_artifact_feedback(
+        &mut self,
+        id: uuid::Uuid,
+        mut pending: DialogDelivery,
+        until: Instant,
+    ) {
+        let DeliveryAnswer::Dialog(api::DialogAnswer::Text { text }) = &pending.answer else {
+            return;
+        };
+        let authorized = match pending.by {
+            Deliverer::Board => true,
+            Deliverer::Phone { grant, device, .. } => {
+                self.control_granted(grant, device)
+                    && !authorize(
+                        &pending.by.principal(),
+                        &Action::PromptExisting,
+                        &Resource::Session { id },
+                    )
+                    .denied()
+            }
+            Deliverer::Crown { .. } => false,
+        };
+        let conversation = pending
+            .request
+            .strip_prefix("agy-plan/")
+            .and_then(|r| r.split_once('/'))
+            .map(|(lead, _)| lead);
+        let same_seat = self.board.pane_target(pending.ticket).is_some_and(|s| {
+            s.id == id
+                && !s.observe_only()
+                && s.pane_key == pending.walk.review_pane
+                && s.agy_conversation_id.as_deref() == conversation
+        });
+        if !authorized || !same_seat {
+            self.control_settle_dialog(id, pending, "unknown", Some("session changed".into()), "");
+            return;
+        }
+        let empty = pending.walk.rejection_seen
+            && !self.pane_waits_on_you(id)
+            && self.backend.capture_input_screen(&id.simple().to_string()[..16]).is_ok_and(|s| {
+                crate::agents::read_box(SessionKind::Agy, &s)
+                    == crate::agents::claude::composer::Composer::Empty
+            });
+        if empty {
+            let result = self.paste_at(pending.ticket, text, super::Ack::PROMPT, true);
+            let status = if result.is_ok() { "answered" } else { "unknown" };
+            self.control_settle_dialog(id, pending, status, result.err(), "");
+        } else if Instant::now() >= until {
+            self.control_settle_dialog(
+                id,
+                pending,
+                "unknown",
+                Some("feedback was not sent".into()),
+                "",
+            );
+        } else {
+            pending.next = Instant::now() + Duration::from_millis(200);
+            self.control.dialog_deliveries.insert(id, pending);
         }
     }
 
@@ -2116,6 +2237,16 @@ impl Daemon {
                             pending.walk.toggled = Some((question, row));
                             false
                         })
+                    }
+                    DialogStep::OpenArtifacts => self.backend.press_key(&sid, "C-r").map(|_| {
+                        pending.walk.artifacts_opened = true;
+                        false
+                    }),
+                    DialogStep::ReviewArtifact { accept } => {
+                        pending.walk.artifacts_opened = true;
+                        pending.walk.review_pane =
+                            self.board.session(id).and_then(|s| s.pane_key.clone());
+                        self.backend.press_key(&sid, if accept { "y" } else { "n" }).map(|_| true)
                     }
                     DialogStep::EscapeNext => {
                         self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| false)
@@ -2343,7 +2474,14 @@ impl Daemon {
             // A capture can fail, clip the question, or read an unfamiliar
             // footer. None is a closing edge. Keep questions for a retry;
             // their own hooks/results end them, independently of delivery.
-            if waiting && (question || drawn) {
+            // A review remains open while agy reports it, including a draft or
+            // a moved panel cursor that prevented this particular key.
+            let reviewing = kind == SessionKind::Agy
+                && self.board.session(id).is_some_and(|s| {
+                    s.agy_reviewing
+                        && s.agy_plan_request.as_deref() == Some(dialog.request.as_str())
+                });
+            if waiting && (question || reviewing || drawn) {
                 standing = true;
             } else if !question {
                 self.control.dialogs.remove(&id);
@@ -2379,7 +2517,12 @@ impl Daemon {
                 self.feed.board_outcome(by.actor(), event, Some(pending.ticket), status);
             }
             Deliverer::Board => {
-                self.feed.board_outcome(by.actor(), "trust_accept", Some(pending.ticket), status);
+                let event = if pending.request.starts_with("agy-plan/") {
+                    "plan_rejected"
+                } else {
+                    "trust_accept"
+                };
+                self.feed.board_outcome(by.actor(), event, Some(pending.ticket), status);
             }
             Deliverer::Crown { crown, session, answer, reply, prior, .. } => {
                 let revise = matches!(pending.answer, DeliveryAnswer::Revise { .. });
@@ -3190,6 +3333,7 @@ impl Daemon {
         id: uuid::Uuid,
         frame: &HookFrame,
         agy_lead: Option<&str>,
+        plan: Option<&str>,
     ) {
         use crate::agents::agy;
         if self.session_kind(id) != SessionKind::Agy {
@@ -3215,6 +3359,16 @@ impl Daemon {
             self.control.agy_calls.remove(&id);
             self.control_cancel_permission(id);
             self.close_agy_dialog(id, DialogEdge::Closed);
+        }
+        if let Some((markdown, request)) =
+            plan.zip(self.board.session(id).and_then(|s| s.agy_plan_request.clone()))
+        {
+            self.control_cancel_permission(id);
+            self.control_project(
+                id,
+                request,
+                api::DialogContent::Plan { markdown: markdown.into() },
+            );
         }
         match frame.event.as_str() {
             agy::PRE_TOOL_USE => {
@@ -3303,14 +3457,33 @@ impl Daemon {
             agy::PRE_INVOCATION => {
                 self.control.agy_calls.remove(&id);
                 self.control_cancel_permission(id);
-                let first =
-                    frame.payload.get("invocationNum").and_then(serde_json::Value::as_u64).unwrap_or(0)
-                        == 0;
+                let first = frame
+                    .payload
+                    .get("invocationNum")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    == 0;
+                if first {
+                    if let Some(pending) = self
+                        .control
+                        .dialog_deliveries
+                        .get_mut(&id)
+                        .filter(|p| p.confirm.is_some() && p.walk.artifacts_opened)
+                    {
+                        if let Some((_, name)) = pending.request.rsplit_once('/') {
+                            let receipt = format!("[Rejected] {name}");
+                            pending.walk.rejection_seen |= frame.payload["lastUserInput"]
+                                .as_str()
+                                .is_some_and(|s| s.trim() == receipt);
+                        }
+                    }
+                }
                 self.close_agy_dialog(
                     id,
                     if first { DialogEdge::Closed } else { DialogEdge::Answered },
                 );
             }
+            agy::STOP if self.board.session(id).is_some_and(|s| s.agy_reviewing) => {}
             agy::STOP => {
                 if frame.payload.get("fullyIdle").and_then(serde_json::Value::as_bool)
                     != Some(false)
@@ -6189,6 +6362,10 @@ enum DialogStep {
     /// Escape that skips one question of an agy batch or backs out of its
     /// write-in field without ending the dialog (T-1235).
     EscapeNext,
+    OpenArtifacts,
+    ReviewArtifact {
+        accept: bool,
+    },
     Reject,
     Paste {
         question: usize,
@@ -6204,6 +6381,9 @@ enum DialogStep {
 /// last key ticked, so a tick the screen did not take is never sent twice.
 #[derive(Clone, Debug, Default)]
 struct Walk {
+    review_pane: Option<String>,
+    rejection_seen: bool,
+    artifacts_opened: bool,
     pasted: Vec<usize>,
     toggled: Option<(usize, usize)>,
     /// The row a plan sent back's last arrow put the cursor on (T-943).
@@ -7390,12 +7570,25 @@ fn agy_question_view(questions: &[api::Question], screen: &str) -> Option<AgyQue
     Some(AgyQuestionView { index, rows, write_in })
 }
 
+fn agy_plan_answer(response: &api::DialogAnswer) -> bool {
+    match response {
+        api::DialogAnswer::Accept | api::DialogAnswer::Reject => true,
+        api::DialogAnswer::Text { text } => {
+            dialog_text_ok(text) && !mesimon_core::road::is_command(text)
+        }
+        _ => false,
+    }
+}
+
 fn agy_dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
     match &dialog.content {
         api::DialogContent::Questions { questions } => {
             agy_question_view(questions, screen).is_some()
         }
-        api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => false,
+        api::DialogContent::Plan { .. } => {
+            crate::plan_dialog::artifact_view(screen, &dialog.request).is_some()
+        }
+        api::DialogContent::Trust { .. } => false,
     }
 }
 
@@ -7409,6 +7602,20 @@ fn agy_dialog_step(
     screen: &str,
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
+    if matches!(dialog.content, api::DialogContent::Plan { .. }) {
+        use crate::plan_dialog::{artifact_view, ArtifactView};
+        let accept = match response {
+            api::DialogAnswer::Accept => true,
+            api::DialogAnswer::Reject | api::DialogAnswer::Text { .. } => false,
+            _ => return Err(Miss::ShapeUnrecognised),
+        };
+        return match artifact_view(screen, &dialog.request) {
+            Some(ArtifactView::Closed) if walk.artifacts_opened => Ok(DialogStep::Wait),
+            Some(ArtifactView::Closed) => Ok(DialogStep::OpenArtifacts),
+            Some(ArtifactView::Selected) => Ok(DialogStep::ReviewArtifact { accept }),
+            None => Err(Miss::ShapeUnrecognised),
+        };
+    }
     let plan = dialog_plan(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
     let api::DialogContent::Questions { questions } = &dialog.content else {
         return Err(Miss::ShapeUnrecognised);

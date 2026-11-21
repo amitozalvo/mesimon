@@ -955,6 +955,93 @@ impl TestPhone {
     }
 }
 
+#[test]
+fn board_and_phone_review_the_artifact_file_and_send_changes_after_rejection() {
+    let Some((bed, port)) = Bed::boot_with_relay("agy-plan") else { return };
+    let mut c = bed.h.client("agy-plan");
+    agy_board(&mut c);
+    let mut phone = TestPhone::pair(&mut c, port);
+    let t = ticket(&mut c, "Plan the greeting");
+    let Response::Spawned { id, .. } = c.request(Command::SpawnSession {
+        ticket: t,
+        kind: SessionKind::Agy,
+        submit_prompt: true,
+        plan: true,
+    }) else {
+        panic!("spawn")
+    };
+    bed.await_prompt(0, "turn", "Plan the greeting");
+    let mut old = String::new();
+    for (index, feedback) in
+        ["Use the short greeting", "Keep the existing title", ""].iter().enumerate()
+    {
+        let body = format!("# Greeting plan {index}\n\nPreserve the introduction.");
+        bed.cue_with("plan", &body);
+        c.await_state(id, "file awaiting review", |s| {
+            *s == SessionState::RequiresAction { reason: Reason::Plan }
+        });
+        let dialog = phone.await_dialog(t, "artifact on the phone");
+        assert_eq!(dialog.content, api::DialogContent::Plan { markdown: body.clone() });
+        let note = c.record(id).plan_note.unwrap();
+        assert!(
+            matches!(c.request(Command::ReadNote {ticket:t, note}), Response::Note {text,..} if text == body)
+        );
+        if index == 0 {
+            assert!(matches!(
+                c.request(Command::RejectPlan {
+                    ticket: t,
+                    session: id,
+                    request: dialog.request.clone(),
+                    feedback: feedback.to_string()
+                }),
+                Response::Ok
+            ));
+        } else {
+            assert_ne!(old, dialog.request);
+            let response = if feedback.is_empty() {
+                DialogAnswer::Accept
+            } else {
+                DialogAnswer::Text { text: feedback.to_string() }
+            };
+            let (status, reason) = phone.settle(api::Request::Dialog {
+                ticket: t.to_string(),
+                session: id.to_string(),
+                request: dialog.request.clone(),
+                response,
+            });
+            assert!(matches!(status.as_str(), "answered" | "input_sent"), "{status}: {reason:?}");
+        }
+        let decision = if feedback.is_empty() { "Approved" } else { "Rejected" };
+        bed.await_prompt(1 + index * 2, "turn", &format!("[{decision}] implementation_plan.md"));
+        if !feedback.is_empty() {
+            bed.await_prompt(2 + index * 2, "steer", feedback);
+        }
+        c.await_state(id, "continued turn", |s| *s == SessionState::Running);
+        old = dialog.request;
+    }
+    bed.cue("stop");
+    c.await_state(id, "idle before wake", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
+    assert!(!matches!(
+        c.request(Command::PromptSession {
+            ticket: t,
+            text: "Plan the next change".into(),
+            queued: false,
+            immediately: false,
+            accept_plan: false,
+            plan: true,
+            tier: None,
+            resend: false,
+            uploads: vec![],
+        }),
+        Response::Err { .. }
+    ));
+    bed.await_prompt(6, "turn", "Plan the next change");
+    let rec = c.record(id);
+    assert!(rec.launched_in_plan());
+    assert_eq!(pair(&rec.argv, "--conversation"), [MINTED]);
+}
+
 /// T-1235: a paired phone walks every captured agy confirmation and question
 /// dialog shape over the sealed control channel, binds each card to its
 /// `PreToolUse` call, confirms by the title feed's `working` edge, never

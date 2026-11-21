@@ -454,6 +454,11 @@ pub struct SessionRecord {
     /// record without one hosts no conversation to resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agy_conversation_id: Option<String>,
+    /// The feedback artifact written by this turn. The request ends in its basename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agy_plan_request: Option<String>,
+    #[serde(skip)]
+    pub agy_reviewing: bool,
     /// Ephemeral observations of agy's lead turn and the work its title lists.
     #[serde(skip)]
     pub agy_stop: AgyStop,
@@ -803,6 +808,8 @@ impl SessionRecord {
             native: false,
             codex_thread_id: None,
             agy_conversation_id: None,
+            agy_plan_request: None,
+            agy_reviewing: false,
             agy_stop: AgyStop::None,
             agy_background_running: false,
             codex_generation: None,
@@ -976,11 +983,12 @@ impl SessionRecord {
         self.detail.as_deref()?.strip_prefix(AGY_FOLDER_TRUST)?.strip_prefix(" ∙ ")
     }
 
-    /// Launched with `--permission-mode plan` — the one fact the board holds
+    /// Launched with the provider's plan flag — the one fact the board holds
     /// about a mode. A session that entered plan mode from inside its pane
     /// is not known to be planning.
     pub fn launched_in_plan(&self) -> bool {
-        self.argv.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "plan")
+        let flag = if self.kind == SessionKind::Agy { "--mode" } else { "--permission-mode" };
+        self.argv.windows(2).any(|w| w[0] == flag && w[1] == "plan")
     }
 
     /// A process mesimon must still account for: a pane, or a Codex runtime

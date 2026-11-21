@@ -237,6 +237,7 @@ export function answerWords(agent, body) {
     const label = dialog?.questions?.[0]?.options?.[response.index]?.label;
     return label ? `Answered “${label}”` : "Answered";
   }
+  if (dialog?.kind === "plan" && response.answer === "text") return "Plan sent back with feedback";
   if (response.answer === "text") return `Answered “${response.text}”`;
   if (response.answer === "answers") return dialog?.questions?.length > 1 ? "Answers submitted" : "Answer submitted";
   if (response.answer === "accept") return dialog?.kind === "plan" ? "Plan accepted" : agent?.trust ? "Folder trusted" : "Accepted";

@@ -103,6 +103,53 @@ pub fn codex_at_default(screen: &mesimon_backend_tmux::InputScreen) -> Result<()
     }
 }
 
+/// The two screens of agy's artifact review. Read only the live footer below
+/// the empty composer. A prior panel in scrollback cannot authorize a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtifactView {
+    Closed,
+    Selected,
+}
+
+pub(crate) fn artifact_view(screen: &str, request: &str) -> Option<ArtifactView> {
+    use crate::agents::claude::composer::is_rule;
+    let name = request.strip_prefix("agy-plan/")?.rsplit_once('/')?.1;
+    let lines: Vec<_> = screen.lines().map(str::trim).collect();
+    let bottom = lines.iter().rposition(|line| is_rule(line))?;
+    if bottom < 3
+        || lines[bottom - 1] != ">"
+        || !is_rule(lines[bottom - 2])
+        || !lines[bottom - 3].ends_with("artifact to review")
+    {
+        return None;
+    }
+    let footer: Vec<_> = lines[bottom + 1..].iter().copied().filter(|s| !s.is_empty()).collect();
+    let (mode, panel) = footer.split_last()?;
+    if !mode.contains("plan · ") {
+        return None;
+    }
+    if panel.is_empty() && mode.starts_with("? for shortcuts") {
+        return Some(ArtifactView::Closed);
+    }
+    let (heading, rows) = panel.split_first()?;
+    if *heading != "Action required (1 left)" {
+        return None;
+    }
+    let (status, file_and_actions) = rows.first()?.strip_prefix("› □ ")?.split_once(' ')?;
+    if !matches!(status, "new" | "modified" | "updated") {
+        return None;
+    }
+    let actions = file_and_actions.strip_prefix(name)?;
+    if !actions.starts_with(char::is_whitespace)
+        || !actions.split_whitespace().eq(["open", "approve", "reject"])
+    {
+        return None;
+    }
+    let keys = rows[1..].join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    (keys.starts_with("Keyboard: ↑/↓ Navigate y/n Approve/reject ") && keys.ends_with("esc Done"))
+        .then_some(ArtifactView::Selected)
+}
+
 /// The plan dialog's feedback row as Claude Code draws it (measured on
 /// 2.1.310, T-943): `N. Tell Claude what to change` while its field is
 /// empty, the field's words in that place once typed or pasted, and under it
@@ -252,6 +299,33 @@ mod tests {
         // The label of row 1 is the harness's: any acceptance wording goes.
         let edits = CLAUDE.replace("Yes, and use auto mode", "Yes, auto-accept edits");
         assert_eq!(claude_at_default(&lines(&edits)), Ok(()));
+    }
+
+    #[test]
+    fn artifact_keys_require_the_live_empty_composer_and_the_named_pending_row() {
+        let request = "agy-plan/conversation/call/design.md";
+        let base = "1 artifact · /artifact to review\n──────────\n>\n──────────\n";
+        let closed = format!("{base}? for shortcuts                     plan · Gemini · high");
+        let panel = format!("{base}Action required (1 left)\n› □ new design.md   open  approve reject\n\nKeyboard: ↑/↓ Navigate  y/n Approve/reject  shift+a Approve all  p Preview  esc Done\nplan · Gemini · high");
+        assert_eq!(artifact_view(&closed, request), Some(ArtifactView::Closed));
+        assert_eq!(artifact_view(&panel, request), Some(ArtifactView::Selected));
+        assert_eq!(
+            artifact_view(
+                &panel.replace("design.md", "my  plan.md"),
+                "agy-plan/conversation/call/my plan.md"
+            ),
+            None
+        );
+        for changed in [
+            panel.replace("design.md", "other.md"),
+            panel.replace("1 left", "2 left"),
+            panel.replace("› □", "  □"),
+            panel.replace(">\n", "> my draft\n"),
+            panel.replace("esc Done", "esc Back"),
+            format!("{panel}\n──────────\n>\n──────────\n? for shortcuts"),
+        ] {
+            assert_eq!(artifact_view(&changed, request), None);
+        }
     }
 
     #[test]

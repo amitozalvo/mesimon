@@ -49773,3 +49773,36 @@ The rig's offline tests passed 46/46. Mesophon passed 73 state and asset
 tests and 102/102 Chromium and WebKit UX cases, including the sign-in notice
 with zero answer buttons. The server change qualifies for the post-merge
 workspace suite on the crown's batch schedule.
+## agy plan artifacts from the board and phone (T-1236, 2026-11-21)
+
+A column's agy plan setting and a plan-mode wake already supplied
+`--mode plan`. The board now recognizes that argv when offering plan acceptance.
+A lead `PostToolUse` for `write_to_file` (TargetFile) or `write_file` (Path)
+identifies a feedback-requesting, user-facing Markdown file. A subsequent
+`reviewing` title in plan mode opens needs-you/plan and writes the file text
+through the existing agent-note authorization. Repeated titles keep one note.
+The daemon reads at most the note limit, using the conversation's own
+directory and a regular file, without following a conversation or file symlink.
+
+On agy 1.5.13 with Gemini 4 Neon High, `write_file` carried ArtifactMetadata,
+`Stop/NO_TOOL_CALL` preceded `reviewing`, and the title reported one artifact.
+Ctrl+R opened the review panel. Its selected row named the file, and `y` or
+`n` submitted a new prompt immediately. Escape only closes the panel. Counting
+the Stop alone lost the plan. Typing revision words as the review decision
+could approve it. The board and phone therefore verify the empty composer,
+the one outstanding decision and its selected filename before sending a key.
+Feedback waits for agy's own rejection prompt before going to the same
+conversation. The board ask field takes Enter to accept and Ctrl+X to send
+back the plan with its words. The phone's plan card takes the same decisions.
+The person's artifact review policy and the provider switch stay theirs.
+
+The disposable live `plan` rig on 1.5.13 observed the note, board acceptance,
+and a reply from the continued turn. The updater replaced the disposable CLI
+before the `plan-revision` rig. On 1.5.14 it observed the rejection and the
+person's exact feedback in the transcript. The agy stand-in also exercises
+board rejection, both phone decisions through the encrypted control channel,
+and a plan-mode wake of the same conversation.
+
+The full browser matrix passed its plan-card checks in Chromium and WebKit.
+The unrelated WebKit tablet terminal check reported a ResizeObserver loop
+notification. Its isolated rerun and that cell's three remaining flows passed.

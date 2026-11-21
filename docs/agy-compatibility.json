@@ -101,7 +101,8 @@
         "saved_lead_transcript_repair",
         "worktree_trust_checkout_hint",
         "interactive_mcp_startup_ordering",
-        "worktree_git_sandbox_boundary"
+        "worktree_git_sandbox_boundary",
+        "artifact_plan_review"
       ],
       "claims": [
         {
@@ -141,16 +142,43 @@
         }
       ],
       "not_yet_observed": [
-        "board and Remote Control answers for agy permission, question and plan dialogs (T-1235)",
-        "external agy conversation census and adoption (T-1236)",
+        "live phone review of a plan artifact",
+        "external agy conversation census and adoption",
         "live interactive agy execution on Linux",
         "real account quota exhaustion and recovery"
       ],
       "limitations": [
         "agy updates itself in the background at every launch, so installed versions move ahead of recorded captures without manual upgrades.",
-        "MESIMON_AGY=1 remains required until agy dialog answers (T-1235) and remaining adoption/first-turn gates are decided.",
+        "Starting agy sessions requires MESIMON_AGY=1.",
         "Selected version-scoped observations do not certify all models, enterprise policies or future upstream releases."
-      ]
+      ],
+      "end_to_end": {
+        "board_plan_accept": {
+          "status": "passed",
+          "kind": "real_agy_mesimon_rig",
+          "model": "gemini-4-neon-high",
+          "claim": "A plan-mode column starts a session. PostToolUse names its Markdown artifact, the reviewing report opens a plan with the file text, and accepting the selected artifact from the board continues the conversation."
+        }
+      }
+    },
+    "1.5.14": {
+      "captured_at": "2026-11-21",
+      "captured_at_unix_ms": 1795264330936,
+      "model": "gemini-4-neon-high",
+      "mode": [
+        "native_interactive_tmux"
+      ],
+      "scope": "Plan review and revision from the board.",
+      "observed": [
+        "artifact_plan_review"
+      ],
+      "end_to_end": {
+        "board_plan_revision": {
+          "status": "passed",
+          "kind": "real_agy_mesimon_rig",
+          "claim": "Rejecting the selected artifact produced a [Rejected] turn. Its conversation then received the feedback text from the board."
+        }
+      }
     }
   }
 }

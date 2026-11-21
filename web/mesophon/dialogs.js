@@ -180,16 +180,25 @@ export function Attention({ store, ticket, entry, live }) {
     disabled: off || !enabled,
     onClick: () => send({ op: "dialog", request: dialog.request, response }),
   });
-  if (dialog.kind === "plan")
+  if (dialog.kind === "plan") {
+    const artifact = ticket.agent.provider === "agy";
+    const feedback = () => entry?.dialogDraft?.request === dialog.request ? entry.dialogDraft.text : "";
     return html`<section id="attention" class="attention" aria-label="Agent needs your answer">
       <h3 class="attention-head"><${Icon} name="file" size=${18} cls="attn-ink" /><span>Review plan</span></h3>
       <div class="attention-plan"><${Markdown} text=${dialog.markdown} /></div>
-      <p class="attention-note">Accepting keeps every edit asking for your approval. Never auto-accept.</p>
+      ${artifact ? html`<label class="field">Feedback if rejecting<input type="text" maxlength="1000" autocomplete="off"
+        value=${feedback()} onInput=${(e) => { entry.dialogDraft = { request: dialog.request, text: e.currentTarget.value }; }} /></label>`
+        : html`<p class="attention-note">Accepting keeps every edit asking for your approval. Never auto-accept.</p>`}
       <div class="attention-actions">
-        <button type="button" class="btn" ...${answer({ answer: "reject" })}>Reject plan</button>
-        <button type="button" class="btn btn-attn" ...${answer({ answer: "accept" })}>Accept · approve edits manually</button>
+        <button type="button" class="btn" disabled=${off} onClick=${() => {
+          const text = artifact && feedback().trim();
+          send({ op: "dialog", request: dialog.request, response: text ? { answer: "text", text } : { answer: "reject" } });
+        }}>Reject plan</button>
+        <button type="button" class="btn btn-attn" ...${answer({ answer: "accept" })}>
+          ${artifact ? "Accept plan" : "Accept · approve edits manually"}</button>
       </div>
     </section>`;
+  }
   // A host that says its card cannot answer this dialog (T-1218) leaves it
   // to the pane: no form, no option that sends.
   const pane = ticket.agent.card_answers === false;

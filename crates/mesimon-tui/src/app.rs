@@ -7964,6 +7964,22 @@ impl App {
         self.board.pane_target(ticket).is_some_and(|s| s.on_plan_dialog())
     }
 
+    fn reject_plan(&mut self, ticket: ulid::Ulid, feedback: &str) -> Result<()> {
+        let Some(seat) = self.board.pane_target(ticket) else { return Ok(()) };
+        let Some(request) = seat.agy_plan_request.clone() else { return Ok(()) };
+        let command =
+            Command::RejectPlan { ticket, session: seat.id, request, feedback: feedback.into() };
+        match self.req(command) {
+            Response::Ok => {
+                self.status = "sending plan back".into();
+                self.mode = Mode::Normal;
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        self.refresh_soon()
+    }
+
     /// The ticket's paned agent sits on its folder trust dialog (T-844):
     /// TRUST on the card, `w` accepts it from here.
     pub(crate) fn ticket_trust_ready(&self, ticket: ulid::Ulid) -> bool {
@@ -9398,6 +9414,21 @@ impl App {
                 }
                 _ => false,
             },
+            ask_agy_review: match &self.mode {
+                Mode::Input {
+                    purpose: InputPurpose::Prompt { target: AskTarget::Ticket(t), images, .. },
+                    ..
+                } if images.is_empty() => Some(t),
+                Mode::Editor(e) if e.images.is_empty() => match &e.purpose {
+                    EditorPurpose::Ask { target: AskTarget::Ticket(t), .. } => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            }
+            .and_then(|t| self.board.pane_target(*t))
+            .is_some_and(|s| {
+                s.on_plan_dialog() && s.kind == SessionKind::Agy && s.agy_plan_request.is_some()
+            }),
             ask_plan_ready: match &self.mode {
                 Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
                 | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
@@ -11790,6 +11821,7 @@ impl App {
             | Verb::HistoryPrev
             | Verb::HistoryNext
             | Verb::PlanMode
+            | Verb::RejectPlan
             // ---- editor (handled in key_editor; unreachable here) ----------
             | Verb::EditorSave
             | Verb::EditorSaveStart
@@ -14172,6 +14204,11 @@ impl App {
             return Ok(());
         }
         match verb {
+            Some(Verb::RejectPlan) => {
+                if let InputPurpose::Prompt { target: AskTarget::Ticket(ticket), .. } = purpose {
+                    return self.reject_plan(ticket, buffer.as_str());
+                }
+            }
             // `^]` in the ticket page's ask field (T-1262): the page's own
             // way back, the field's words and pictures kept for the page's
             // next Shift+Enter (`restore_page_draft`). A blank field keeps
@@ -14748,6 +14785,13 @@ impl App {
             ed.delete_armed = false;
         }
         match verb {
+            Some(Verb::RejectPlan) => {
+                if let EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } = ed.purpose {
+                    let feedback = ed.body.as_str().to_owned();
+                    self.mode = Mode::Editor(ed);
+                    return self.reject_plan(ticket, &feedback);
+                }
+            }
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
@@ -27392,6 +27436,35 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "plan: true"), "{:?}", sent.borrow());
         assert_eq!(app.status, "asked in plan mode");
+    }
+
+    #[test]
+    fn the_agy_plan_field_accepts_on_enter_and_sends_feedback_on_ctrl_x() {
+        for reject in [false, true] {
+            let (mut app, sent, _) = app_with_claude(
+                SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan },
+                false,
+            );
+            app.rich_keys = true;
+            let seat = &mut app.board_mut().sessions[0];
+            seat.kind = SessionKind::Agy;
+            seat.agy_plan_request = Some("agy-plan/lead/call/design.md".into());
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert!(app.ctx().ask_accepts_plan && app.ctx().ask_agy_review);
+            if reject {
+                for ch in "Change the greeting".chars() {
+                    app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+                }
+                app.handle_key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+                assert!(
+                    sent_contains(&sent, "RejectPlan")
+                        && sent_contains(&sent, "Change the greeting")
+                );
+            } else {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                assert!(sent_contains(&sent, "accept_plan: true"));
+            }
+        }
     }
 
     /// A seat on its folder trust dialog (T-844): the card's row asks the

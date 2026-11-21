@@ -9,7 +9,7 @@
 //! nothing.
 //!
 //! Three lifecycle hooks (`SessionStart`, `PreInvocation`, `Stop`), the
-//! `PreToolUse` observer, and the title command run `mesimon hook`, which prints
+//! tool observers and the title command run `mesimon hook`, which prints
 //! nothing. That is the answer agy takes as "no opinion" on every event:
 //! **a hook that prints `{}` or `{"decision":""}` on `PreToolUse` denies the
 //! tool call**, so no hook of mesimon's ever prints an empty object, and
@@ -73,14 +73,14 @@ pub struct Agy;
 pub const SESSION_START: &str = "AgySessionStart";
 pub const PRE_INVOCATION: &str = "AgyPreInvocation";
 pub const PRE_TOOL_USE: &str = "AgyPreToolUse";
+pub const POST_TOOL_USE: &str = "AgyPostToolUse";
 pub const STOP: &str = "AgyStop";
 pub const TITLE: &str = "AgyTitle";
 
 /// The flat lifecycle hooks registered, as `(agy's event, the frame's name)`;
 /// `PreToolUse` is registered beside them in agy's grouped `matcher` form
 /// ([`render_hooks`]: [`GATE_MATCHER`] for T-1238's write gate, and `"*"` for
-/// T-1235's pending-call observer). `PostToolUse` is not registered: the title
-/// feed says when a confirmation or question is answered.
+/// T-1235's pending-call observer). The post-write hook names a review artifact.
 const HOOKS: [(&str, &str); 3] =
     [("SessionStart", SESSION_START), ("PreInvocation", PRE_INVOCATION), ("Stop", STOP)];
 
@@ -300,6 +300,11 @@ fn render_hooks(
             },
         ]),
     );
+    events.insert("PostToolUse".into(), json!([{
+        "matcher": "write_file|write_to_file",
+        "hooks": [{"type": "command", "command": hook_command(bin, sock, session, POST_TOOL_USE),
+                   "timeout": HOOK_TIMEOUT_SECS}]
+    }]));
     json!({ "mesimon": events })
 }
 
@@ -441,6 +446,66 @@ pub(crate) fn parse_tool_call(payload: &Value) -> Option<ToolCall> {
     Some(ToolCall { id: id.into(), name: name.into(), args })
 }
 
+/// Bind a user-facing feedback request to a Markdown file directly in the lead's
+/// artifact directory. The tool's inline content is never the plan note.
+fn artifact_request(frame: &HookFrame, record: &SessionRecord) -> Option<String> {
+    let lead = frame_conversation(frame)?;
+    if record.agy_conversation_id.as_deref() != Some(lead) {
+        return None;
+    }
+    let call = &frame.payload["toolCall"];
+    let args = &call["args"];
+    let file = match call["name"].as_str()? {
+        "write_file" => args["Path"].as_str()?,
+        "write_to_file" => args["TargetFile"].as_str()?,
+        _ => return None,
+    };
+    let metadata = &args["ArtifactMetadata"];
+    if metadata["UserFacing"] != true || metadata["RequestFeedback"] != true {
+        return None;
+    }
+    let dir = Path::new(frame.payload["artifactDirectoryPath"].as_str()?);
+    let path = Path::new(file);
+    let name = path.file_name()?.to_str()?;
+    let id = call["id"].as_str()?;
+    let brain = home().join("brain");
+    if id.is_empty()
+        || id.len() > 256
+        || id.contains('/')
+        || mesimon_core::text::scrub_text(id) != id
+        || !mesimon_core::attachment::valid_basename(name)
+        || !name.ends_with(".md")
+        || path.parent()? != dir
+        || (dir != brain.join(lead) && dir != brain.canonicalize().ok()?.join(lead))
+    {
+        return None;
+    }
+    Some(format!("agy-plan/{lead}/{id}/{name}"))
+}
+
+/// Open both the conversation and its file without following links. A forged
+/// frame cannot turn the ticket note into a read outside this conversation.
+fn read_artifact(record: &SessionRecord, brain: &Path) -> Option<String> {
+    use rustix::fs::{open, openat, Mode, OFlags};
+    use std::io::Read;
+    let lead = conversation_id(record.agy_conversation_id.as_deref()?)?;
+    let name = record.agy_plan_request.as_deref()?.rsplit_once('/')?.1;
+    if !mesimon_core::attachment::valid_basename(name) || !name.ends_with(".md") {
+        return None;
+    }
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let brain = open(brain.canonicalize().ok()?, flags | OFlags::DIRECTORY, Mode::empty()).ok()?;
+    let dir = openat(brain, lead, flags | OFlags::DIRECTORY, Mode::empty()).ok()?;
+    let file = std::fs::File::from(openat(dir, name, flags, Mode::empty()).ok()?);
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(mesimon_core::board::NOTE_MAX_BYTES as u64).read_to_end(&mut bytes).ok()?;
+    let text = mesimon_core::board::sanitize_note(&String::from_utf8_lossy(&bytes));
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// The context window a title report names for its model
 /// (`context_window.context_window_size`): 0 until the model is known.
 pub fn context_window(feed: &Value) -> Option<u64> {
@@ -579,7 +644,7 @@ fn title_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
         matches!(state, SessionState::RequiresAction { reason: Reason::Permission });
     let asking_question =
         matches!(state, SessionState::RequiresAction { reason: Reason::Question });
-    let asked = asking_permission || asking_question;
+    let asked = asking_permission || asking_question || record.on_plan_dialog();
     let turning = *state == SessionState::Running || asked;
     let agent_state = payload.get("agent_state").and_then(Value::as_str);
     if record.agy_background_running {
@@ -663,6 +728,8 @@ impl AgentAdapter for Agy {
                     if frame.event != TITLE {
                         return result;
                     }
+                    record.agy_plan_request = None;
+                    record.agy_reviewing = false;
                     record.transcript_path = None;
                     record.agy_stop = AgyStop::None;
                     record.agy_background_running = false;
@@ -685,6 +752,10 @@ impl AgentAdapter for Agy {
             // one is the same turn going on.
             PRE_INVOCATION => {
                 let first = payload.get("invocationNum").and_then(Value::as_u64).unwrap_or(0) == 0;
+                if first {
+                    result.metadata_changed |= record.agy_plan_request.take().is_some();
+                    record.agy_reviewing = false;
+                }
                 record.agy_stop = AgyStop::None;
                 result.signal =
                     Some(if first { Signal::UserPromptSubmit } else { Signal::TurnStarted });
@@ -697,7 +768,16 @@ impl AgentAdapter for Agy {
                     result.signal = Some(Signal::Attention { reason: Reason::Question });
                 }
             }
+            POST_TOOL_USE => {
+                if let Some(request) = artifact_request(frame, record) {
+                    record.agy_plan_request = Some(request);
+                    record.agy_reviewing = false;
+                    result.metadata_changed = true;
+                }
+            }
+            STOP if record.agy_reviewing && payload["terminationReason"] == "NO_TOOL_CALL" => {}
             STOP => {
+                record.agy_reviewing = false;
                 result.signal = stop_signal(payload, record);
                 if matches!(
                     result.signal,
@@ -715,7 +795,26 @@ impl AgentAdapter for Agy {
                         });
                 }
             }
-            TITLE => result.signal = title_signal(payload, record),
+            TITLE => {
+                result.signal = title_signal(payload, record);
+                let reviewing = payload["agent_state"] == "reviewing"
+                    && payload["cycle_mode"]
+                        .as_str()
+                        .map_or_else(|| record.launched_in_plan(), |mode| mode == "plan")
+                    && payload["artifact_count"].as_u64().is_some_and(|n| n > 0)
+                    && named.is_some()
+                    && record.agy_plan_request.is_some()
+                    && payload["tool_confirmation_pending"] != true;
+                if reviewing {
+                    if !record.agy_reviewing {
+                        result.plan = read_artifact(record, &home().join("brain"));
+                    }
+                    result.signal = Some(Signal::Attention { reason: Reason::Plan });
+                } else if record.agy_reviewing && payload["agent_state"] == "idle" {
+                    result.signal = Some(Signal::TurnEnded { outcome: TurnOutcome::Completed });
+                }
+                record.agy_reviewing = reviewing;
+            }
             _ => {}
         }
         result
@@ -797,6 +896,29 @@ mod tests {
             "/repo".into(),
             state,
         )
+    }
+
+    #[test]
+    fn plan_notes_read_only_regular_files_in_the_lead_conversation() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let brain = root.path().join("brain");
+        let dir = brain.join(ID);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut rec = record(SessionState::Running);
+        rec.agy_conversation_id = Some(ID.into());
+        rec.agy_plan_request = Some(format!("agy-plan/{ID}/call/plan.md"));
+        let file = dir.join("plan.md");
+        let outside = root.path().join("outside.md");
+        std::fs::write(&outside, "other conversation").unwrap();
+        symlink(&outside, &file).unwrap();
+        assert_eq!(read_artifact(&rec, &brain), None);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, "# The new plan").unwrap();
+        assert_eq!(read_artifact(&rec, &brain).as_deref(), Some("# The new plan"));
+        std::fs::rename(&dir, root.path().join("moved")).unwrap();
+        symlink(root.path().join("moved"), &dir).unwrap();
+        assert_eq!(read_artifact(&rec, &brain), None);
     }
 
     fn context<'a>(paths: &'a crate::paths::Paths, cwd: &'a Path, tier: Tier) -> LaunchContext<'a> {
@@ -1172,15 +1294,15 @@ mod tests {
 
         let hooks = read_json(&dir.join(".agents/hooks.json"));
         let ours = hooks["mesimon"].as_object().unwrap();
-        assert_eq!(ours.len(), 4, "{hooks}");
+        assert_eq!(ours.len(), 5, "{hooks}");
         for (event, name) in HOOKS {
             let command = ours[event][0]["command"].as_str().unwrap();
             assert!(command.ends_with(&format!("--session {} --event {name}", ctx.session)));
             assert!(command.contains(" hook --sock '"), "{command}");
         }
         // `PreToolUse` carries the write gate (T-1238) and the silent observer
-        // (T-1235) in agy's grouped `matcher` form; `PostToolUse` is absent.
-        assert!(ours.get("PostToolUse").is_none());
+        // (T-1235) in agy's grouped `matcher` form.
+        assert_eq!(ours["PostToolUse"][0]["matcher"], "write_file|write_to_file");
         let pre = ours["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2, "{hooks}");
         assert_eq!(pre[0]["matcher"], GATE_MATCHER);

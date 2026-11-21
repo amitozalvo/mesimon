@@ -348,6 +348,8 @@ def main():
             "plan_tier": "Google AI Pro",
             "email": EMAIL,
         }
+        if agent_state == "reviewing":
+            payload.update(cycle_mode="plan", artifact_count=1)
         if pending:
             payload["tool_confirmation_pending"] = True
         run(title, payload)
@@ -430,6 +432,8 @@ def main():
             rows = ["  fake agy 1.5.9", ""] + st["history"][-8:]
             for words in st["queued"]:
                 rows.append("▸ " + words.replace("\n", " ") + " (alt+m to send immediately)")
+            if st.get("review"):
+                rows.append("1 artifact · /artifact to review")
             rows.append(rule)
             lines = st["box"].split("\n") if st["box"] else [""]
             top = len(rows)
@@ -438,10 +442,17 @@ def main():
             if st["box"]:
                 cursor = (len(rows) - 1, 2 + len(lines[-1]))
             else:
-                rows[top] = "> " + PLACEHOLDER
+                rows[top] = "> " if st.get("review") else "> " + PLACEHOLDER
                 cursor = (top, 2)
             rows.append(rule)
-            rows.append(st["footer"])
+            if st.get("review") == "panel":
+                rows.extend(["Action required (1 left)", "› □ new implementation_plan.md   open  approve reject",
+                             "Keyboard: ↑/↓ Navigate  y/n Approve/reject  shift+a Approve all  p Preview  esc Done",
+                             "plan · Example · high"])
+            elif st.get("review"):
+                rows.append("? for shortcuts                               plan · Example · high")
+            else:
+                rows.append(st["footer"])
         frame = "\x1b[H\x1b[2J" + "\r\n".join(rows)
         frame += "\x1b[%d;%dH" % (cursor[0] + 1, cursor[1] + 1)
         out.write(frame)
@@ -594,6 +605,16 @@ def main():
                     st["box"] += text.replace("\r\n", "\n").replace("\r", "\n")
                 i = end + len(PASTE_END)
                 continue
+            if st.get("review") and data[i:i+1] == b"\x12":
+                st["review"] = "panel"
+                i += 1
+                continue
+            if st.get("review") == "panel" and data[i:i+1] in (b"y", b"n"):
+                decision = "Approved" if data[i:i+1] == b"y" else "Rejected"
+                st["review"] = None
+                begin(f"[{decision}] implementation_plan.md", "turn")
+                i += 1
+                continue
             if st["dialog"]:
                 if data.startswith(b"\x1b[A", i) or data.startswith(b"\x1b[B", i):
                     st["yes"] = not st["yes"]
@@ -732,6 +753,21 @@ def main():
                 if cue == "signed-in":
                     st["sign_in"] = False
                     paint()
+                elif cue == "plan":
+                    artifact_dir = os.path.realpath(os.path.join(HERE, "agy-home", "brain", st["conversation"]))
+                    os.makedirs(artifact_dir, exist_ok=True)
+                    path = os.path.join(artifact_dir, "implementation_plan.md")
+                    with open(path, "w") as file:
+                        file.write(body)
+                    hook("PostToolUse", {"artifactDirectoryPath": artifact_dir, "toolCall": {
+                        "id": "write-" + str(st["steps"]), "name": "write_file", "args": {
+                            "Path": path, "ArtifactMetadata": {"UserFacing": True, "RequestFeedback": True}
+                        }}})
+                    st["review"] = "closed"
+                    st["working"] = False
+                    hook("Stop", {"terminationReason": "NO_TOOL_CALL", "fullyIdle": True})
+                    paint()
+                    report("reviewing")
                 elif cue == "ask":
                     report("tool_use", pending=True)
                 elif cue == "answer":
