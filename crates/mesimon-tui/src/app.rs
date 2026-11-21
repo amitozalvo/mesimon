@@ -14116,20 +14116,22 @@ impl App {
         }
         let key = crate::keys::to_key_text(code, mods);
         let mut verb = self.text_verb(Scope::Input, key);
-        // The board's ask field is one line (T-1212): its Shift+Enter is
-        // Enter while the field is blank, and otherwise opens the composer
-        // on the words with a new line under them, where the line break
-        // the key asked for has room. The ticket page's field holds lines
-        // and types it (T-1191).
+        // An ask field's Shift+Enter is Enter while the field is blank, on
+        // the board and the ticket page alike (T-1398): a line break opening
+        // an empty field is never the point, and the finger that opened the
+        // field is still on Shift for the first prompt. With words in it,
+        // the board's field is one line (T-1212) and opens the composer on
+        // them with a new line under them, where the line break the key
+        // asked for has room; the ticket page's field holds lines and types
+        // it (T-1191).
         let mut break_line = false;
         if verb.is_none()
             && key == Some(keymap::Key::ShiftEnter)
             && matches!(purpose, InputPurpose::Prompt { .. })
-            && self.board_field()
         {
             if buffer.as_str().trim().is_empty() {
                 verb = Some(Verb::Save);
-            } else {
+            } else if self.board_field() {
                 verb = Some(Verb::Describe);
                 break_line = true;
             }
@@ -27956,6 +27958,61 @@ mod tests {
         // A recalled ask of lines is one line here.
         app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         assert_eq!(field(&app), "fix the tests");
+    }
+
+    /// The ticket page's ask field (T-1398): Shift+Enter on a blank field is
+    /// Enter, so the finger still on Shift sends the first prompt — on an
+    /// empty seat, the start on the ticket's title — instead of typing a
+    /// line break into nothing. With words in the field it still breaks a
+    /// line (T-1191).
+    #[test]
+    fn shift_enter_on_a_blank_ticket_page_field_is_enter() {
+        let page = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        let empty_seat = || {
+            let (app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+            (app, sent)
+        };
+        let live_agent = || {
+            let (app, sent, _) = app_with_claude(SessionState::Running, false);
+            (app, sent)
+        };
+        for make in [&empty_seat as &dyn Fn() -> _, &live_agent] {
+            let (mut by_enter, enter_sent) = make();
+            by_enter.screen = page.clone();
+            by_enter.rich_keys = true;
+            by_enter.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            by_enter.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            let (mut app, sent) = make();
+            app.screen = page.clone();
+            app.rich_keys = true;
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert!(matches!(app.mode, Mode::Input { .. }), "{:?}", app.mode);
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert_eq!(app.mode, by_enter.mode);
+            assert_eq!(app.status, by_enter.status);
+            assert_eq!(*sent.borrow(), *enter_sent.borrow());
+        }
+        // The empty seat's blank Shift+Enter starts the agent on its title.
+        let (mut app, sent) = empty_seat();
+        app.screen = page.clone();
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "agent started ∙ asked");
+        // Words in the field: the line break, nothing sent.
+        let (mut app, sent) = empty_seat();
+        app.screen = page;
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "x\n"),
+            other => panic!("not in the field: {other:?}"),
+        }
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
     }
 
     /// Esc leaves without asking anything, the way every other field here

@@ -49652,3 +49652,16 @@ measurement above.
   `a4c33874`.
 - **What would reopen it.** agy starting workspace MCP servers before the first
   prompt, or a launch flag that does.
+
+## Shift+Enter on a blank ticket-page field is Enter (2026-11-21, T-1398)
+
+**Was:** the ticket page's ask field typed a line break on Shift+Enter even when the field was
+blank (T-1191), so the second Shift+Enter of "open the field, send the first prompt" — the finger
+still on Shift — put an empty line into the field instead of starting the empty seat on its
+title. The board's field already treated a blank Shift+Enter as Enter (T-1212).
+
+**Now:** `key_input` applies the blank-field rule on every screen: blank words, Shift+Enter is
+`Verb::Save`, exactly what Enter does there (start on the title, send the brief, accept a plan,
+or "nothing to send"). With words in the field the page still breaks a line and the board still
+opens the composer. Pinned by `shift_enter_on_a_blank_ticket_page_field_is_enter`, which compares
+both presses on an empty seat and a live agent.
