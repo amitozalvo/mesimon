@@ -3498,7 +3498,9 @@ impl Daemon {
             && self.board.session(id).is_some_and(|s| s.agy_review_count > 0)
         {
             let candidate = observation.agy_candidate.take();
-            let rec = self.board.sessions.iter_mut().find(|s| s.id == id).unwrap();
+            let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+                return;
+            };
             if rec.agy_plan_request != candidate {
                 // Retire the old card before attempting to replace the note.
                 observation.metadata_changed |= rec.agy_plan_request.take().is_some();
@@ -3507,7 +3509,9 @@ impl Daemon {
                 self.saved_plan(id).as_ref() == Some(text) || self.record_plan(id, text.clone())
             });
             let projection = candidate.zip(plan);
-            let rec = self.board.sessions.iter_mut().find(|s| s.id == id).unwrap();
+            let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+                return;
+            };
             let request = projection.as_ref().map(|(request, _)| request.clone());
             let detail = request.is_none().then(|| agy::artifacts::IN_PANE.to_owned());
             observation.metadata_changed |= rec.agy_plan_request != request || rec.detail != detail;
