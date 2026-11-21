@@ -276,6 +276,77 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     assert_eq!(session(&mut c, claude).kind, SessionKind::Claude);
 }
 
+/// Enter on a parked agent's ticket-page row sends ResumeSession. Codex
+/// announces a rollout path at selection but creates it on the first turn.
+#[test]
+fn parked_codex_before_first_turn_wakes_working_on_its_brief() {
+    let Some(h) = Fixture::boot("codex_empty_wake") else { return };
+    initial(&h, json!({"deferred_rollout":true}));
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let t = ticket(&mut c, "count the entries", None);
+    assert!(matches!(
+        c.request(Command::WriteNote {
+            ticket: t,
+            note: None,
+            text: "Include hidden entries.".into(),
+            rev: None,
+        }),
+        Response::NoteWritten { .. }
+    ));
+    let id = c.spawn_claude(t);
+    h.codex_ready(&mut c, id);
+    let unused = c.record(id).codex_thread_id.unwrap();
+    assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
+    wait_until(Duration::from_secs(10), "park cleanup", || !c.record(id).codex_stopping);
+
+    assert!(matches!(
+        c.request(Command::ResumeSession { id, confirm: false }),
+        Response::Spawned { fresh: true, .. }
+    ));
+    c.await_state(id, "first turn after wake", |s| *s == SessionState::Running);
+    assert_ne!(c.record(id).codex_thread_id.as_deref(), Some(unused.as_str()));
+    let input = input(&h, id).replace('\r', "\n");
+    assert!(input.contains("count the entries\n\nInclude hidden entries."), "{input:?}");
+    assert_eq!(submits(&h, id), 1);
+}
+
+#[test]
+fn parked_codex_with_a_turn_reports_failed_thread_selection() {
+    let Some(h) = Fixture::boot("codex_failed_selection") else { return };
+    initial(&h, json!({"deferred_rollout":true}));
+    let mut c = h.client();
+    let crown = ticket(&mut c, "coordinate", None);
+    let reader = c.spawn_claude(crown);
+    assert!(matches!(c.request(Command::CrownTicket { id: crown }), Response::Ok));
+    h.claude_idle(&mut c, reader);
+    select(&mut c, AgentProvider::Codex);
+    let (t, id, _, _) = cut(&mut c, "resume my conversation");
+    let key = c.key_of(t);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"state":{"state":"idle","stop_reason":"end_turn"},"turn_id":"prior"}));
+    c.await_state(id, "prior turn completed", |s| {
+        *s == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+    });
+    // Even an empty later projection and a lost file cannot erase that turn.
+    h.control(id, json!({"state":{"state":"idle","stop_reason":"unknown"},"turn_id":null}));
+    c.await_state(id, "back at the idle composer", |s| {
+        *s == (SessionState::Idle { stop_reason: StopReason::Unknown })
+    });
+    assert!(matches!(c.request(Command::SleepSession { id }), Response::Ok));
+    wait_until(Duration::from_secs(10), "park cleanup", || !c.record(id).codex_stopping);
+
+    std::fs::remove_file(c.record(id).transcript_path.unwrap()).unwrap();
+    assert!(matches!(
+        c.request(Command::ResumeSession { id, confirm: false }),
+        Response::Spawned { fresh: false, .. }
+    ));
+    c.await_state(id, "failed exact resume", |s| matches!(s, SessionState::Exited { .. }));
+    wait_until(Duration::from_secs(10), "failed resume cleanup", || !c.record(id).codex_stopping);
+    let state = c.agent_read(reader, &key).unwrap().state.unwrap();
+    assert_eq!(state.exited.as_deref(), Some("resume failed ∙ no thread selected"));
+}
+
 /// A column's timer applies to Codex too, but an idle-looking observation
 /// hold and an active turn must survive it. Wake keeps the exact thread.
 #[test]

@@ -1,4 +1,4 @@
-//! Evidence for a human-authorized recovery after unverified process cleanup.
+//! Native launch evidence for wake and human-authorized cleanup recovery.
 //! These checks exclude known native owners, not escaped descendants. The
 //! caller owns authorization, pane absence, and acknowledgment of that risk.
 
@@ -60,6 +60,56 @@ fn evidence(
             .map_err(|_| "Invalid Codex recovery snapshot")?;
     validate_evidence(paths, record, &config, Some(&snapshot))?;
     Ok((config_path, config, snapshot))
+}
+
+fn resume_pending(config: &RuntimeConfig, snapshot: &Snapshot, thread: &str) -> bool {
+    config.resume.as_deref() == Some(thread)
+        && snapshot.launch_phase == super::LaunchPhase::SelectionPending
+        && snapshot.thread_id.is_none()
+}
+
+/// A native resume can exit successfully before it selects the requested
+/// thread. Its final phase belongs to this pane only after both generation checks.
+pub fn failed_resume_selection(paths: &Paths, record: &SessionRecord) -> bool {
+    record.kind == SessionKind::Codex
+        && record.codex_thread_id.as_deref().is_some_and(|thread| {
+            evidence(paths, record)
+                .is_ok_and(|(_, config, snapshot)| resume_pending(&config, &snapshot, thread))
+        })
+}
+
+/// A selected thread can announce where its first rollout will be written
+/// and then stop without ever creating it. A previous unsuccessful exact
+/// wake leaves that identity and path on the record alone.
+pub fn parked_before_first_turn(paths: &Paths, record: &SessionRecord) -> bool {
+    if record.kind != SessionKind::Codex
+        || record.state != mesimon_core::board::SessionState::Sleeping
+        || record.codex_stopping
+        || record.codex_turn_id.is_some()
+        || record.codex_failed_turn.is_some()
+        || record.codex_plan_dismissed_turn.is_some()
+        || record.agent_plan_key.is_some()
+        || record.codex_submit_sent
+    {
+        return false;
+    }
+    let (Some(thread), Some(path)) = (&record.codex_thread_id, &record.transcript_path) else {
+        return false;
+    };
+    if thread.is_empty() || !Path::new(path).is_absolute() {
+        return false;
+    }
+    let Ok((_, config, snapshot)) = evidence(paths, record) else { return false };
+    let selected = config.resume.is_none()
+        && snapshot.launch_phase == super::LaunchPhase::Selected
+        && snapshot.thread_id.as_ref() == Some(thread)
+        && snapshot.history_path.as_ref() == Some(path);
+    let failed_selection =
+        resume_pending(&config, &snapshot, thread) && snapshot.history_path.is_none();
+    snapshot.stopped
+        && snapshot.turn_id.is_none()
+        && (selected || failed_selection)
+        && matches!(Path::new(path).try_exists(), Ok(false))
 }
 
 /// The same evidence, minus a snapshot that is simply GONE (T-405). The
@@ -456,6 +506,35 @@ mod tests {
         snapshot.launch_phase = super::super::LaunchPhase::BeforeSelection;
         snapshot.history_path = Some("/synthetic/existing.jsonl".into());
         assert!(launch_target(&record, &config, &snapshot).is_err());
+    }
+
+    // An older daemon parked a status-zero selection failure as a quit.
+    // Its record is the surviving identity of the original empty thread.
+    #[test]
+    fn a_previously_failed_empty_wake_checks_the_record_and_the_rollout() {
+        let dir = tempfile::tempdir().unwrap();
+        let (paths, mut record, mut config, mut snapshot) = fixture_records(dir.path());
+        let rollout = dir.path().join("rollout.jsonl");
+        record.transcript_path = Some(rollout.display().to_string());
+        record.codex_thread_id = Some("original".into());
+        config.resume = record.codex_thread_id.clone();
+        snapshot.stopped = true;
+        snapshot.launch_phase = super::super::LaunchPhase::SelectionPending;
+        super::super::write_json(
+            &paths.hooks_dir().join(format!("{}.codex.json", record.id)),
+            &config,
+        )
+        .unwrap();
+        super::super::write_json(&config.snapshot_path, &snapshot).unwrap();
+        assert!(parked_before_first_turn(&paths, &record));
+        record.codex_turn_id = Some("already worked".into());
+        assert!(!parked_before_first_turn(&paths, &record));
+        record.codex_turn_id = None;
+        record.codex_failed_turn = Some("old failure".into());
+        assert!(!parked_before_first_turn(&paths, &record));
+        record.codex_failed_turn = None;
+        std::fs::write(rollout, "{}").unwrap();
+        assert!(!parked_before_first_turn(&paths, &record));
     }
 
     fn fixture_records(root: &Path) -> (Paths, SessionRecord, RuntimeConfig, Snapshot) {

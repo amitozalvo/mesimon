@@ -366,6 +366,9 @@ pub struct Ledger {
     capacity_lost: bool,
     runtime_active: bool,
     active_turn: Option<String>,
+    /// Kept with this thread, even while another one is selected. The final
+    /// stopped snapshot reports it when the live projection has gone idle.
+    pub(super) last_turn: Option<String>,
     terminal: Option<TurnOutcome>,
     terminal_emitted: bool,
     completed_plan: bool,
@@ -393,6 +396,7 @@ impl Ledger {
             capacity_lost: false,
             runtime_active: false,
             active_turn: None,
+            last_turn: None,
             terminal: None,
             terminal_emitted: false,
             completed_plan: false,
@@ -681,6 +685,9 @@ impl Ledger {
             self.emit(Signal::Ready, update);
         }
         update.observation_hold = self.held();
+        if self.active_turn.is_some() && self.last_turn != self.active_turn {
+            self.last_turn.clone_from(&self.active_turn);
+        }
         update.turn_id = self.active_turn.clone();
         update.ask = self.open_ask();
     }
@@ -748,6 +755,9 @@ impl Ledger {
             self.retired_turns.clear();
         }
         if let Some(turns) = thread["turns"].as_array() {
+            if let Some(id) = turns.iter().rev().find_map(|turn| string(turn, "id")) {
+                self.last_turn = Some(id.to_owned());
+            }
             for turn in turns {
                 if let Some(id) = string(turn, "id") {
                     if string(turn, "status") == Some("inProgress") {

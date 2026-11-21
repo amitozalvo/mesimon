@@ -29,7 +29,16 @@ def render(screen,cursor):
 print('\x1b[?2004h',end='')
 try: initial=json.loads((root/'initial-screen.json').read_text())
 except FileNotFoundError: initial={}
-history=None; history_owner=None
+history=None; history_owner=None; rollout_written=False
+if initial.get('deferred_rollout'):
+    thread=config['resume'] or ('synthetic-'+str(config['generation']))
+    history=str(root/(thread+'.jsonl'))
+    if config['resume'] and not Path(history).exists():
+        path.write_text(json.dumps(dict(session=config['session'],generation=config['generation'],
+            sequence=1,heartbeat_ms=time.time_ns()//1000000,launch_phase='selection_pending',
+            thread_id=None,turn_id=None,state={'state':'unknown','reason':'observation_lost'},
+            observation_hold=True,history_path=None,stopped=True)))
+        sys.exit(0)
 if initial.get('history_owner'):
     # A native executable holding the rollout below this runtime, like the
     # real app-server. The fixture selects tail as `executable`.
@@ -56,9 +65,12 @@ while not stopping:
         sequence+=1; prior=instruction
     if reveal and time.monotonic()>=reveal[0]:
         render(reveal[1],reveal[2]); reveal=None
+    if initial.get('deferred_rollout') and turn and not rollout_written:
+        Path(history).write_text('{}\n')
+        rollout_written=True
     if instruction.get('publish',True):
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
-               'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,
+               'heartbeat_ms':time.time_ns()//1000000,'thread_id':thread,'turn_id':turn,'launch_phase':'selected',
                'state':state,'observation_hold':instruction.get('hold',False),'history_path':history,'stopped':False,
                'hold':instruction.get('hold_reasons'),'releases':instruction.get('releases',0),'last_release':instruction.get('last_release'),
                'steers':steers,

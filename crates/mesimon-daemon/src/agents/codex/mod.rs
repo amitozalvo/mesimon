@@ -4,8 +4,9 @@ pub mod discovery;
 pub mod observation;
 mod recovery;
 pub use recovery::{
-    recovery_endpoint_absent, recovery_launch_target, recovery_owner_absent,
-    restore_unverified_cleanup, retain_unverified_cleanup, RecoveryLaunchTarget,
+    failed_resume_selection, parked_before_first_turn, recovery_endpoint_absent,
+    recovery_launch_target, recovery_owner_absent, restore_unverified_cleanup,
+    retain_unverified_cleanup, RecoveryLaunchTarget,
 };
 pub mod rpc;
 pub mod runtime;
@@ -461,7 +462,8 @@ impl AgentAdapter for Codex {
     }
 
     fn history_missing(&self, _record: &mesimon_core::board::SessionRecord) -> bool {
-        // Native Codex owns exact-resume validation; never substitute a fresh conversation.
+        // Codex validates saved conversations itself. A parked start that
+        // never took a turn is identified separately at wake.
         false
     }
 

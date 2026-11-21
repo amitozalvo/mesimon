@@ -1481,6 +1481,13 @@ pub fn run(paths: Paths) -> Result<()> {
             let was_live = r.state.is_live();
             let had_pane = r.state.has_pane();
             r.set_state(state_for(link, &r.state, r.kind.is_agent()));
+            if had_pane
+                && matches!(r.state, SessionState::Exited { .. })
+                && crate::agents::codex::failed_resume_selection(&paths, r)
+            {
+                r.set_state(SessionState::Exited { reason: ExitReason::Crashed });
+                r.detail = Some(mesimon_core::board::CODEX_RESUME_FAILED.into());
+            }
             // A launch that died with no daemon to see it (T-1220): told to
             // its crown once the ledger is back, below.
             if crownwake::found_dead_at_launch(was_live, r) {
@@ -5556,9 +5563,18 @@ impl Daemon {
             if let Some(limits) = snapshot.rate_limits.take() {
                 quota.push((snapshot.rate_limits_at_ms, limits));
             }
+            // Keep identity, path and turn evidence together, including a
+            // last selection the daemon first sees in the stopped snapshot.
             if snapshot.thread_id.is_some() && snapshot.thread_id != rec.codex_thread_id {
-                dirty |= rec.title.is_some();
+                rec.codex_thread_id = snapshot.thread_id.take();
                 rec.title = None;
+                rec.transcript_path = None;
+                rec.codex_turn_id = None;
+                dirty = true;
+            }
+            if let Some(history) = snapshot.history_path {
+                dirty |= rec.transcript_path.as_ref() != Some(&history);
+                rec.transcript_path = Some(history);
             }
             if let (Some(title), Some(adapter)) =
                 (&snapshot.title, crate::agents::adapter(rec.kind))
@@ -5586,6 +5602,10 @@ impl Daemon {
                 }
             }
             if snapshot.stopped {
+                if let Some(turn) = snapshot.turn_id {
+                    dirty |= rec.codex_turn_id.as_ref() != Some(&turn);
+                    rec.codex_turn_id = Some(turn);
+                }
                 stopped.push(id);
                 self.codex_ready.remove(&id);
                 dirty |= rec.codex_stopping || rec.observation_hold || rec.pending_submit;
@@ -5612,13 +5632,6 @@ impl Daemon {
             let held = snapshot.observation_hold || (rec.pending_submit && !new_turn);
             dirty |= rec.observation_hold != held;
             rec.observation_hold = held;
-            if let Some(thread) = snapshot.thread_id {
-                dirty |= rec.codex_thread_id.as_ref() != Some(&thread);
-                rec.codex_thread_id = Some(thread);
-            }
-            if let Some(history) = snapshot.history_path {
-                rec.transcript_path = Some(history);
-            }
             if !newer {
                 // Restore the current projection after handover without
                 // replaying an already observed completion as a new automove.
@@ -5643,7 +5656,9 @@ impl Daemon {
             rec.codex_pending_seq = Some(snapshot.sequence);
             let turn = snapshot.turn_id.clone().unwrap_or_default();
             let observed = snapshot.state.clone();
-            rec.codex_turn_id = snapshot.turn_id;
+            if let Some(turn) = snapshot.turn_id {
+                rec.codex_turn_id = Some(turn);
+            }
             dirty = true;
             if new_turn {
                 // A turn began before `/plan` took: someone typed in the
@@ -6155,12 +6170,12 @@ impl Daemon {
                 self.want_person(&sid);
                 continue;
             }
-            let mut text = if pending_prefill {
+            let parked = self.owed.get(&id).and_then(|o| o.parked.as_ref());
+            let mut text = if pending_prefill && parked.is_none_or(|p| p.brief) {
                 self.board.ticket(ticket).map(|t| t.title.clone()).unwrap_or_default()
             } else {
                 String::new()
             };
-            let parked = self.owed.get(&id).and_then(|o| o.parked.as_ref());
             let brief = parked.is_some_and(|p| p.brief);
             if brief {
                 if let Some(body) = self.description_body(ticket) {
@@ -6552,10 +6567,18 @@ impl Daemon {
                         && matches!(s.state, SessionState::Spawning)
                         && now.saturating_sub(s.state_changed_at.unwrap_or(0)) <= LAUNCH_DEATH_MS
                 });
+            // The native terminal can exit zero before its requested thread
+            // was selected. The pane death still owns cleanup below.
+            let resume_failed = matches!(sig, Signal::PaneDied { .. })
+                && self.board.session(id).is_some_and(|r| {
+                    r.state.has_pane()
+                        && crate::agents::codex::failed_resume_selection(&self.paths, r)
+                });
+            if resume_failed {
+                observation.detail = Some(mesimon_core::board::CODEX_RESUME_FAILED.into());
+            }
             // A death before the seat's first turn is its crown's news
-            // (T-1220): the launch's words are judged before the change
-            // below drops them. Either frame may be the one that ends it: a
-            // pane's death, or Claude's `SessionEnd` saying a crash first.
+            // (T-1220): judge the launch's words before the change drops them.
             let launch = matches!(sig, Signal::PaneDied { .. } | Signal::SessionEnd { .. })
                 .then(|| self.launch_heard(id))
                 .flatten();
@@ -6563,7 +6586,13 @@ impl Daemon {
                 .machines
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
-            let attention_signal = if notified { &Signal::TaskNotification } else { &sig };
+            let attention_signal = if resume_failed {
+                &Signal::SessionEnd { kind: EndKind::Other }
+            } else if notified {
+                &Signal::TaskNotification
+            } else {
+                &sig
+            };
             let (change, decision) = machine.apply_explained(attention_signal, now);
             self.feed.state_decision(id, &frame.event, &decision);
             let crashed = SessionState::Exited { reason: ExitReason::Crashed };
@@ -8552,6 +8581,7 @@ impl Daemon {
             rec.waiting_since = if attention::is_attention(&change.to) { Some(now) } else { None };
         }
         match &change.to {
+            SessionState::Exited { reason: ExitReason::Crashed } => rec.detail = detail,
             SessionState::RequiresAction { .. }
             | SessionState::Failed { .. }
             | SessionState::Throttled => {
@@ -10679,19 +10709,22 @@ impl Daemon {
         // No agent on the seat, but one that exited and was not dismissed
         // (T-1190): `exited` and how, where an absent state read as a ticket
         // nobody had started and the crown started a second agent on it.
-        let Some(s) = self.board.live_agent(id) else {
-            let corpse = self.board.dead_agent(id)?;
-            let SessionState::Exited { reason } = corpse.state else { return None };
+        let s = self.board.agent_or_corpse(id)?;
+        if let SessionState::Exited { reason } = s.state {
             return Some(AgentStateView {
-                state: mesimon_core::board::agent_state_word(&corpse.state).to_string(),
-                since_secs: corpse
+                state: mesimon_core::board::agent_state_word(&s.state).to_string(),
+                since_secs: s
                     .state_changed_at
                     .map(|at| mesimon_core::clock::now_ms().saturating_sub(at) / 1000),
                 raised: t.raised.as_ref().map(|r| r.reason.clone()),
                 failed: None,
-                exited: Some(mesimon_core::board::agent_exit_word(reason).to_string()),
+                exited: Some(
+                    s.resume_failure()
+                        .unwrap_or_else(|| mesimon_core::board::agent_exit_word(reason))
+                        .to_string(),
+                ),
             });
-        };
+        }
         let now = mesimon_core::clock::now_ms();
         // The foreground lives in the daemon's map, never on the board's
         // record (T-366): a `!` command running under an idle seat reads
@@ -22702,9 +22735,11 @@ impl Daemon {
         // `claude_session_id` is the field that already exists for exactly
         // this — "the conversation this record hosts is not its own uuid" —
         // and the in-app `/resume` relearn writes it the same way.
-        let fresh = (adapter.capabilities().resume
-            == crate::agents::ResumePolicy::FreshWhenHistoryMissing
-            && adapter.history_missing(&rec))
+        let first_codex_turn = crate::agents::codex::parked_before_first_turn(&self.paths, &rec);
+        let fresh = (first_codex_turn
+            || adapter.capabilities().resume
+                == crate::agents::ResumePolicy::FreshWhenHistoryMissing
+                && adapter.history_missing(&rec))
         .then(uuid::Uuid::new_v4);
         // Preserve the unacknowledged old generation before adapter preparation
         // writes the configuration for its replacement. This is evidence of a
@@ -22792,6 +22827,11 @@ impl Daemon {
         let now = now_ms();
         self.pane_launched(id, now);
         let resumed_thread = rec.codex_thread_id.clone();
+        // A queued ask or a guarded crown wake already owns this pane's
+        // first words. It takes its normal delivery road after selection.
+        let first_brief = first_codex_turn
+            && !self.queued.iter().any(|q| matches!(q.seat, QueuedSeat::Wake(w) if w == id))
+            && !(self.board.is_crowned(ticket) && !self.crown_wakes.is_empty());
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pane_key = Some(pane);
             rec.argv = argv;
@@ -22804,7 +22844,7 @@ impl Daemon {
             rec.codex_pending_seq = None;
             rec.codex_stopping = false;
             if rec.kind == SessionKind::Codex {
-                rec.codex_thread_id = resumed_thread;
+                rec.codex_thread_id = if first_codex_turn { None } else { resumed_thread };
                 rec.observation_hold = true;
                 // A wake in plan mode types `/plan` first (T-847), as a start does.
                 rec.codex_plan_owed = plan;
@@ -22816,12 +22856,12 @@ impl Daemon {
             rec.state_changed_at = Some(now);
             rec.waiting_since = None;
             rec.confidence = Confidence::High;
-            // The new pane carries no prefill (resume restores the
-            // conversation, and the prompt is already in it), so an Enter
-            // owed by the old one is stale — never carry it across.
-            rec.pending_submit = false;
+            // An exact resume already has its prompt. Only a thread parked
+            // before its first turn starts with the ticket's brief owed.
+            rec.pending_submit = first_brief;
+            rec.detail = None;
             rec.codex_submit_sent = false;
-            rec.pending_prefill = false;
+            rec.pending_prefill = first_brief;
             self.owed.remove(&id);
             self.codex_plan_typed.remove(&id);
             self.codex_modes.remove(&id);
@@ -22864,6 +22904,10 @@ impl Daemon {
         self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
         self.stamp_tier(id);
+        if first_brief {
+            let brief = Parked { text: String::new(), brief: true, title: true };
+            self.owed.insert(id, Owed::launch(ticket, brief, Ack::PROMPT));
+        }
         let agent_on = self.board.sessions.iter().find(|s| s.id == id && s.kind.is_agent());
         if let Some(ticket) = agent_on.map(|s| s.ticket) {
             if self.picked_by_agent(ticket) {

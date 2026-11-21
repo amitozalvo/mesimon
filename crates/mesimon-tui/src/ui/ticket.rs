@@ -3302,6 +3302,9 @@ fn draw_rail(
                 badges.push("agent + crown can read");
             }
             if matches!(s.state, SessionState::Exited { .. }) {
+                if let Some(why) = s.resume_failure() {
+                    badges.push(why);
+                }
                 badges.push("enter resumes");
             }
             if !badges.is_empty() {

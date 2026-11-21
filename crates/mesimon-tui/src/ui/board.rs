@@ -95,7 +95,17 @@ pub(super) fn card_peek(
 }
 
 fn ticket_sessions(app: &App, ticket: ulid::Ulid) -> Vec<&SessionRecord> {
-    app.board.sessions.iter().filter(|s| s.ticket == ticket && s.state.is_live()).collect()
+    let mut sessions: Vec<_> = app
+        .board
+        .sessions
+        .iter()
+        .filter(|s| s.ticket == ticket && (s.state.is_live() || s.resume_failure().is_some()))
+        .collect();
+    if sessions.iter().any(|s| !s.state.is_live()) {
+        let current = app.board.agent_or_corpse(ticket).map(|s| s.id);
+        sessions.retain(|s| s.state.is_live() || Some(s.id) == current);
+    }
+    sessions
 }
 
 /// One card's rows, in display order, and what the column needs to know

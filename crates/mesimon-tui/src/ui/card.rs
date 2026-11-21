@@ -1256,12 +1256,17 @@ pub(super) fn render(
     // place beside it. Not on a trail, the delete flash or the move ghost,
     // which say something else.
     let raised = ticket.raised.as_ref().filter(|_| !(trail || doomed || held));
-    if let Some(r) = raised {
+    let failure =
+        sessions.iter().find_map(|s| s.resume_failure()).filter(|_| !(trail || doomed || held));
+    let notice = raised
+        .map(|r| (r.reason.as_str(), theme.attn_text()))
+        .or_else(|| failure.map(|why| (why, register_style(theme, Register::Err))));
+    if let Some((message, style)) = notice {
         let room = if brief_last { 0 } else { brief_room };
-        let words = truncate(&r.reason, t_cells.saturating_sub(glyph_cells + room));
+        let words = truncate(message, t_cells.saturating_sub(glyph_cells + room));
         let mut row = bar_spans();
         row.push(Span::raw(" ".repeat(1 + glyph_cells)));
-        row.push(Span::styled(words, theme.attn_text()));
+        row.push(Span::styled(words, style));
         let shown = if brief_last { Vec::new() } else { brief.clone() };
         let used = super::spans_width(&row) + super::spans_width(&shown);
         row.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used + 1))));
@@ -1271,7 +1276,7 @@ pub(super) fn render(
         drew_line2 = true;
     }
     if let Some((words, ago, crown)) =
-        fresh.filter(|_| !(open || cursorish || trail || doomed || raised.is_some()))
+        fresh.filter(|_| !(open || cursorish || trail || doomed || notice.is_some()))
     {
         use unicode_segmentation::UnicodeSegmentation;
         // The crown's words (T-783) settle in its tint, a reply in the
@@ -1311,7 +1316,7 @@ pub(super) fn render(
         .find_map(|s| s.agy_worktree_trust_hint())
         .map(|hint| mesimon_core::text::scrub_cells(hint, false));
     if ctx.row {
-        if row_open && !held && raised.is_none() {
+        if row_open && !held && notice.is_none() {
             let ramp = if cursorish { &theme.sel } else { &theme.rest };
             let (dim, faint) = (Style::default().fg(ramp.dim1), Style::default().fg(ramp.dim3));
             let flat = |w: &str| w.split_whitespace().collect::<Vec<_>>().join(" ");

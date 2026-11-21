@@ -49094,3 +49094,29 @@ Holding the first prompt's submit until `tools/list` (or 5 s) would therefore
 wait out the full bound on every fresh agy start and still submit before any
 shim existed, leaving first-turn tool discovery unchanged. Closed as agy's own
 behaviour per the ticket's acceptance criteria, with zero live Neon turns.
+## Waking a Codex thread parked before its first turn (T-1390, 2026-11-21)
+
+Codex 0.169.0 can select a thread and announce its rollout path before it
+creates the file. A clean park at that point used to leave the ticket trying
+the same unresumable ID on every Enter. A wake now checks the recorded ID and
+path against the stopped generation, including the selection failure an older
+daemon parked. With the rollout absent and no observed turn, it starts a new
+thread on the same seat and submits the ticket brief through the normal Codex
+composer. A queued ask or crown wake keeps its own delivery.
+
+The September ExactOnly decision protects conversations with turns. An
+announced path alone was the mistaken evidence of such a conversation.
+Mesimon now keeps the last observed turn through an empty projection and
+through shutdown. A saved rollout, an observed turn, or inconclusive evidence
+keeps exact resume. Unverified cleanup still goes through its existing
+ownership checks and explicit recovery decision.
+
+A zero native exit also occurred while the exact resume was still selecting
+its thread. Pane death and restart reconciliation now record that as a crash
+with the selection failure in the card, ticket rail and get_ticket's exited
+field. A selected thread that the person quits still parks normally.
+
+Both provider regressions failed against the original daemon and passed
+against the fix. They exercise the ticket-page Enter command, including one
+submission of the brief on a new thread and the crown's read of a failed
+exact resume after a previously observed turn.

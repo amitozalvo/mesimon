@@ -719,6 +719,31 @@ fn a_lowered_hand_stays_quiet_on_the_hand_row() {
     }
 }
 
+#[test]
+fn a_failed_codex_resume_is_visible_on_the_card_until_dismissed() {
+    let mut board = fixture(false);
+    let mut failed = session(
+        11,
+        ulid_n(1),
+        SessionKind::Codex,
+        SessionState::Exited { reason: ExitReason::Crashed },
+    );
+    failed.detail = Some(mesimon_core::board::CODEX_RESUME_FAILED.into());
+    board.sessions.push(failed);
+    let mut app = app_graphite(board);
+    let visible = |app: &App| {
+        render(app, 240, 30).join("\n").contains(mesimon_core::board::CODEX_RESUME_FAILED)
+    };
+    assert!(visible(&app), "{}", render(&app, 240, 30).join("\n"));
+    app.board_mut()
+        .sessions
+        .iter_mut()
+        .find(|s| s.ticket == ulid_n(1))
+        .unwrap()
+        .set_state(SessionState::Exited { reason: ExitReason::Dismissed });
+    assert!(!visible(&app));
+}
+
 /// The sentence is every raised card's (T-865), not the cursor card's
 /// alone: a resting card says why under its title, in the needs-you
 /// colour, for as long as the hand is up — and nothing once it is down.

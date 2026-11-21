@@ -510,6 +510,10 @@ pub fn run(config_path: &Path) -> Result<()> {
     let mut observation = Observation::new(&config);
     observation.publish(&config)?;
     let result = supervise(&config, &mut observation, &mut signals);
+    if observation.snapshot.stopped && observation.snapshot.turn_id.is_none() {
+        observation.snapshot.turn_id =
+            observation.ledger.as_ref().and_then(|ledger| ledger.last_turn.clone());
+    }
     observation.snapshot.observation_hold = true;
     observation.snapshot.state = SessionState::Unknown { reason: UnknownReason::ObservationLost };
     observation.preview.activity = None;

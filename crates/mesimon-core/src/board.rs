@@ -323,6 +323,8 @@ pub enum AgyStop {
     WaitingForIdle,
 }
 
+pub const CODEX_RESUME_FAILED: &str = "resume failed ∙ no thread selected";
+
 pub const AGY_FOLDER_TRUST: &str = "agy asks to trust this folder";
 
 /// A session record the daemon persists. Mesimon's UUID names its tmux
@@ -716,6 +718,14 @@ impl SessionRecord {
     /// at, and its card says so in its own words.
     pub fn unsent_words(&self) -> Option<&Unsent> {
         self.unsent.as_ref().filter(|_| self.state.has_pane())
+    }
+
+    /// A failed Codex selection is a crash whose cause the card and ticket read share.
+    pub fn resume_failure(&self) -> Option<&'static str> {
+        (self.kind == SessionKind::Codex
+            && self.state == (SessionState::Exited { reason: ExitReason::Crashed })
+            && self.detail.as_deref() == Some(CODEX_RESUME_FAILED))
+        .then_some(CODEX_RESUME_FAILED)
     }
 
     /// The seat as ONE WORD for an agent reading another ticket (T-411):
