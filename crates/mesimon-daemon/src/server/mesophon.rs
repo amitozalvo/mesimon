@@ -298,6 +298,21 @@ enum PermissionRoad {
     /// answer walks the pane's dialog to its `Yes` or `No` row and presses
     /// Enter, and `serverRequest/resolved` on the ledger confirms it.
     Codex,
+    /// An agy confirmation (T-1235), bound to the `PreToolUse` call that
+    /// opened it: the answer walks the pane's numbered `> 1. …` dialog to its
+    /// one-time Yes or No row (never `Persist to settings.json` or an `always`
+    /// rule) and presses Enter, and the title feed's return to work confirms it.
+    Agy,
+}
+
+/// The latest non-question tool call an agy seat's `PreToolUse` reported
+/// (T-1235), held until `tool_confirmation_pending` asks for it or the turn
+/// moves on.
+struct AgyCall {
+    id: String,
+    tool: String,
+    input: serde_json::Value,
+    offered: bool,
 }
 /// How long a renewing wait outlives its run for the next one to take it
 /// over (T-632): the mod starts it at once, so this is slack for a loaded
@@ -370,6 +385,10 @@ pub(super) struct Control {
     /// its id: a change is the old request's resolution, the edge a Codex
     /// dialog's answer is confirmed by; `plan:` prefixed for a plan.
     codex_asks: HashMap<uuid::Uuid, String>,
+    /// The pending tool call each agy seat's `PreToolUse` last carried
+    /// (T-1235), offered as a permission card once `tool_confirmation_pending`
+    /// puts the seat on a confirmation dialog.
+    agy_calls: HashMap<uuid::Uuid, AgyCall>,
     phases: HashMap<ulid::Ulid, api::Phase>,
     suppress_awareness: bool,
     dialogs: HashMap<uuid::Uuid, api::Dialog>,
@@ -462,6 +481,7 @@ impl Control {
             starts: HashMap::new(),
             permissions: HashMap::new(),
             codex_asks: HashMap::new(),
+            agy_calls: HashMap::new(),
             phases: HashMap::new(),
             suppress_awareness: false,
             dialogs: HashMap::new(),
@@ -1781,7 +1801,8 @@ impl Daemon {
         let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
             return Reply::Rejected { message: "dialog changed; check the pane".into() };
         };
-        let codex = codex_shapes(self.session_kind(id), dialog);
+        let kind = self.session_kind(id);
+        let codex = codex_shapes(kind, dialog);
         if dialog_plan(dialog, &response).is_none() || (codex && !codex_takes(dialog, &response)) {
             return Reply::Rejected {
                 message: "this dialog shape is not verified; answer in the pane".into(),
@@ -1931,6 +1952,9 @@ impl Daemon {
         use mesimon_backend_tmux::DialogKey;
         let board = &self.board;
         self.control.dialog_edges.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
+        self.control
+            .agy_calls
+            .retain(|id, _| board.sessions.iter().any(|s| s.id == *id && s.state.has_pane()));
         self.crown_answer_lines.retain(|id, _| board.sessions.iter().any(|s| s.id == *id));
         let ready: Vec<_> = self
             .control
@@ -2078,6 +2102,9 @@ impl Daemon {
                             false
                         })
                     }
+                    DialogStep::EscapeNext => {
+                        self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| false)
+                    }
                     DialogStep::Reject => {
                         self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| true)
                     }
@@ -2193,7 +2220,7 @@ impl Daemon {
                 .control
                 .permissions
                 .get(&id)
-                .filter(|p| p.codex() && p.projection.request == pending.request)
+                .filter(|p| p.walked() && p.projection.request == pending.request)
                 .map(|p| Standing::Approval(&p.projection, *allow)),
             DeliveryAnswer::Revise { text, .. } => self
                 .control
@@ -2916,11 +2943,11 @@ impl Daemon {
                 message: "permission expired or was already answered; check the pane".into(),
             };
         }
-        if self.control.permissions.get(&id).is_some_and(PermissionWait::codex) {
-            // A Codex approval (T-846): the answer walks the pane's dialog,
-            // as a question's does, and the receipt waits for the request
-            // to leave the runtime's snapshot. The wait stays until then, so
-            // no second phone starts a walk of its own.
+        if self.control.permissions.get(&id).is_some_and(PermissionWait::walked) {
+            // A Codex (T-846) or agy (T-1235) approval: the answer walks the
+            // pane's dialog, as a question's does, and the receipt waits for
+            // the request to clear. The wait stays until then, so no second
+            // phone starts a walk of its own.
             let (Ok(ticket), Some(grant)) = (ulid::Ulid::from_string(ticket), grant) else {
                 return Reply::Rejected { message: "invalid ticket".into() };
             };
@@ -3120,6 +3147,262 @@ impl Daemon {
                 multi_select: false,
             })
             .collect();
+        Some(api::DialogContent::Questions { questions })
+    }
+
+    /// Close a non-trust dialog projected on an agy seat with `edge` (T-1235).
+    fn close_agy_dialog(&mut self, id: uuid::Uuid, edge: DialogEdge) {
+        let non_trust = self
+            .control
+            .dialogs
+            .get(&id)
+            .is_some_and(|d| !matches!(d.content, api::DialogContent::Trust { .. }));
+        if non_trust {
+            if let Some(dialog) = self.control.dialogs.remove(&id) {
+                self.control.dialog_edges.insert(id, (dialog.request, edge));
+                self.control_changed();
+            }
+        }
+    }
+
+    /// What an agy seat's hook or title report says about its pending dialog
+    /// or confirmation (T-1235), run before the attention machine applies the
+    /// frame's signal so a projected `ask_question` is ready for the crown's
+    /// wake, as Claude's `control_observe_dialog` is. Child subagent frames
+    /// (`conversationId` other than `agy_lead`) are ignored.
+    pub(super) fn control_observe_agy(
+        &mut self,
+        id: uuid::Uuid,
+        frame: &HookFrame,
+        agy_lead: Option<&str>,
+    ) {
+        use crate::agents::agy;
+        if self.session_kind(id) != SessionKind::Agy {
+            return;
+        }
+        if frame.event == "PaneDied" {
+            self.control.agy_calls.remove(&id);
+            return;
+        }
+        if frame.event != agy::TITLE
+            && agy_lead.is_some_and(|lead| agy::frame_conversation(frame).is_some_and(|c| c != lead))
+        {
+            return;
+        }
+        if frame.event == agy::TITLE
+            && agy_lead.is_some_and(|old| {
+                self.board
+                    .session(id)
+                    .and_then(|s| s.agy_conversation_id.as_deref())
+                    .is_some_and(|new| new != old)
+            })
+        {
+            self.control.agy_calls.remove(&id);
+            self.control_cancel_permission(id);
+            self.close_agy_dialog(id, DialogEdge::Closed);
+        }
+        match frame.event.as_str() {
+            agy::PRE_TOOL_USE => {
+                self.control_cancel_permission(id);
+                let Some(call) = agy::parse_tool_call(&frame.payload) else {
+                    self.control.agy_calls.remove(&id);
+                    return;
+                };
+                if self
+                    .control
+                    .dialogs
+                    .get(&id)
+                    .is_some_and(|d| !matches!(d.content, api::DialogContent::Trust { .. }) && d.request != call.id)
+                {
+                    self.close_agy_dialog(id, DialogEdge::Dismissed);
+                }
+                if call.name == "ask_question" {
+                    self.control.agy_calls.remove(&id);
+                    let print = Some(interaction_print("ask_question", &call.args));
+                    let call_id = Some(call.id.clone());
+                    self.name_dialog(id, &call.id);
+                    let at = self.board.sessions.iter().position(|s| {
+                        s.id == id && (s.dialog_call != call_id || s.dialog_print != print)
+                    });
+                    if let Some(at) = at {
+                        let rec = &mut self.board.sessions[at];
+                        rec.dialog_call = call_id;
+                        rec.dialog_print = print;
+                        self.persist_sessions();
+                    }
+                    let Some(content) = Self::agy_questions(&call.args) else { return };
+                    if self
+                        .control
+                        .dialogs
+                        .get(&id)
+                        .is_some_and(|d| d.request == call.id && d.content == content)
+                    {
+                        return;
+                    }
+                    self.control_project(id, call.id, content);
+                } else {
+                    self.control.agy_calls.insert(
+                        id,
+                        AgyCall {
+                            id: call.id,
+                            tool: call.name,
+                            input: call.args,
+                            offered: false,
+                        },
+                    );
+                }
+            }
+            agy::TITLE => {
+                let pending = frame
+                    .payload
+                    .get("tool_confirmation_pending")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
+                let agent_state =
+                    frame.payload.get("agent_state").and_then(serde_json::Value::as_str);
+                if !pending {
+                    if matches!(agent_state, Some("working" | "thinking" | "tool_use")) {
+                        self.control_cancel_permission(id);
+                    }
+                    if matches!(agent_state, Some("working" | "thinking")) {
+                        self.control.agy_calls.remove(&id);
+                        self.close_agy_dialog(id, DialogEdge::Answered);
+                    } else if agent_state == Some("idle")
+                        && !self.board.session(id).is_some_and(|s| s.agy_background_running)
+                    {
+                        self.control.agy_calls.remove(&id);
+                        self.control_cancel_permission(id);
+                        self.close_agy_dialog(id, DialogEdge::Closed);
+                    }
+                }
+            }
+            agy::PRE_INVOCATION => {
+                self.control.agy_calls.remove(&id);
+                self.control_cancel_permission(id);
+                let first =
+                    frame.payload.get("invocationNum").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                        == 0;
+                self.close_agy_dialog(
+                    id,
+                    if first { DialogEdge::Closed } else { DialogEdge::Answered },
+                );
+            }
+            agy::STOP => {
+                if frame.payload.get("fullyIdle").and_then(serde_json::Value::as_bool)
+                    != Some(false)
+                {
+                    self.control.agy_calls.remove(&id);
+                    self.control_cancel_permission(id);
+                    self.close_agy_dialog(id, DialogEdge::Closed);
+                }
+            }
+            agy::SESSION_START => {
+                self.control.agy_calls.remove(&id);
+                self.control_cancel_permission(id);
+                self.close_agy_dialog(id, DialogEdge::Closed);
+            }
+            _ => {}
+        }
+    }
+
+    /// Offer a paired phone's permission card for `id`'s pending agy tool call
+    /// once `tool_confirmation_pending` has put the seat on a confirmation
+    /// dialog with no leave settling (T-1235). Auto-approved tools fire
+    /// `PreToolUse` without `tool_confirmation_pending` and never offer a card.
+    pub(super) fn control_offer_agy_permission(&mut self, id: uuid::Uuid) {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
+        if rec.kind != SessionKind::Agy
+            || rec.state != (SessionState::RequiresAction { reason: Reason::Permission })
+            || self.machines.get(&id).is_some_and(|m| m.view().pending.is_some())
+        {
+            return;
+        }
+        let ticket = rec.ticket;
+        let Some(call) = self.control.agy_calls.get(&id).filter(|c| !c.offered) else { return };
+        let hold = Duration::from_secs(mesimon_core::mesophon::PERMISSION_HOLD_SECS);
+        let projection = api::Permission {
+            request: call.id.clone(),
+            tool: call.tool.clone(),
+            input: call.input.clone(),
+            expires_at: now_ms() + hold.as_millis() as u64,
+        };
+        if agy_binding(&projection).is_none() {
+            if let Some(call) = self.control.agy_calls.get_mut(&id) {
+                call.offered = true;
+            }
+            return;
+        }
+        let by = Principal::Automation { rule: "agy_observer".into() };
+        if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied()
+            || self.control.stored.is_none()
+            || !self.control.online
+            || self.control_target(&ticket.to_string(), &id.to_string()) != Some(id)
+        {
+            return;
+        }
+        let grants: Vec<_> = self
+            .control
+            .stored
+            .iter()
+            .flat_map(|s| &s.grants)
+            .filter(|g| self.control_granted(g.id, g.device))
+            .map(|g| g.id)
+            .collect();
+        if grants.is_empty() {
+            return;
+        }
+        if let Some(call) = self.control.agy_calls.get_mut(&id) {
+            call.offered = true;
+        }
+        self.control.permissions.insert(
+            id,
+            PermissionWait {
+                projection,
+                road: PermissionRoad::Agy,
+                offered: Instant::now(),
+                deadline: Instant::now() + hold,
+                grants,
+            },
+        );
+        self.control_changed();
+    }
+
+    /// agy's `ask_question` arguments (`questions [{question, options: [str],
+    /// is_multi_select}]`, T-1235) projected into Remote Control's shape,
+    /// within the bounds `dialog_content` enforces for Claude's.
+    fn agy_questions(args: &serde_json::Value) -> Option<api::DialogContent> {
+        if serde_json::to_vec(args).map_or(true, |b| b.len() > 16 * 1024) {
+            return None;
+        }
+        let items = args.get("questions")?.as_array()?;
+        if items.is_empty() || items.len() > 4 {
+            return None;
+        }
+        let mut questions = Vec::with_capacity(items.len());
+        for item in items {
+            let question = item.get("question")?.as_str().filter(|s| !s.trim().is_empty())?;
+            let opts = item.get("options")?.as_array()?;
+            if opts.is_empty() || opts.len() > 8 {
+                return None;
+            }
+            let mut options = Vec::with_capacity(opts.len());
+            for opt in opts {
+                let label = opt.as_str().filter(|s| !s.trim().is_empty())?;
+                options.push(api::QuestionOption {
+                    label: label.to_string(),
+                    description: String::new(),
+                });
+            }
+            let multi_select =
+                item.get("is_multi_select").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let header = question.split_whitespace().next().unwrap_or_default().to_string();
+            questions.push(api::Question {
+                question: question.to_string(),
+                header,
+                options,
+                multi_select,
+            });
+        }
         Some(api::DialogContent::Questions { questions })
     }
 
@@ -5263,15 +5546,15 @@ impl PermissionWait {
     }
 
     /// Past its day, its run gone (a renewing one's past the grace), or no
-    /// device it was offered to still paired. A Codex wait has no run: it
-    /// ends with its request (`control_codex_ask`) or its day.
+    /// device it was offered to still paired. A Codex or agy wait has no run:
+    /// it ends with its request or its day.
     fn lapsed(&self, now: Instant, granted: impl Fn(BoardId) -> bool) -> bool {
         let run_gone = match &self.road {
             PermissionRoad::Hook { stream, closed, .. } => closed.map_or_else(
                 || permission_peer_closed(stream),
                 |at| now >= at + PERMISSION_RENEW_GRACE,
             ),
-            PermissionRoad::Codex => false,
+            PermissionRoad::Codex | PermissionRoad::Agy => false,
         };
         now >= self.deadline || run_gone || !self.grants.iter().any(|g| granted(*g))
     }
@@ -5279,6 +5562,11 @@ impl PermissionWait {
     /// A Codex approval's wait, judged open while its request stands.
     fn codex(&self) -> bool {
         matches!(self.road, PermissionRoad::Codex)
+    }
+
+    /// A walked approval's wait (Codex or agy): answered by keys in the pane.
+    fn walked(&self) -> bool {
+        matches!(self.road, PermissionRoad::Codex | PermissionRoad::Agy)
     }
 }
 
@@ -5861,6 +6149,9 @@ enum DialogStep {
     /// The last key: Enter on the one question's answer, or on the review's
     /// `Submit answers`.
     Submit,
+    /// Escape that skips one question of an agy batch or backs out of its
+    /// write-in field without ending the dialog (T-1235).
+    EscapeNext,
     Reject,
     Paste {
         question: usize,
@@ -6296,8 +6587,15 @@ fn codex_shapes(kind: SessionKind, dialog: &api::Dialog) -> bool {
     kind == SessionKind::Codex && !matches!(dialog.content, api::DialogContent::Trust { .. })
 }
 
-/// `dialog_step` for the harness whose pane shows the dialog (T-846):
-/// Claude Code's measured shapes, or Codex's, and a Codex approval's rows.
+/// Whether `dialog` on a `kind` seat takes agy's own shapes (T-1235): every
+/// agy dialog but the folder trust, which `trust_dialog::read_text` walks.
+fn agy_shapes(kind: SessionKind, dialog: &api::Dialog) -> bool {
+    kind == SessionKind::Agy && !matches!(dialog.content, api::DialogContent::Trust { .. })
+}
+
+/// `dialog_step` for the harness whose pane shows the dialog (T-846, T-1235):
+/// Claude Code's measured shapes, Codex's, or agy's, and a Codex or agy
+/// approval's rows.
 fn dialog_step_for(
     kind: SessionKind,
     standing: Standing<'_>,
@@ -6306,24 +6604,29 @@ fn dialog_step_for(
     walk: &Walk,
 ) -> Result<DialogStep, Miss> {
     match standing {
-        Standing::Approval(projection, allow) => {
-            codex_approval_step(screen, cols, allow, projection)
-        }
-        // A codex's plan sent back is unmeasured (T-943): refused at the
-        // call, and no key here.
-        Standing::Revise(..) if kind == SessionKind::Codex => Err(Miss::ShapeUnrecognised),
+        Standing::Approval(projection, allow) => match kind {
+            SessionKind::Agy => agy_approval_step(screen, cols, allow, projection),
+            _ => codex_approval_step(screen, cols, allow, projection),
+        },
+        // Only Claude's plan dialog has a measured feedback field (T-943).
+        Standing::Revise(..) if kind != SessionKind::Claude => Err(Miss::ShapeUnrecognised),
         Standing::Revise(dialog, text) => revise_step(dialog, text, screen, walk),
         Standing::Dialog(dialog, response) if codex_shapes(kind, dialog) => {
             codex_dialog_step(dialog, response, screen)
+        }
+        Standing::Dialog(dialog, response) if agy_shapes(kind, dialog) => {
+            agy_dialog_step(dialog, response, screen, walk)
         }
         Standing::Dialog(dialog, response) => dialog_step(dialog, response, screen, walk),
     }
 }
 
-/// `dialog_shape` for the harness whose pane shows the dialog (T-846).
+/// `dialog_shape` for the harness whose pane shows the dialog (T-846, T-1235).
 fn dialog_shape_for(kind: SessionKind, dialog: &api::Dialog, screen: &str) -> bool {
     if codex_shapes(kind, dialog) {
         codex_dialog_shape(dialog, screen)
+    } else if agy_shapes(kind, dialog) {
+        agy_dialog_shape(dialog, screen)
     } else {
         dialog_shape(dialog, screen)
     }
@@ -6669,6 +6972,507 @@ fn codex_spells(lines: &[&str], lead: &str, text: &str, cols: u16) -> bool {
             .any(|r| spells(r, more))
     }
     text.strip_prefix(parts[0]).is_some_and(|rest| spells(rest, &parts[1..]))
+}
+
+/// The columns agy's inline preview leaves unused at a line's right end when
+/// wrapping (`WrapAll` at `width - 4`, measured on 1.5.13, T-1235).
+const AGY_WRAP_MARGIN: u16 = 6;
+
+/// `codex_spells` with agy's wrap margin.
+fn agy_spells(lines: &[&str], lead: &str, text: &str, cols: u16) -> bool {
+    let lines: Vec<&str> = lines.iter().map(|l| l.trim_end_matches(' ')).collect();
+    let Some(first) = lines.first() else { return false };
+    if (cols == 0 && lines.len() > 1) || !lines.iter().all(|l| l.bytes().all(printable_ascii)) {
+        return false;
+    }
+    let indent = first.len() - first.trim_start_matches(' ').len();
+    let width = usize::from(cols.saturating_sub(AGY_WRAP_MARGIN));
+    let Some(head) = first[indent..].strip_prefix(lead) else { return false };
+    let mut parts = vec![head];
+    for pair in lines.windows(2) {
+        let Some(body) = pair[1].strip_prefix(&first[..indent]).filter(|b| !b.starts_with(' '))
+        else {
+            return false;
+        };
+        let word = body.split(' ').next().unwrap_or_default().len();
+        if pair[0].len() + 1 + word <= width {
+            return false;
+        }
+        parts.push(body);
+    }
+    fn spells(rest: &str, parts: &[&str]) -> bool {
+        let Some((part, more)) = parts.split_first() else { return rest.is_empty() };
+        [rest.strip_prefix(' '), Some(rest)]
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.strip_prefix(part))
+            .any(|r| spells(r, more))
+    }
+    text.strip_prefix(parts[0]).is_some_and(|rest| spells(rest, &parts[1..]))
+}
+
+/// One numbered row of an agy dialog (`> 1. …` selected, `  2. …` not,
+/// measured on 1.5.8 and 1.5.13, T-1235). Kept separate from `numbered` so
+/// markdown quotes (`> 1. …`) never read as Claude Code menu rows.
+fn agy_numbered(line: &str) -> Option<(bool, usize, &str)> {
+    let (selected, rest) = if let Some(rest) = line.trim_start().strip_prefix("> ") {
+        (true, rest.trim_start())
+    } else if line.starts_with("  ") && !line.trim_start().starts_with('>') {
+        (false, line.trim_start())
+    } else {
+        return None;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 2 {
+        return None;
+    }
+    let number: usize = rest[..digits].parse().ok()?;
+    let label = rest[digits..].strip_prefix('.')?.trim_start();
+    (number > 0).then_some((selected, number, label.trim_end()))
+}
+
+fn is_box_rule(line: &str) -> bool {
+    let t = line.trim();
+    !t.is_empty() && t.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c))
+}
+
+/// Read agy's numbered rows from its last `1.` down to `end` (exclusive).
+/// Multi-select options carry `[x]` / `[ ]` marks; wrapped continuation lines
+/// join onto their row; any stray `>` line (such as `tab Amend`'s editor)
+/// rejects the menu.
+fn agy_rows_slice(lines: &[&str]) -> Option<Vec<Row>> {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut open = false;
+    for raw in lines {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((selected, number, label)) = agy_numbered(raw) {
+            let (ticked, label) = match (label.strip_prefix("[x]"), label.strip_prefix("[ ]")) {
+                (Some(rest), _) => (Some(true), rest.trim()),
+                (_, Some(rest)) => (Some(false), rest.trim()),
+                _ => (None, label),
+            };
+            rows.push(Row { number: Some(number), selected, ticked, text: label.to_string() });
+            open = true;
+            continue;
+        }
+        if is_box_rule(trimmed) {
+            open = false;
+        } else if open && trimmed.starts_with('>') {
+            return None;
+        } else if let (true, Some(row)) = (open, rows.last_mut()) {
+            row.text.push(' ');
+            row.text.push_str(trimmed);
+        }
+    }
+    let first = rows.iter().rposition(|r| r.number == Some(1))?;
+    let rows = rows.split_off(first);
+    let numbers: Vec<usize> = rows.iter().filter_map(|r| r.number).collect();
+    numbers.iter().enumerate().all(|(i, n)| *n == i + 1).then_some(rows)
+}
+
+/// What an agy confirmation dialog must draw before the board presses a key
+/// on it (T-1235).
+#[derive(Debug, PartialEq, Eq)]
+enum AgyBinding {
+    Command { command: String, bypass_sandbox: bool },
+    FileCreateOrWrite { path: String },
+    FileEdit { path: String },
+    FileRead { path: String },
+    Mcp { server: String, tool: String },
+}
+
+fn agy_binding(projection: &api::Permission) -> Option<AgyBinding> {
+    let plain = |k: &str| {
+        projection
+            .input
+            .get(k)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.ends_with('…') && plain_line(s))
+            .map(str::to_string)
+    };
+    let path = |keys: &[&str]| keys.iter().find_map(|k| plain(k));
+    match projection.tool.as_str() {
+        "run_command" => {
+            let command = plain("CommandLine")?;
+            let bypass_sandbox = match projection.input.get("BypassSandbox") {
+                None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => false,
+                Some(serde_json::Value::Bool(true)) => true,
+                _ => return None,
+            };
+            Some(AgyBinding::Command { command, bypass_sandbox })
+        }
+        "write_to_file" | "write_file" => {
+            Some(AgyBinding::FileCreateOrWrite { path: path(&["TargetFile", "Path"])? })
+        }
+        "replace_file_content" | "multi_replace_file_content" | "edit_file" | "sed_file" => {
+            Some(AgyBinding::FileEdit {
+                path: path(&["TargetFile", "target_file", "Path", "File"])?,
+            })
+        }
+        "view_file" | "read_file" => {
+            Some(AgyBinding::FileRead { path: path(&["AbsolutePath", "Path"])? })
+        }
+        "call_mcp_tool" => {
+            Some(AgyBinding::Mcp { server: plain("ServerName")?, tool: plain("ToolName")? })
+        }
+        _ => None,
+    }
+}
+
+/// Whether `line` is `<path>  +<n>` / `<path>  +<n> -<m>`, as agy's file
+/// creation and edit previews draw their header (measured on 1.5.13, T-1235).
+fn agy_file_stats_header(line: &str, path: &str) -> bool {
+    let Some(rest) = line.trim().strip_prefix(path) else { return false };
+    let Some(stats) = rest.strip_prefix("  ") else { return false };
+    let parts: Vec<&str> = stats.split_whitespace().collect();
+    (1..=2).contains(&parts.len())
+        && parts.iter().all(|p| {
+            p.strip_prefix(['+', '-'])
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+}
+
+/// Verify `screen` draws `binding` whole above its confirmation prompt and
+/// return the exact `(allow_label, deny_label)` one-time choices for that
+/// dialog (T-1235). Never returns an `always` or `Persist to settings.json`
+/// label.
+fn agy_draws(screen: &str, cols: u16, binding: &AgyBinding) -> Option<(&'static str, &'static str)> {
+    if screen.contains("Expanded Tool Permission Editor") || screen.contains("scroll Full Command")
+    {
+        return None;
+    }
+    let raw_lines: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
+    let footer = raw_lines.iter().rposition(|l| l.contains("Navigate"))?;
+    let rows_at =
+        raw_lines[..footer].iter().rposition(|l| agy_numbered(l).is_some_and(|(_, n, _)| n == 1))?;
+    let mut above = &raw_lines[..rows_at];
+    let rule = above.iter().rposition(|l| is_box_rule(l));
+    if let Some(r) = rule {
+        above = &above[r + 1..];
+    }
+    // Strip optional sandbox warning or auto-approve hint right above the menu/prompt.
+    if above
+        .last()
+        .is_some_and(|l| l.contains("Confirm the command is safe to run outside of the sandbox"))
+    {
+        above = &above[..above.len() - 1];
+    }
+    let (&prompt_line, mut preview) = above.split_last()?;
+    let prompt = prompt_line.trim();
+    if preview.last().is_some_and(|l| l.trim() == "shift+tab to auto-approve file edits") {
+        preview = &preview[..preview.len() - 1];
+    }
+    if preview.last().is_some_and(|l| l.trim_start().starts_with("Reason: ")) {
+        preview = &preview[..preview.len() - 1];
+    }
+    fn after_req<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+        match lines.first().map(|l| l.trim()) {
+            Some("Requesting permission for:") => &lines[1..],
+            _ => lines,
+        }
+    }
+    match binding {
+        AgyBinding::Command { command, bypass_sandbox } => {
+            let right_prompt = if *bypass_sandbox {
+                prompt.ends_with("Allow sandbox bypass for command execution?")
+            } else {
+                prompt == "Run this command?"
+            };
+            if !right_prompt
+                || preview.iter().any(|l| l.trim() == "Full command:" || l.contains('⋮') || l.contains('…'))
+            {
+                return None;
+            }
+            let req = preview.iter().rposition(|l| l.trim() == "Requesting permission for:")?;
+            if preview.iter().filter(|l| l.trim() == "Requesting permission for:").count() != 1 {
+                return None;
+            }
+            let cmd = &preview[req + 1..];
+            agy_spells(cmd, "", command, cols).then_some(("Yes, run command", "No, cancel"))
+        }
+        AgyBinding::FileCreateOrWrite { path } => {
+            let body = after_req(preview);
+            let head = body.first()?.trim();
+            match prompt {
+                "Allow creation of this file?"
+                    if head == format!("New file: {path}") || agy_file_stats_header(head, path) =>
+                {
+                    Some(("Yes, allow creation", "No, deny creation"))
+                }
+                "Accept this file edit?"
+                    if head == format!("Edit: {path}") || agy_file_stats_header(head, path) =>
+                {
+                    Some(("Yes, accept this change", "No, reject this change"))
+                }
+                "Allow access to this file?" if agy_spells(body, "Write: ", path, cols) => {
+                    Some(("Yes, allow access", "No, deny access"))
+                }
+                _ => None,
+            }
+        }
+        AgyBinding::FileEdit { path } => {
+            let body = after_req(preview);
+            let head = body.first()?.trim();
+            match prompt {
+                "Accept this file edit?"
+                    if head == format!("Edit: {path}") || agy_file_stats_header(head, path) =>
+                {
+                    Some(("Yes, accept this change", "No, reject this change"))
+                }
+                "Allow access to this file?"
+                    if agy_spells(body, "Write: ", path, cols)
+                        || agy_spells(body, "Edit: ", path, cols) =>
+                {
+                    Some(("Yes, allow access", "No, deny access"))
+                }
+                "Do you want to proceed?"
+                    if agy_spells(body, "", path, cols)
+                        || agy_spells(body, "Edit: ", path, cols)
+                        || agy_spells(body, "Write: ", path, cols) =>
+                {
+                    Some(("Yes, proceed", "No, cancel"))
+                }
+                _ => None,
+            }
+        }
+        AgyBinding::FileRead { path } => {
+            if prompt != "Allow access to this file?" {
+                return None;
+            }
+            let body = after_req(preview);
+            agy_spells(body, "Read: ", path, cols).then_some(("Yes, allow access", "No, deny access"))
+        }
+        AgyBinding::Mcp { server, tool } => {
+            if prompt != "Allow calling this tool?" {
+                return None;
+            }
+            let body = after_req(preview);
+            let target = format!("{tool} (server: {server})");
+            agy_spells(body, "", &target, cols)
+                .then_some(("Yes, allow tool call", "No, deny tool call"))
+        }
+    }
+}
+
+/// One key of an approval's answer into agy's confirmation dialog (T-1235),
+/// bound to the `PreToolUse` call `projection` carries and walking only to the
+/// one-time allow or deny row — never `Persist to settings.json`, `always`, or
+/// `Auto mode`.
+fn agy_approval_step(
+    screen: &str,
+    cols: u16,
+    allow: bool,
+    projection: &api::Permission,
+) -> Result<DialogStep, Miss> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(footer) = lines.iter().rposition(|l| l.contains("Navigate")) else {
+        return Err(Miss::ShapeUnrecognised);
+    };
+    let Some(binding) = agy_binding(projection) else {
+        return Err(Miss::LabelNotFound);
+    };
+    let Some((yes_label, no_label)) = agy_draws(screen, cols, &binding) else {
+        return Err(Miss::LabelNotFound);
+    };
+    let rows = agy_rows_slice(&lines[..footer]).ok_or(Miss::ShapeUnrecognised)?;
+    let current = cursor(&rows)?;
+    let find_exact = |want: &str| -> Option<usize> {
+        let mut hits = rows.iter().enumerate().filter(|(_, r)| r.text.trim() == want);
+        match (hits.next(), hits.next()) {
+            (Some((at, r)), None)
+                if !r.text.contains("Persist")
+                    && !r.text.contains("always")
+                    && !r.text.contains("Auto mode") =>
+            {
+                Some(at)
+            }
+            _ => None,
+        }
+    };
+    let (Some(yes), Some(no)) = (find_exact(yes_label), find_exact(no_label)) else {
+        return Err(Miss::ShapeUnrecognised);
+    };
+    Ok(toward(current, if allow { yes } else { no }, DialogStep::Submit))
+}
+
+struct AgyQuestionView {
+    index: usize,
+    rows: Vec<Row>,
+    write_in: Option<String>,
+}
+
+/// Read agy's `ask_question` screen (measured on 1.5.13, T-1235): `Question
+/// K/N: <question>` (or `<question>` on a single question), numbered options
+/// (`[x]` / `[ ]` on multi-select) ending in `Write-in...`, and either the
+/// `↑/↓ Navigate · … · esc Skip` footer or the open `Your answer:` field over
+/// `enter Submit · esc Back`.
+fn agy_question_view(questions: &[api::Question], screen: &str) -> Option<AgyQuestionView> {
+    let lines: Vec<&str> = screen.lines().collect();
+    let (menu_end, write_in) =
+        if let Some(footer) = lines.iter().rposition(|l| l.contains("esc Back") && l.contains("enter "))
+        {
+            if lines[..footer].iter().any(|l| l.contains("Navigate")) {
+                return None;
+            }
+            let your = lines[..footer].iter().rposition(|l| l.trim() == "Your answer:")?;
+            let typed: String = lines[your + 1..footer].iter().map(|l| squeeze(l)).collect();
+            (your, Some(typed))
+        } else {
+            let footer =
+                lines.iter().rposition(|l| l.contains("Navigate") && l.contains("esc Skip"))?;
+            if lines[..footer].iter().any(|l| l.trim() == "Your answer:") {
+                return None;
+            }
+            (footer, None)
+        };
+    let rows = agy_rows_slice(&lines[..menu_end])?;
+    if rows.len() < 2
+        || squeeze(&rows.last()?.text) != "Write-in..."
+        || rows.last()?.ticked.is_some()
+    {
+        return None;
+    }
+    let first_row =
+        lines[..menu_end].iter().rposition(|l| agy_numbered(l).is_some_and(|(_, n, _)| n == 1))?;
+    let start = lines[..first_row].iter().rposition(|l| is_box_rule(l)).map_or(0, |r| r + 1);
+    let asked_words: String = lines[start..first_row].iter().map(|l| squeeze(l)).collect();
+    let total = questions.len();
+    let mut matched = questions.iter().enumerate().filter(|(i, q)| {
+        let q_words = squeeze(&q.question);
+        let numbered_head = format!("Question{}/{total}:{q_words}", i + 1);
+        asked_words == numbered_head || (total == 1 && asked_words == q_words)
+    });
+    let (Some((index, _)), None) = (matched.next(), matched.next()) else { return None };
+    if write_in.is_some() && cursor(&rows).ok() != Some(rows.len() - 1) {
+        return None;
+    }
+    Some(AgyQuestionView { index, rows, write_in })
+}
+
+fn agy_dialog_shape(dialog: &api::Dialog, screen: &str) -> bool {
+    match &dialog.content {
+        api::DialogContent::Questions { questions } => {
+            agy_question_view(questions, screen).is_some()
+        }
+        api::DialogContent::Plan { .. } | api::DialogContent::Trust { .. } => false,
+    }
+}
+
+/// One key of an answer into agy's `ask_question` dialog (T-1235): single
+/// choice, multi-select (`[x]` / `[ ]` toggled by Space, Enter on an option
+/// row), write-in (`Write-in...` -> Enter -> `Your answer:` -> paste -> Enter),
+/// batches of 1..=4 questions (`Question K/N`), and Escape to skip/decline.
+fn agy_dialog_step(
+    dialog: &api::Dialog,
+    response: &api::DialogAnswer,
+    screen: &str,
+    walk: &Walk,
+) -> Result<DialogStep, Miss> {
+    let plan = dialog_plan(dialog, response).ok_or(Miss::ShapeUnrecognised)?;
+    let api::DialogContent::Questions { questions } = &dialog.content else {
+        return Err(Miss::ShapeUnrecognised);
+    };
+    let view = agy_question_view(questions, screen).ok_or(Miss::ShapeUnrecognised)?;
+    let current = cursor(&view.rows)?;
+    if plan == Plan::Reject {
+        return if view.write_in.is_some() || view.index + 1 < questions.len() {
+            Ok(DialogStep::EscapeNext)
+        } else {
+            Ok(DialogStep::Reject)
+        };
+    }
+    let answer = match &plan {
+        Plan::Single(a) if view.index == 0 && questions.len() == 1 => a,
+        Plan::Batch(answers) => answers.get(view.index).ok_or(Miss::ShapeUnrecognised)?,
+        _ => return Err(Miss::ShapeUnrecognised),
+    };
+    let question = &questions[view.index];
+    let n = question.options.len();
+    if view.rows.len() != n + 1 {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    let text_row = n;
+    let finish =
+        if view.index + 1 == questions.len() { DialogStep::Submit } else { DialogStep::Next };
+    if let Some(typed) = &view.write_in {
+        let api::QuestionAnswer::Text { text } = answer else {
+            return Err(Miss::FieldTouched);
+        };
+        if !walk.pasted.contains(&view.index) {
+            return if typed.is_empty() {
+                Ok(DialogStep::Paste { question: view.index, text: text.clone() })
+            } else {
+                Err(Miss::FieldTouched)
+            };
+        }
+        return if *typed == squeeze(text) {
+            Ok(finish)
+        } else if typed.is_empty() {
+            Ok(DialogStep::Wait)
+        } else {
+            Err(Miss::FieldTouched)
+        };
+    }
+    if !question.multi_select && view.rows[..n].iter().any(|r| r.ticked.is_some()) {
+        return Err(Miss::ShapeUnrecognised);
+    }
+    if question.multi_select {
+        for (i, option) in question.options.iter().enumerate() {
+            option_row(&view.rows[i..=i], &option.label, &option.description)
+                .map_err(|_| label_miss(&view.rows[..n], &option.label))?;
+            if view.rows[i].ticked.is_none() {
+                return Err(Miss::ShapeUnrecognised);
+            }
+        }
+    }
+    match answer {
+        api::QuestionAnswer::Choice { index: pick } => {
+            let option = question.options.get(*pick).ok_or(Miss::ShapeUnrecognised)?;
+            let target = option_row(&view.rows[..n], &option.label, &option.description)?;
+            Ok(toward(current, target, finish))
+        }
+        api::QuestionAnswer::Choices { indices } => {
+            for i in 0..n {
+                let ticked = view.rows[i].ticked.ok_or(Miss::ShapeUnrecognised)?;
+                let want = indices.contains(&i);
+                if ticked != want {
+                    return match (current == i, walk.toggled == Some((view.index, i))) {
+                        (false, _) => Ok(toward(current, i, DialogStep::Up)),
+                        (true, true) => Err(Miss::TickNotTaken),
+                        (true, false) => Ok(DialogStep::Toggle { question: view.index, row: i }),
+                    };
+                }
+            }
+            let anchor = *indices.first().ok_or(Miss::ShapeUnrecognised)?;
+            if current >= n {
+                Ok(toward(current, anchor, finish))
+            } else {
+                Ok(finish)
+            }
+        }
+        api::QuestionAnswer::Text { .. } => {
+            if walk.pasted.contains(&view.index) {
+                return Err(Miss::ShapeUnrecognised);
+            }
+            if question.multi_select {
+                for i in 0..n {
+                    if view.rows[i].ticked == Some(true) {
+                        return match (current == i, walk.toggled == Some((view.index, i))) {
+                            (false, _) => Ok(toward(current, i, DialogStep::Up)),
+                            (true, true) => Err(Miss::TickNotTaken),
+                            (true, false) => {
+                                Ok(DialogStep::Toggle { question: view.index, row: i })
+                            }
+                        };
+                    }
+                }
+            }
+            Ok(toward(current, text_row, DialogStep::Next))
+        }
+    }
 }
 
 /// Recognize only measured native menus, reading the whole dialog (T-567).
@@ -9264,7 +10068,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel"#;
     fn hook_road(p: &PermissionWait) -> (&UnixStream, Option<Instant>) {
         match &p.road {
             PermissionRoad::Hook { stream, closed, .. } => (stream, *closed),
-            PermissionRoad::Codex => panic!("a hook road"),
+            PermissionRoad::Codex | PermissionRoad::Agy => panic!("a hook road"),
         }
     }
 
@@ -11078,5 +11882,361 @@ mod keys_resume_tests {
             assert!(matches!(d.set_worn_theme(bad.into()), Response::Err { .. }), "{bad:?}");
         }
         assert_eq!(theme(&d).as_deref(), Some("gruvbox-light"));
+    }
+
+    #[test]
+    fn t1235_agy_confirmation_screens_bind_to_their_call_and_never_walk_persist_or_always() {
+        let perm = |tool: &str, input: serde_json::Value| api::Permission {
+            request: "call-1".into(),
+            tool: tool.into(),
+            input,
+            expires_at: 99_999,
+        };
+        // 1. Command dialog (captured on agy 1.5.13), cursor at row 1 or moved.
+        let cmd_screen = "\
+Command
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Requesting permission for:
+   echo AGY_CAPTURE_OK
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands that start with 'echo'
+  3. Yes, and always allow for commands that start with 'echo' (Persist to settings.json)
+  4. No, cancel
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel                                                                 Gemini 3.8 Flash · low";
+        let cmd = perm(
+            "run_command",
+            serde_json::json!({"CommandLine": "echo AGY_CAPTURE_OK", "WaitMsBeforeAsync": 5000}),
+        );
+        assert_eq!(agy_approval_step(cmd_screen, 100, true, &cmd), Ok(DialogStep::Submit));
+        assert_eq!(agy_approval_step(cmd_screen, 100, false, &cmd), Ok(DialogStep::Down));
+        // Walk from row 1 through row 4 for deny: Down, Down, Down, Submit on row 4 (never 2 or 3).
+        let at_3 = cmd_screen
+            .replace("> 1. Yes, run command", "  1. Yes, run command")
+            .replace("  3. Yes, and always", "> 3. Yes, and always");
+        assert_eq!(agy_approval_step(&at_3, 100, true, &cmd), Ok(DialogStep::Up));
+        assert_eq!(agy_approval_step(&at_3, 100, false, &cmd), Ok(DialogStep::Down));
+        let at_4 = cmd_screen
+            .replace("> 1. Yes, run command", "  1. Yes, run command")
+            .replace("  4. No, cancel", "> 4. No, cancel");
+        assert_eq!(agy_approval_step(&at_4, 100, false, &cmd), Ok(DialogStep::Submit));
+
+        // Swapped command, sandbox-bypass upgrade, truncated multi-line (`⋮`), or amend input refused.
+        let wrong_cmd = perm("run_command", serde_json::json!({"CommandLine": "echo OTHER"}));
+        assert_eq!(agy_approval_step(cmd_screen, 100, true, &wrong_cmd), Err(Miss::LabelNotFound));
+        let bypass_screen = cmd_screen.replace(
+            "Run this command?",
+            "🔓 Allow sandbox bypass for command execution?\n⚠️ Confirm the command is safe to run outside of the sandbox with full network and disk access.",
+        );
+        assert_eq!(agy_approval_step(&bypass_screen, 100, true, &cmd), Err(Miss::LabelNotFound));
+        let bypass_cmd = perm(
+            "run_command",
+            serde_json::json!({"CommandLine": "echo AGY_CAPTURE_OK", "BypassSandbox": true}),
+        );
+        assert_eq!(
+            agy_approval_step(&bypass_screen, 100, true, &bypass_cmd),
+            Ok(DialogStep::Submit)
+        );
+        let truncated = cmd_screen.replace("   echo AGY_CAPTURE_OK", "   echo AGY_CAPTURE_OK\n   ⋮");
+        assert_eq!(agy_approval_step(&truncated, 100, true, &cmd), Err(Miss::LabelNotFound));
+        let amending = cmd_screen.replace("  4. No, cancel", "  4. No, cancel\n  > custom note");
+        assert_eq!(agy_approval_step(&amending, 100, true, &cmd), Err(Miss::ShapeUnrecognised));
+
+        // 2. File creation (`write_to_file` and `write_file`).
+        let create_screen = "\
+Create file
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/tmp/work/hello.txt  +1
+  1  +  hello world
+Allow creation of this file?
+> 1. Yes, allow creation
+  2. No, deny creation
+  ↑/↓ Navigate · f full diff
+esc to cancel";
+        for (tool, key) in [("write_to_file", "TargetFile"), ("write_file", "Path")] {
+            let p = perm(tool, serde_json::json!({key: "/tmp/work/hello.txt"}));
+            assert_eq!(agy_approval_step(create_screen, 100, true, &p), Ok(DialogStep::Submit));
+            assert_eq!(agy_approval_step(create_screen, 100, false, &p), Ok(DialogStep::Down));
+            let prefix = perm(tool, serde_json::json!({key: "/tmp/work/hello"}));
+            assert_eq!(
+                agy_approval_step(create_screen, 100, true, &prefix),
+                Err(Miss::LabelNotFound)
+            );
+        }
+
+        // 3. File edit (`replace_file_content`, `multi_replace_file_content`, `sed_file`, `edit_file`),
+        // including when `Auto mode` is offered between Yes and No.
+        let edit_screen = "\
+Pending edit
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/tmp/work/existing.txt  +1 -1
+  1  -  line one
+  1  +  line ONE
+  shift+tab to auto-approve file edits
+Accept this file edit?
+> 1. Yes, accept this change
+  2. Yes, and use Auto mode until you exit (auto-approve edits and safe commands)
+  3. No, reject this change
+  ↑/↓ Navigate · f full diff";
+        for (tool, key) in [
+            ("replace_file_content", "TargetFile"),
+            ("multi_replace_file_content", "TargetFile"),
+            ("sed_file", "File"),
+            ("edit_file", "Path"),
+        ] {
+            let p = perm(tool, serde_json::json!({key: "/tmp/work/existing.txt"}));
+            assert_eq!(agy_approval_step(edit_screen, 100, true, &p), Ok(DialogStep::Submit));
+            let at_2 = edit_screen
+                .replace("> 1. Yes, accept", "  1. Yes, accept")
+                .replace("  2. Yes, and use Auto mode", "> 2. Yes, and use Auto mode");
+            assert_eq!(agy_approval_step(&at_2, 100, true, &p), Ok(DialogStep::Up));
+            assert_eq!(agy_approval_step(&at_2, 100, false, &p), Ok(DialogStep::Down));
+        }
+
+        // 4. File access (`view_file` / `read_file` outside workspace).
+        let read_screen = "\
+File access
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Read: /tmp/outside.txt
+Reason: outside workspace
+Allow access to this file?
+  1. Yes, allow access
+> 2. Yes, and always allow non-workspace access
+  3. No, deny access
+  ↑/↓ Navigate";
+        for (tool, key) in [("view_file", "AbsolutePath"), ("read_file", "Path")] {
+            let p = perm(tool, serde_json::json!({key: "/tmp/outside.txt"}));
+            assert_eq!(agy_approval_step(read_screen, 100, true, &p), Ok(DialogStep::Up));
+            assert_eq!(agy_approval_step(read_screen, 100, false, &p), Ok(DialogStep::Down));
+        }
+
+        // 5. MCP tool (`call_mcp_tool`), skipping `always` and `Persist to settings.json`.
+        let mcp_screen = "\
+MCP
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Requesting permission for:
+   deploy_preview (server: vercel)
+
+Allow calling this tool?
+  1. Yes, allow tool call
+  2. Yes, and always allow tool 'vercel/deploy_preview' in this conversation
+> 3. Yes, and always allow tool 'vercel/deploy_preview' (Persist to settings.json)
+  4. No, deny tool call
+  ↑/↓ Navigate";
+        let mcp = perm(
+            "call_mcp_tool",
+            serde_json::json!({"ServerName": "vercel", "ToolName": "deploy_preview", "Arguments": {}}),
+        );
+        assert_eq!(agy_approval_step(mcp_screen, 100, true, &mcp), Ok(DialogStep::Up));
+        assert_eq!(agy_approval_step(mcp_screen, 100, false, &mcp), Ok(DialogStep::Down));
+    }
+
+    #[test]
+    fn t1235_agy_question_screens_walk_choices_toggles_write_in_batches_and_decline() {
+        let pasted = || Walk { pasted: vec![0], ..Walk::default() };
+        let single = api::Dialog {
+            request: "tool-1".into(),
+            content: api::DialogContent::Questions {
+                questions: vec![api::Question {
+                    question: "Which color?".into(),
+                    header: "Color".into(),
+                    multi_select: false,
+                    options: vec![
+                        api::QuestionOption { label: "Blue".into(), description: "".into() },
+                        api::QuestionOption { label: "Green".into(), description: "".into() },
+                    ],
+                }],
+            },
+        };
+        let single_screen = "\
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/1: Which color?
+
+> 1. Blue
+  2. Green
+  3. Write-in...
+
+  ↑/↓ Navigate · enter Select · esc Skip
+esc to cancel";
+        assert!(agy_dialog_shape(&single, single_screen));
+        assert_eq!(
+            agy_dialog_step(&single, &api::DialogAnswer::Choice { index: 1 }, single_screen, &Walk::default()),
+            Ok(DialogStep::Down)
+        );
+        assert_eq!(
+            agy_dialog_step(&single, &api::DialogAnswer::Reject, single_screen, &Walk::default()),
+            Ok(DialogStep::Reject)
+        );
+        // Write-in: walk to row 3 (`Write-in...`), press Enter (`Next`) to open
+        // `Your answer:`, paste, wait while empty, then Submit once drawn.
+        let text_ans = api::DialogAnswer::Text { text: "Violet".into() };
+        let on_write_in = single_screen
+            .replace("> 1. Blue", "  1. Blue")
+            .replace("  3. Write-in...", "> 3. Write-in...")
+            .replace("enter Select", "enter Write-in");
+        assert_eq!(
+            agy_dialog_step(&single, &text_ans, &on_write_in, &Walk::default()),
+            Ok(DialogStep::Next)
+        );
+        let write_in_empty = "\
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/1: Which color?
+
+  1. Blue
+  2. Green
+> 3. Write-in...
+
+  Your answer:
+
+
+  enter Submit · esc Back";
+        assert_eq!(
+            agy_dialog_step(&single, &text_ans, write_in_empty, &Walk::default()),
+            Ok(DialogStep::Paste { question: 0, text: "Violet".into() })
+        );
+        assert_eq!(
+            agy_dialog_step(&single, &text_ans, write_in_empty, &pasted()),
+            Ok(DialogStep::Wait)
+        );
+        let write_in_filled = write_in_empty.replace("  Your answer:\n", "  Your answer:\n  Violet");
+        assert_eq!(
+            agy_dialog_step(&single, &text_ans, &write_in_filled, &pasted()),
+            Ok(DialogStep::Submit)
+        );
+        assert_eq!(
+            agy_dialog_step(&single, &text_ans, &write_in_filled, &Walk::default()),
+            Err(Miss::FieldTouched)
+        );
+
+        // Multi-select + multi-question batch (captured on agy 1.5.13).
+        let batch = Daemon::agy_questions(&serde_json::json!({
+            "questions": [
+                {"question": "Pick toppings", "options": ["Cheese", "Olives"], "is_multi_select": true},
+                {"question": "Crust?", "options": ["Thin", "Thick"], "is_multi_select": false},
+            ]
+        }))
+        .map(|content| api::Dialog { request: "call-b".into(), content })
+        .unwrap();
+        let batch_ans = api::DialogAnswer::Answers {
+            answers: vec![
+                api::QuestionAnswer::Choices { indices: vec![1] },
+                api::QuestionAnswer::Choice { index: 1 },
+            ],
+        };
+        let q1 = "\
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/2: Pick toppings
+
+> 1. [ ] Cheese
+  2. [ ] Olives
+  3. Write-in...
+
+  ↑/↓ Navigate · → Next · space Toggle · enter Submit · esc Skip";
+        assert_eq!(agy_dialog_step(&batch, &batch_ans, q1, &Walk::default()), Ok(DialogStep::Down));
+        let q1_at_2 = q1.replace("> 1. [ ] Cheese", "  1. [ ] Cheese").replace("  2. [ ] Olives", "> 2. [ ] Olives");
+        assert_eq!(
+            agy_dialog_step(&batch, &batch_ans, &q1_at_2, &Walk::default()),
+            Ok(DialogStep::Toggle { question: 0, row: 1 })
+        );
+        let q1_ticked = q1_at_2.replace("> 2. [ ] Olives", "> 2. [x] Olives");
+        assert_eq!(agy_dialog_step(&batch, &batch_ans, &q1_ticked, &Walk::default()), Ok(DialogStep::Next));
+        // Declining on Q1 sends EscapeNext; declining on Q2 sends final Reject.
+        assert_eq!(
+            agy_dialog_step(&batch, &api::DialogAnswer::Reject, q1, &Walk::default()),
+            Ok(DialogStep::EscapeNext)
+        );
+        let q2 = "\
+Question
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 2/2: Crust?
+
+> 1. Thin
+  2. Thick
+  3. Write-in...
+
+  ↑/↓ Navigate · ← Prev · enter Submit All · esc Skip";
+        assert_eq!(
+            agy_dialog_step(&batch, &api::DialogAnswer::Reject, q2, &Walk::default()),
+            Ok(DialogStep::Reject)
+        );
+        let q2_at_2 = q2.replace("> 1. Thin", "  1. Thin").replace("  2. Thick", "> 2. Thick");
+        assert_eq!(agy_dialog_step(&batch, &batch_ans, &q2_at_2, &Walk::default()), Ok(DialogStep::Submit));
+    }
+
+    #[test]
+    fn t1235_auto_approved_pre_tool_use_inside_settle_offers_no_card() {
+        use crate::agents::agy;
+        let question_frame = |id: uuid::Uuid, event: &str, payload: serde_json::Value| HookFrame {
+            session: id.to_string(),
+            event: event.into(),
+            reason: None,
+            pane: None,
+            road: mesimon_core::road::Road::Hooks,
+            payload,
+        };
+        let (_dir, mut d, _rx, _t, id) = bed(true);
+        let _ = pair_phone(&mut d);
+        d.board.sessions[0].kind = SessionKind::Agy;
+        d.board.sessions[0].agy_conversation_id = Some("11111111-2222-4333-8444-555555555555".into());
+        let conv = "11111111-2222-4333-8444-555555555555";
+
+        // 1. PreToolUse then AgyTitle(pending=true) offers the card.
+        d.on_hook(question_frame(
+            id,
+            agy::PRE_TOOL_USE,
+            serde_json::json!({
+                "conversationId": conv,
+                "toolCall": {"id": "c1", "name": "run_command", "args": {"CommandLine": "echo one"}},
+            }),
+        ));
+        assert!(!d.control.permissions.contains_key(&id), "not offered before pending=true");
+        d.on_hook(question_frame(
+            id,
+            agy::TITLE,
+            serde_json::json!({"conversation_id": conv, "agent_state": "tool_use", "tool_confirmation_pending": true}),
+        ));
+        assert_eq!(d.control.permissions[&id].projection.request, "c1");
+
+        // 2. Answering clears pending=true; Machine is now inside its 1500 ms settle.
+        d.on_hook(question_frame(
+            id,
+            agy::TITLE,
+            serde_json::json!({"conversation_id": conv, "agent_state": "working"}),
+        ));
+        assert!(!d.control.permissions.contains_key(&id));
+        assert!(d.machines[&id].view().pending.is_some());
+
+        // 3. An auto-approved PreToolUse inside the settle offers no card.
+        d.on_hook(question_frame(
+            id,
+            agy::PRE_TOOL_USE,
+            serde_json::json!({
+                "conversationId": conv,
+                "toolCall": {"id": "c2", "name": "read_file", "args": {"Path": "/repo/README.md"}},
+            }),
+        ));
+        assert!(!d.control.permissions.contains_key(&id));
+
+        // 4. A real second confirmation cancels the settle and offers c2.
+        d.on_hook(question_frame(
+            id,
+            agy::TITLE,
+            serde_json::json!({"conversation_id": conv, "agent_state": "tool_use", "tool_confirmation_pending": true}),
+        ));
+        assert_eq!(d.control.permissions[&id].projection.request, "c2");
     }
 }

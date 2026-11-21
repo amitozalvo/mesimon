@@ -8,13 +8,24 @@
 //! checkout or into `~/.gemini`, and a session mesimon did not start reports
 //! nothing.
 //!
-//! Three hooks and the title command run `mesimon hook`, which prints
+//! Three lifecycle hooks (`SessionStart`, `PreInvocation`, `Stop`), the
+//! `PreToolUse` observer, and the title command run `mesimon hook`, which prints
 //! nothing. That is the answer agy takes as "no opinion" on every event:
 //! **a hook that prints `{}` or `{"decision":""}` on `PreToolUse` denies the
-//! tool call**, so no hook of mesimon's ever prints an empty object. `PreToolUse`
-//! runs `mesimon gate --provider agy` over agy's structured write tools (T-1238),
+//! tool call**, so no hook of mesimon's ever prints an empty object, and
+//! `mesimon hook` never answers `allow` for a person. `PreToolUse` also runs
+//! `mesimon gate --provider agy` over agy's structured write tools (T-1238),
 //! printing nothing on pass and `{"decision":"deny","reason":"…"}` on refusal;
 //! the other hook that prints is the brief's, on `SessionStart` (T-1232).
+//!
+//! Approvals and questions (T-1235): `PreToolUse` (registered in agy's grouped
+//! `{"matcher":"*","hooks":[…]}` form after the write gate) carries
+//! `toolCall {id, name, args}` right before agy opens a confirmation or
+//! `ask_question` dialog. The phone's permission card and the phone's and
+//! crown's question cards bind to that call and walk agy's numbered dialog
+//! (`> 1. …`) by keys, never selecting the option that persists to the
+//! person's `settings.json`; the title feed's return to work is the edge that
+//! confirms the dialog closed.
 //!
 //! The board's tools (T-1232) are `.agents/mcp_config.json` beside the hooks,
 //! the shim [`hook_settings::mcp_config_json`] renders for Claude, and an
@@ -36,8 +47,6 @@
 //! CLI never writes, so it is never kept. The title feed also carries the
 //! context window ([`context_window`]) and the plan's quota
 //! (`usage::parse_agy`), and its `email`, which nothing reads.
-//!
-//! Not built yet, its own ticket: approvals from the board.
 
 mod history;
 
@@ -63,13 +72,15 @@ pub struct Agy;
 /// reads a Claude hook by name reads one of these.
 pub const SESSION_START: &str = "AgySessionStart";
 pub const PRE_INVOCATION: &str = "AgyPreInvocation";
+pub const PRE_TOOL_USE: &str = "AgyPreToolUse";
 pub const STOP: &str = "AgyStop";
 pub const TITLE: &str = "AgyTitle";
 
-/// The observer hooks registered, as `(agy's event, the frame's name)`.
-/// `PostToolUse` is not among them: the title feed says when a confirmation
-/// is pending and when it is answered, and a hook on every tool call is a
-/// process per call; `PreToolUse` carries only the write gate ([`GATE_MATCHER`]).
+/// The flat lifecycle hooks registered, as `(agy's event, the frame's name)`;
+/// `PreToolUse` is registered beside them in agy's grouped `matcher` form
+/// ([`render_hooks`]: [`GATE_MATCHER`] for T-1238's write gate, and `"*"` for
+/// T-1235's pending-call observer). `PostToolUse` is not registered: the title
+/// feed says when a confirmation or question is answered.
 const HOOKS: [(&str, &str); 3] =
     [("SessionStart", SESSION_START), ("PreInvocation", PRE_INVOCATION), ("Stop", STOP)];
 
@@ -225,10 +236,11 @@ pub fn brief_answer() -> Value {
     json!({ "injectSteps": [{ "systemMessage": { "systemMessage": mesimon_core::brief::TEXT } }] })
 }
 
-/// `hooks.json`: one named hook, `mesimon`, with a flat handler list on
-/// lifecycle events and the grouped `matcher` form on `PreToolUse` (the write
-/// gate, T-1238). With the brief on, `SessionStart` runs a second handler
-/// after the observer, the one that prints.
+/// `hooks.json`: one named hook, `mesimon`, with a flat handler list per
+/// lifecycle event and the grouped `matcher` form on `PreToolUse` (the write
+/// gate first, T-1238, and the silent pending-call observer second, T-1235).
+/// With the brief on, `SessionStart` runs a second handler after the observer,
+/// the one that prints; `mesimon hook` prints nothing.
 fn render_hooks(
     bin: &Path,
     sock: &Path,
@@ -258,14 +270,24 @@ fn render_hooks(
     }
     events.insert(
         "PreToolUse".into(),
-        json!([{
-            "matcher": GATE_MATCHER,
-            "hooks": [{
-                "type": "command",
-                "command": gate_command(bin, sock, board_dir, state_dir, session),
-                "timeout": HOOK_TIMEOUT_SECS,
-            }],
-        }]),
+        json!([
+            {
+                "matcher": GATE_MATCHER,
+                "hooks": [{
+                    "type": "command",
+                    "command": gate_command(bin, sock, board_dir, state_dir, session),
+                    "timeout": HOOK_TIMEOUT_SECS,
+                }],
+            },
+            {
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_command(bin, sock, session, PRE_TOOL_USE),
+                    "timeout": HOOK_TIMEOUT_SECS,
+                }],
+            },
+        ]),
     );
     json!({ "mesimon": events })
 }
@@ -375,6 +397,37 @@ fn conversation_id(word: &str) -> Option<&str> {
         && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && !word.starts_with('-'))
     .then_some(word)
+}
+
+/// The conversation a hook or title frame names, if it names a valid one.
+pub(crate) fn frame_conversation(frame: &HookFrame) -> Option<&str> {
+    frame
+        .payload
+        .get("conversationId")
+        .or_else(|| frame.payload.get("conversation_id"))
+        .and_then(Value::as_str)
+        .and_then(conversation_id)
+}
+
+/// The pending call an agy `PreToolUse` frame names (`toolCall {id, name,
+/// args}`, T-1235), within the bounds Remote Control takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+}
+
+pub(crate) fn parse_tool_call(payload: &Value) -> Option<ToolCall> {
+    if serde_json::to_vec(payload).map_or(true, |b| b.len() > 16 * 1024) {
+        return None;
+    }
+    let call = payload.get("toolCall")?;
+    let id = call.get("id").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256)?;
+    let name =
+        call.get("name").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256)?;
+    let args = call.get("args").filter(|a| a.is_object())?.clone();
+    Some(ToolCall { id: id.into(), name: name.into(), args })
 }
 
 /// The context window a title report names for its model
@@ -511,18 +564,29 @@ fn title_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
                 reason: UnknownReason::DaemonRestarted | UnknownReason::ObservationLost
             }
     );
-    let asked = matches!(state, SessionState::RequiresAction { reason: Reason::Permission });
+    let asking_permission =
+        matches!(state, SessionState::RequiresAction { reason: Reason::Permission });
+    let asking_question =
+        matches!(state, SessionState::RequiresAction { reason: Reason::Question });
+    let asked = asking_permission || asking_question;
     let turning = *state == SessionState::Running || asked;
+    let agent_state = payload.get("agent_state").and_then(Value::as_str);
     if record.agy_background_running {
         // The lead can be idle while its children or background tasks work.
         // The first such report also cancels a leave still settling.
+        // `ask_question` fires `agent_state: "tool_use"` ~280 ms after its
+        // `PreToolUse` while the dialog stands (measured on 1.5.13, T-1235),
+        // so only `"working" | "thinking"` resumes a question stop.
+        let resumed_question =
+            asking_question && matches!(agent_state, Some("working" | "thinking"));
         return (coming_up
-            || asked
+            || asking_permission
+            || resumed_question
             || matches!(state, SessionState::Idle { .. })
             || (*state == SessionState::Running && !previous_background))
             .then_some(Signal::TurnStarted);
     }
-    match payload.get("agent_state").and_then(Value::as_str)? {
+    match agent_state? {
         "idle" | "reviewing" if coming_up => {
             record.agy_stop = AgyStop::None;
             Some(Signal::Ready)
@@ -544,9 +608,17 @@ fn title_signal(payload: &Value, record: &mut SessionRecord) -> Option<Signal> {
             record.agy_stop = AgyStop::None;
             Some(Signal::TurnStarted)
         }
-        "working" | "thinking" | "tool_use"
+        "working" | "thinking"
             if coming_up
                 || asked
+                || (matches!(state, SessionState::Idle { .. })
+                    && record.agy_stop == AgyStop::None) =>
+        {
+            Some(Signal::TurnStarted)
+        }
+        "tool_use"
+            if coming_up
+                || asking_permission
                 || (matches!(state, SessionState::Idle { .. })
                     && record.agy_stop == AgyStop::None) =>
         {
@@ -571,11 +643,7 @@ impl AgentAdapter for Agy {
         // title feed does from the moment there is one (`conversation_id`,
         // empty before the first prompt): a wake learns it with no
         // `SessionStart`, and a `/clear` or an in-app `/resume` moves it.
-        let named = payload
-            .get("conversationId")
-            .or_else(|| payload.get("conversation_id"))
-            .and_then(Value::as_str)
-            .and_then(conversation_id);
+        let named = frame_conversation(frame);
         if let Some(id) = named {
             if record.agy_conversation_id.as_deref() != Some(id) {
                 // Children inherit the seat's hooks. Only the terminal's title
@@ -609,6 +677,14 @@ impl AgentAdapter for Agy {
                 record.agy_stop = AgyStop::None;
                 result.signal =
                     Some(if first { Signal::UserPromptSubmit } else { Signal::TurnStarted });
+            }
+            // `ask_question` sets no `tool_confirmation_pending` on the title
+            // feed (measured on 1.5.13, T-1235): `PreToolUse` is its entry,
+            // and the feed's return to `working` is its answer.
+            PRE_TOOL_USE => {
+                if parse_tool_call(payload).is_some_and(|c| c.name == "ask_question") {
+                    result.signal = Some(Signal::Attention { reason: Reason::Question });
+                }
             }
             STOP => {
                 result.signal = stop_signal(payload, record);
@@ -1091,11 +1167,11 @@ mod tests {
             assert!(command.ends_with(&format!("--session {} --event {name}", ctx.session)));
             assert!(command.contains(" hook --sock '"), "{command}");
         }
-        // `PreToolUse` carries the write gate (grouped matcher + hooks, T-1238);
-        // `PostToolUse` is absent so no broad per-tool process runs.
+        // `PreToolUse` carries the write gate (T-1238) and the silent observer
+        // (T-1235) in agy's grouped `matcher` form; `PostToolUse` is absent.
         assert!(ours.get("PostToolUse").is_none());
         let pre = ours["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 1, "{hooks}");
+        assert_eq!(pre.len(), 2, "{hooks}");
         assert_eq!(pre[0]["matcher"], GATE_MATCHER);
         let gate_cmd = pre[0]["hooks"][0]["command"].as_str().unwrap();
         assert!(gate_cmd.contains(" gate --provider agy "), "{gate_cmd}");
@@ -1115,6 +1191,10 @@ mod tests {
             )),
             "{gate_cmd}"
         );
+        assert_eq!(pre[1]["matcher"], "*");
+        let pre_cmd = pre[1]["hooks"][0]["command"].as_str().unwrap();
+        assert!(pre_cmd.ends_with(&format!("--session {} --event {PRE_TOOL_USE}", ctx.session)));
+        assert!(pre_cmd.contains(" hook --sock '"), "{pre_cmd}");
         // A column without the board's tools: no server, no rule, no brief.
         assert_eq!(ours["SessionStart"].as_array().unwrap().len(), 1, "{hooks}");
         assert!(!dir.join(".agents/mcp_config.json").exists());
@@ -1328,5 +1408,56 @@ mod tests {
         // A folder that is no worktree of mesimon's is never added.
         let shared = context(&paths, &tree, builtin());
         assert!(!list(&shared, std::slice::from_ref(&checkout)).contains(&tree_word));
+    }
+
+    /// T-1235: `ask_question` enters `Reason::Question` on `PreToolUse`, holds
+    /// through the `tool_use` title report ~280 ms later (even with background
+    /// tasks running), resumes on `working`, and interrupts on an `idle` with
+    /// no `Stop`; a child subagent's `PreToolUse` is ignored.
+    #[test]
+    fn ask_question_holds_through_tool_use_and_resumes_on_working() {
+        let mut rec = record(SessionState::Running);
+        rec.agy_conversation_id = Some(ID.into());
+        let ask = |conv: &str, name: &str| {
+            frame(
+                PRE_TOOL_USE,
+                json!({
+                    "conversationId": conv,
+                    "hookEventName": "PreToolUse",
+                    "toolCall": {
+                        "id": "call_1",
+                        "name": name,
+                        "args": {"questions": [{"question": "Which?", "options": ["A", "B"]}]},
+                    },
+                }),
+            )
+        };
+        assert_eq!(Agy.parse_hook(&ask("abc123", "ask_question"), &mut rec).signal, None);
+        assert_eq!(Agy.parse_hook(&ask(ID, "run_command"), &mut rec).signal, None);
+        assert_eq!(
+            Agy.parse_hook(&ask(ID, "ask_question"), &mut rec).signal,
+            Some(Signal::Attention { reason: Reason::Question })
+        );
+        rec.state = SessionState::RequiresAction { reason: Reason::Question };
+        // `tool_use` arrives right after `PreToolUse` while the dialog stands.
+        let tool_use = frame(TITLE, json!({"conversation_id": ID, "agent_state": "tool_use"}));
+        assert_eq!(Agy.parse_hook(&tool_use, &mut rec).signal, None);
+        let bg_tool_use = frame(
+            TITLE,
+            json!({"conversation_id": ID, "agent_state": "tool_use", "task_count": 1}),
+        );
+        assert_eq!(Agy.parse_hook(&bg_tool_use, &mut rec).signal, None);
+        // Answering returns the feed to `working` (with or without tasks).
+        let bg_working =
+            frame(TITLE, json!({"conversation_id": ID, "agent_state": "working", "task_count": 1}));
+        assert_eq!(Agy.parse_hook(&bg_working, &mut rec).signal, Some(Signal::TurnStarted));
+        let working = frame(TITLE, json!({"conversation_id": ID, "agent_state": "working"}));
+        assert_eq!(Agy.parse_hook(&working, &mut rec).signal, Some(Signal::TurnStarted));
+        // An interrupt to `idle` with no `Stop` ends the turn as interrupted.
+        let idle = frame(TITLE, json!({"conversation_id": ID, "agent_state": "idle"}));
+        assert_eq!(
+            Agy.parse_hook(&idle, &mut rec).signal,
+            Some(Signal::TurnEnded { outcome: TurnOutcome::Interrupted })
+        );
     }
 }

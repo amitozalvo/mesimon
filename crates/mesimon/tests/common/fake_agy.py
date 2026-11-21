@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""A stand-in for agy (T-1225, T-1233): it paints agy's screens, takes its
-keys, and runs the hooks and the title command a mesimon launch registered,
-in the shapes agy 1.5.9 draws and sends.
+"""A stand-in for agy (T-1225, T-1233, T-1235): it paints agy's screens, takes
+its keys, and runs the hooks and the title command a mesimon launch registered,
+in the shapes agy 1.5.8–1.5.13 draws and sends.
 
 `agy models` (T-1234) prints what 1.5.9 prints, a progress line and then
 `id<TAB>label` lines, counts the call in `agy-models.log` and exits.
@@ -21,25 +21,13 @@ alt+m hands them to the running turn, and Esc interrupts it with no `Stop`.
 Every prompt a turn ran is appended to `agy-prompts.jsonl` as
 `{"how": "turn" | "queued" | "steer", "text": ...}`, and the box's text is
 written to `agy-box.txt` on each change. Cue files in `agy-cue/` beside it
-drive the rest: `ask`, `answer`, `stop`, `quit`. Anything a hook or the title
-command prints goes to `agy-stdout.jsonl`, one line per handler that printed,
-with its event: agy reads a printed `{}` on a tool hook as a refusal, so a
-test asserts the brief's `SessionStart` handler is the only one there
-(T-1232).
-
-At launch it starts the server `.agents/mcp_config.json` names, as agy does
-when it first lists its servers, and sends what agy 1.5.9 sends:
-`server/discover` (protocol 2026-07-28), then `initialize` (2025-11-25),
-`notifications/initialized` and `tools/list`. The replies go to
-`agy-mcp.json`.
-
-Its conversation is a transcript in agy 1.5.9's shape (T-1237), under
-`agy-brain/<conversation>/.system_generated/logs/transcript_full.jsonl`
-beside itself, named by every hook's `transcriptPath`: a `USER_INPUT` step
-per prompt, wrapped in `<USER_REQUEST>`, and a model step with its tokens
-and the reply `done: <words>` at each `Stop`. The title feed names a
-transcript path under `antigravity/` that does not exist, as agy's does,
-and carries the context window, the plan's quota and an `email`.
+drive the rest: `ask`, `answer`, `stop`, `quit`, and `dialog.json` (T-1235:
+runs `PreToolUse` with `toolCall {id, name, args}`, opens the captured
+confirmation or `ask_question` screen, walks keys, and logs the outcome to
+`agy-decisions.jsonl`). Anything a hook or the title command prints goes to
+`agy-stdout.jsonl`, one line per handler that printed, with its event: agy
+reads a printed `{}` on `PreToolUse` as a refusal, so `PreToolUse` printing
+any bytes denies the call instead of opening the dialog.
 """
 import json
 import os
@@ -57,6 +45,7 @@ CUES = os.path.join(HERE, "agy-cue")
 MINTED = "11111111-2222-4333-8444-555555555555"
 PLACEHOLDER = "Auto mode: edits & safe commands auto-approved (shift+tab to cycle)"
 PASTE_START, PASTE_END = b"\x1b[200~", b"\x1b[201~"
+EMAIL = "person@example.invalid"
 
 
 def value(flag):
@@ -79,7 +68,6 @@ def mcp(folder):
 
     def ask(rid, method, params):
         send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        # A server that never answers is agy waiting forever: bounded here.
         if not select.select([child.stdout], [], [], 10)[0]:
             replies[method] = "no reply in 10 s"
             return
@@ -96,9 +84,6 @@ def mcp(folder):
     child.wait()
     with open(os.path.join(HERE, "agy-mcp.json"), "w") as out:
         json.dump(replies, out)
-
-
-EMAIL = "person@example.invalid"
 
 
 def transcript(conversation):
@@ -126,6 +111,130 @@ def models():
     print("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)")
 
 
+def build_confirm_dialog(spec):
+    name, args = spec["name"], spec["args"]
+    cur = spec.get("initial_cursor", 0)
+    if name == "run_command":
+        cmd = args["CommandLine"]
+        first = cmd.split()[0] if cmd.split() else cmd
+        bypass = args.get("BypassSandbox") is True
+        prompt_lines = (
+            ["🔓 Allow sandbox bypass for command execution?",
+             "⚠️ Confirm the command is safe to run outside of the sandbox with full network and disk access.",
+             ""]
+            if bypass else ["Run this command?"]
+        )
+        return {
+            "kind": "confirm",
+            "id": spec["id"],
+            "name": name,
+            "esc_disabled": False,
+            "header": "Command",
+            "preview": ["Requesting permission for:", "   " + cmd, ""] + prompt_lines,
+            "choices": [
+                "Yes, run command",
+                f"Yes, and always allow in this conversation for commands that start with '{first}'",
+                f"Yes, and always allow for commands that start with '{first}' (Persist to settings.json)",
+                "No, cancel",
+            ],
+            "nav": "  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command",
+            "cursor": cur,
+        }
+    if name in ("write_to_file", "write_file"):
+        path = args.get("TargetFile") or args.get("Path")
+        return {
+            "kind": "confirm",
+            "id": spec["id"],
+            "name": name,
+            "esc_disabled": False,
+            "header": "Create file",
+            "preview": [f"{path}  +1", "  1  +  hello world", "Allow creation of this file?"],
+            "choices": ["Yes, allow creation", "No, deny creation"],
+            "nav": "  ↑/↓ Navigate · f full diff",
+            "cursor": cur,
+        }
+    if name in ("replace_file_content", "multi_replace_file_content", "sed_file", "edit_file"):
+        path = (args.get("TargetFile") or args.get("target_file")
+                or args.get("Path") or args.get("File"))
+        choices = ["Yes, accept this change"]
+        if spec.get("auto_mode_choice"):
+            choices.append("Yes, and use Auto mode until you exit (auto-approve edits and safe commands)")
+        choices.append("No, reject this change")
+        return {
+            "kind": "confirm",
+            "id": spec["id"],
+            "name": name,
+            "esc_disabled": True,
+            "header": "Pending edit",
+            "preview": [
+                f"{path}  +1 -1",
+                "  1  -  old",
+                "  1  +  new",
+                "  shift+tab to auto-approve file edits",
+                "Accept this file edit?",
+            ],
+            "choices": choices,
+            "nav": "  ↑/↓ Navigate · f full diff",
+            "cursor": cur,
+        }
+    if name in ("view_file", "read_file"):
+        path = args.get("AbsolutePath") or args.get("Path")
+        return {
+            "kind": "confirm",
+            "id": spec["id"],
+            "name": name,
+            "esc_disabled": False,
+            "header": "File access",
+            "preview": [f"Read: {path}", "Reason: outside workspace", "Allow access to this file?"],
+            "choices": [
+                "Yes, allow access",
+                "Yes, and always allow non-workspace access",
+                "No, deny access",
+            ],
+            "nav": "  ↑/↓ Navigate",
+            "cursor": cur,
+        }
+    if name == "call_mcp_tool":
+        server, tool = args["ServerName"], args["ToolName"]
+        return {
+            "kind": "confirm",
+            "id": spec["id"],
+            "name": name,
+            "esc_disabled": False,
+            "header": "MCP",
+            "preview": [
+                "Requesting permission for:",
+                f"   {tool} (server: {server})",
+                "",
+                "Allow calling this tool?",
+            ],
+            "choices": [
+                "Yes, allow tool call",
+                f"Yes, and always allow tool '{server}/{tool}' in this conversation",
+                f"Yes, and always allow tool '{server}/{tool}' (Persist to settings.json)",
+                "No, deny tool call",
+            ],
+            "nav": "  ↑/↓ Navigate",
+            "cursor": cur,
+        }
+    raise ValueError(f"unsupported fake_agy tool: {name}")
+
+
+def build_question_dialog(spec):
+    qs = spec["args"]["questions"]
+    return {
+        "kind": "question",
+        "id": spec["id"],
+        "name": "ask_question",
+        "questions": qs,
+        "q_idx": 0,
+        "cursor": 0,
+        "ticks": [[False] * len(q["options"]) for q in qs],
+        "write_in": None,
+        "answers": [],
+    }
+
+
 def main():
     if sys.argv[1:] == ["models"]:
         return models()
@@ -141,6 +250,7 @@ def main():
         "conversation": value("--conversation"),
         "box": "",
         "dialog": not trusted,
+        "tool_dialog": None,
         "yes": True,
         "working": False,
         "queued": [],
@@ -175,13 +285,15 @@ def main():
             "toolCall": {"id": "call_gate", "name": name, "args": args},
             "stepIdx": st["steps"],
         }
+        runs = []
         for group in hooks.get("PreToolUse", []):
             matcher = group.get("matcher", "")
             if matcher in ("", "*") or re.search(f"^(?:{matcher})$", name):
                 for handler in group.get("hooks", []):
-                    done = run(handler["command"], payload)
-                    log("agy-gate.jsonl", {"tool": name, "code": done.returncode,
-                                           "stdout": done.stdout.decode(errors="replace")})
+                    runs.append(run(handler["command"], payload))
+        code = next((d.returncode for d in runs if d.returncode != 0), 0)
+        stdout = b"".join(d.stdout for d in runs).decode(errors="replace")
+        log("agy-gate.jsonl", {"tool": name, "code": code, "stdout": stdout})
 
     def hook(event, extra):
         payload = {
@@ -194,8 +306,21 @@ def main():
         if st["conversation"]:
             payload["transcriptPath"] = transcript(st["conversation"])
         payload.update(extra)
-        for handler in hooks.get(event, []):
-            run(handler["command"], payload)
+        tool_name = payload.get("toolCall", {}).get("name", "")
+        printed = []
+        for entry in hooks.get(event, []):
+            if "hooks" in entry:
+                matcher = entry.get("matcher", "")
+                if tool_name and not (matcher in ("", "*") or re.search(f"^(?:{matcher})$", tool_name)):
+                    continue
+                handlers = entry["hooks"]
+            else:
+                handlers = [entry]
+            for handler in handlers:
+                done = run(handler["command"], payload)
+                if done.stdout:
+                    printed.append(done.stdout)
+        return printed
 
     def report(agent_state, pending=False):
         payload = {
@@ -240,6 +365,48 @@ def main():
                 "",
                 "  ↑/↓ Navigate · enter Confirm",
             ]
+        elif st["tool_dialog"] is not None:
+            td = st["tool_dialog"]
+            if td["kind"] == "confirm":
+                rows = [td["header"], rule, ""] + list(td["preview"])
+                for idx, ch in enumerate(td["choices"]):
+                    mark = "> " if idx == td["cursor"] else "  "
+                    rows.append(f"{mark}{idx + 1}. {ch}")
+                rows.append(td["nav"])
+                rows.append("esc to cancel")
+            else:
+                q_idx = td["q_idx"]
+                total = len(td["questions"])
+                q = td["questions"][q_idx]
+                multi = bool(q.get("is_multi_select"))
+                opts = q["options"]
+                rows = ["Question", rule, "", f"Question {q_idx + 1}/{total}: {q['question']}", ""]
+                for idx, opt in enumerate(opts):
+                    mark = "> " if idx == td["cursor"] else "  "
+                    if multi:
+                        box = "[x] " if td["ticks"][q_idx][idx] else "[ ] "
+                    else:
+                        box = ""
+                    rows.append(f"{mark}{idx + 1}. {box}{opt}")
+                w_mark = "> " if td["cursor"] == len(opts) else "  "
+                rows.append(f"{w_mark}{len(opts) + 1}. Write-in...")
+                rows.append("")
+                if td["write_in"] is not None:
+                    rows.append("  Your answer:")
+                    rows.append("  " + td["write_in"])
+                    rows.append("")
+                    rows.append("  enter Submit · esc Back")
+                else:
+                    if td["cursor"] == len(opts):
+                        act = "enter Write-in"
+                    elif multi:
+                        act = "space Toggle · enter Submit"
+                    elif q_idx + 1 == total and total > 1:
+                        act = "enter Submit All"
+                    else:
+                        act = "enter Select"
+                    rows.append(f"  ↑/↓ Navigate · {act} · esc Skip")
+                rows.append("esc to cancel")
         else:
             rows = ["  fake agy 1.5.9", ""] + st["history"][-8:]
             for words in st["queued"]:
@@ -296,6 +463,7 @@ def main():
         if not st["working"]:
             return
         st["working"] = False
+        st["tool_dialog"] = None
         st["footer"] = "? for shortcuts"
         step(st["conversation"], {"step_index": st["steps"], "source": "MODEL",
                                   "type": "PLANNER_RESPONSE", "model": "gemini-3.8-flash-high",
@@ -307,6 +475,87 @@ def main():
         if st["queued"]:
             begin(st["queued"].pop(0), "queued")
 
+    def finish_question(td):
+        log("agy-decisions.jsonl", {"id": td["id"], "name": "ask_question", "answers": td["answers"]})
+        st["tool_dialog"] = None
+        paint()
+        report("working")
+        hook("PreInvocation", {"invocationNum": 1, "lastUserInput": ""})
+
+    def advance_question(td, ans):
+        td["answers"].append(ans)
+        if td["q_idx"] + 1 < len(td["questions"]):
+            td["q_idx"] += 1
+            td["cursor"] = 0
+            td["write_in"] = None
+        else:
+            finish_question(td)
+
+    def handle_tool_key(td, token, pasted=None):
+        if td["kind"] == "confirm":
+            n = len(td["choices"])
+            if token == "up":
+                td["cursor"] = max(0, td["cursor"] - 1)
+            elif token == "down":
+                td["cursor"] = min(n - 1, td["cursor"] + 1)
+            elif token == "enter":
+                chosen = td["choices"][td["cursor"]]
+                if "Persist to settings.json" in chosen:
+                    home = os.environ.get("MESIMON_AGY_HOME")
+                    if home:
+                        os.makedirs(home, exist_ok=True)
+                        with open(os.path.join(home, "settings.json"), "w") as bad:
+                            bad.write('{"poisoned_by_option_3": true}')
+                log("agy-decisions.jsonl", {
+                    "id": td["id"],
+                    "name": td["name"],
+                    "choice_index": td["cursor"],
+                    "choice": chosen,
+                })
+                st["tool_dialog"] = None
+                paint()
+                report("working")
+            elif token == "esc" and not td["esc_disabled"]:
+                log("agy-decisions.jsonl", {"id": td["id"], "name": td["name"], "choice": "esc"})
+                st["tool_dialog"] = None
+                st["working"] = False
+                st["footer"] = "? for shortcuts"
+                paint()
+                report("idle")
+            return
+
+        # ask_question dialog
+        q_idx = td["q_idx"]
+        q = td["questions"][q_idx]
+        opts = q["options"]
+        multi = bool(q.get("is_multi_select"))
+        if td["write_in"] is not None:
+            if pasted is not None:
+                td["write_in"] += pasted.replace("\r", "").replace("\n", "")
+            elif token == "esc":
+                td["write_in"] = None
+            elif token == "enter":
+                advance_question(td, td["write_in"] or "User Skipped")
+            elif token == "char":
+                pass
+            return
+        if token == "up":
+            td["cursor"] = max(0, td["cursor"] - 1)
+        elif token == "down":
+            td["cursor"] = min(len(opts), td["cursor"] + 1)
+        elif token == "space" and multi and td["cursor"] < len(opts):
+            td["ticks"][q_idx][td["cursor"]] = not td["ticks"][q_idx][td["cursor"]]
+        elif token == "enter":
+            if td["cursor"] == len(opts):
+                td["write_in"] = ""
+            elif multi:
+                picked = [o for i, o in enumerate(opts) if td["ticks"][q_idx][i]]
+                advance_question(td, ", ".join(picked))
+            else:
+                advance_question(td, opts[td["cursor"]])
+        elif token == "esc":
+            advance_question(td, "User Skipped")
+
     def key(data):
         """One read's worth of keys; returns False to exit."""
         i = 0
@@ -315,7 +564,10 @@ def main():
                 end = data.find(PASTE_END, i)
                 end = len(data) if end < 0 else end
                 text = data[i + len(PASTE_START) : end].decode("utf-8", "replace")
-                st["box"] += text.replace("\r\n", "\n").replace("\r", "\n")
+                if st["tool_dialog"] is not None:
+                    handle_tool_key(st["tool_dialog"], "paste", text)
+                else:
+                    st["box"] += text.replace("\r\n", "\n").replace("\r", "\n")
                 i = end + len(PASTE_END)
                 continue
             if st["dialog"]:
@@ -328,6 +580,28 @@ def main():
                         return False
                     st["dialog"] = False
                     report("idle")
+                i += 1
+                continue
+            if st["tool_dialog"] is not None:
+                td = st["tool_dialog"]
+                if data.startswith(b"\x1b[A", i):
+                    handle_tool_key(td, "up")
+                    i += 3
+                    continue
+                if data.startswith(b"\x1b[B", i):
+                    handle_tool_key(td, "down")
+                    i += 3
+                    continue
+                if data.startswith(b"\x1b[", i):
+                    i += 3
+                    continue
+                byte = data[i : i + 1]
+                if byte == b"\x1b":
+                    handle_tool_key(td, "esc")
+                elif byte in (b"\r", b"\n"):
+                    handle_tool_key(td, "enter")
+                elif byte == b" ":
+                    handle_tool_key(td, "space")
                 i += 1
                 continue
             if data.startswith(b"\x1bm", i):
@@ -361,7 +635,6 @@ def main():
             elif byte == b"\x7f":
                 st["box"] = st["box"][:-1]
             elif byte >= b" ":
-                # One UTF-8 character at a time.
                 j = i + 1
                 while j < len(data) and (data[j] & 0xC0) == 0x80:
                     j += 1
@@ -389,7 +662,6 @@ def main():
             ready, _, _ = select.select([fd], [], [], 0.05)
             if ready:
                 pending += os.read(fd, 65536)
-                # A paste split across reads waits for its end.
                 if pending.rfind(PASTE_START) > pending.rfind(PASTE_END):
                     continue
                 data, pending = pending, b""
@@ -398,6 +670,35 @@ def main():
                 paint()
             for cue in sorted(os.listdir(CUES)):
                 cue_path = os.path.join(CUES, cue)
+                if cue == "dialog.json":
+                    spec = json.load(open(cue_path))
+                    os.remove(cue_path)
+                    printed = hook("PreToolUse", {
+                        "stepIdx": st["steps"],
+                        "toolCall": {
+                            "id": spec["id"],
+                            "name": spec["name"],
+                            "args": spec["args"],
+                        },
+                    })
+                    # Measured trap: any stdout on PreToolUse (including `{}` or
+                    # a gate refusal) denies the call instead of asking the person.
+                    if printed:
+                        log("agy-decisions.jsonl", {
+                            "id": spec["id"],
+                            "name": spec["name"],
+                            "choice": "hook_denied",
+                        })
+                        continue
+                    if spec["name"] == "ask_question":
+                        st["tool_dialog"] = build_question_dialog(spec)
+                        paint()
+                        report("tool_use", pending=False)
+                    else:
+                        st["tool_dialog"] = build_confirm_dialog(spec)
+                        paint()
+                        report("tool_use", pending=True)
+                    continue
                 body = open(cue_path).read()
                 os.remove(cue_path)
                 if cue == "ask":

@@ -7,21 +7,46 @@
 
 use crate::common::*;
 
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command as Proc, Stdio};
 use std::time::Duration;
 
 use mesimon_core::board::{
-    AgentProvider, AgyMode, Reason, SessionKind, SessionRecord, SessionState, StopReason,
-    WorkspaceStrategy,
+    AgentProvider, AgyMode, CrownMode, Reason, SessionKind, SessionRecord, SessionState,
+    StopReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{Command, Response};
+use mesimon_core::mesophon::{
+    self as api, Answer, DialogAnswer, LocalAction, PermissionDecision, QuestionAnswer, Reply,
+};
+use mesimon_core::Principal;
+use mesimon_team::{
+    control::{Auth, Channel, Registration, Wire},
+    crypto::{DeviceKeys, ObjectId},
+    invite::InviteCode,
+    relay::RelayEndpoint,
+    wire::Credential,
+};
 
 const FAKE_AGY: &str = include_str!("../common/fake_agy.py");
+const FAKE_RELAY: &str = include_str!("../common/fake_relay.py");
 /// The id the stand-in mints at its first prompt.
 const MINTED: &str = "11111111-2222-4333-8444-555555555555";
 
 struct Bed {
     h: Harness,
+    relay: Option<Child>,
+}
+
+impl Drop for Bed {
+    fn drop(&mut self) {
+        if let Some(mut relay) = self.relay.take() {
+            let _ = relay.kill();
+            let _ = relay.wait();
+        }
+    }
 }
 
 impl Bed {
@@ -48,7 +73,56 @@ impl Bed {
             owner.set_env("MESIMON_AGY_BIN", &fake);
             owner.set_env("MESIMON_AGY_HOME", &home);
         })?;
-        Some(Self { h })
+        Some(Self { h, relay: None })
+    }
+
+    /// A daemon wired to `fake_relay.py` on loopback so a paired `TestPhone`
+    /// speaks the sealed control channel end-to-end.
+    fn boot_with_relay(name: &str) -> Option<(Self, u16)> {
+        let env = [
+            ("MESIMON_SLEEP_MIN_AGE_MS", "0"),
+            ("MESIMON_PANE_QUIET_MS", "600000"),
+            ("MESIMON_AGY", "1"),
+        ];
+        let mut relay_child: Option<Child> = None;
+        let mut http_port: u16 = 0;
+        let h = Harness::boot_staged(name, None, &env, |owner, repo| {
+            init_repo(repo, "README.md", "agy fixture.\n");
+            let fake = owner.dir.join("fake_agy.py");
+            std::fs::write(&fake, FAKE_AGY).unwrap();
+            std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+                .unwrap();
+            let home = owner.dir.join("agy-home");
+            std::fs::create_dir_all(&home).unwrap();
+            let list = serde_json::json!({ "trustedWorkspaces": [repo.display().to_string()] });
+            std::fs::write(home.join("settings.json"), list.to_string()).unwrap();
+            owner.set_env("MESIMON_AGY_BIN", &fake);
+            owner.set_env("MESIMON_AGY_HOME", &home);
+
+            let relay_py = owner.dir.join("fake_relay.py");
+            std::fs::write(&relay_py, FAKE_RELAY).unwrap();
+            let child = Proc::new("python3")
+                .args(["-B", relay_py.to_str().unwrap(), owner.dir.to_str().unwrap()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let info_path = owner.dir.join("relay-info.json");
+            wait_until(Duration::from_secs(10), "fake relay listening", || info_path.exists());
+            let info: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&info_path).unwrap()).unwrap();
+            let tls_port = info["tls_port"].as_u64().unwrap();
+            http_port = info["http_port"].as_u64().unwrap() as u16;
+            let pin = info["pin"].as_str().unwrap();
+            let endpoint = RelayEndpoint::parse(&format!("127.0.0.1:{tls_port} {pin}")).unwrap();
+            let mut dev = mesimon_daemon::team::device::DeviceFile::fresh("Host".into(), endpoint);
+            dev.credential = Some(Credential::generate());
+            let dev_path = owner.dir.join("home/.local/state/mesimon/team/device.toml");
+            dev.save(&dev_path).unwrap();
+            relay_child = Some(child);
+        })?;
+        Some((Self { h, relay: relay_child }, http_port))
     }
 
     fn cue(&self, word: &str) {
@@ -59,6 +133,18 @@ impl Bed {
         let dir = self.h.dir.join("agy-cue");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(word), body).unwrap();
+    }
+
+    fn cue_dialog(&self, spec: serde_json::Value) {
+        let dir = self.h.dir.join("agy-cue");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = self.h.dir.join("dialog.json.tmp");
+        std::fs::write(&tmp, spec.to_string()).unwrap();
+        std::fs::rename(tmp, dir.join("dialog.json")).unwrap();
+    }
+
+    fn decisions(&self) -> Vec<serde_json::Value> {
+        self.jsonl("agy-decisions.jsonl")
     }
 
     /// What the hooks printed, one `(event, stdout)` per handler that did.
@@ -546,4 +632,640 @@ fn agy_starts_nowhere_without_its_switch() {
     assert!(c.board().sessions.is_empty());
     assert!(bed.launches().is_empty());
     assert!(!bed.h.dir.join("agy-models.log").exists(), "no `agy models` either");
+}
+
+struct TestPhone {
+    sock: TcpStream,
+    keys: DeviceKeys,
+    channel: Channel,
+    incarnation: String,
+    next: u64,
+}
+
+impl TestPhone {
+    fn pair(c: &mut TestClient, http_port: u16) -> Self {
+        let enabled = c.request(Command::Mesophon { action: LocalAction::Enable });
+        assert!(matches!(enabled, Response::Mesophon { .. }), "enable: {enabled:?}");
+        wait_until_says(
+            Duration::from_secs(10),
+            "host connected to relay",
+            || c.request(Command::Mesophon { action: LocalAction::Status }),
+            |r| matches!(r, Response::Mesophon { info } if info.connected),
+        );
+        let Response::Mesophon { info } =
+            c.request(Command::Mesophon { action: LocalAction::Pair })
+        else {
+            panic!("pair")
+        };
+        let code = info.code.expect("invite code");
+
+        let mut sock = TcpStream::connect(("127.0.0.1", http_port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+        sock.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(
+            sock,
+            "GET /control HTTP/1.1\r\n\
+             Host: 127.0.0.1:{http_port}\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        )
+        .unwrap();
+        sock.flush().unwrap();
+        let mut hdr = Vec::new();
+        let mut byte = [0u8; 1];
+        while !hdr.ends_with(b"\r\n\r\n") {
+            sock.read_exact(&mut byte).unwrap();
+            hdr.push(byte[0]);
+        }
+        assert!(String::from_utf8_lossy(&hdr).starts_with("HTTP/1.1 101"), "{hdr:?}");
+
+        let keys = DeviceKeys::generate();
+        let auth = Auth {
+            credential: None,
+            register: Some(Registration { name: "Phone".into(), public: keys.public() }),
+        };
+        Self::ws_write(&mut sock, &serde_json::to_string(&auth).unwrap());
+        let first: Wire = serde_json::from_str(&Self::ws_read(&mut sock)).unwrap();
+        assert!(matches!(first, Wire::Authenticated { .. }));
+
+        let invite = InviteCode::parse(&code).unwrap();
+        let challenge = ObjectId::random();
+        let pair_frame = Wire::Pair {
+            challenge,
+            hash: mesimon_team::hex::encode(&invite.secret_hash()),
+            public: keys.public(),
+            proof: mesimon_team::hex::encode(&invite.proof(&keys.public())),
+        };
+        Self::ws_write(&mut sock, &serde_json::to_string(&pair_frame).unwrap());
+        let Wire::Welcome { welcome, .. } = serde_json::from_str(&Self::ws_read(&mut sock)).unwrap()
+        else {
+            panic!("expected welcome")
+        };
+        assert_eq!(welcome.connection, challenge);
+        assert!(invite.names_owner(&welcome.host));
+        let (channel, ready) = Channel::client(&welcome, &keys).unwrap();
+        let Answer { reply: Reply::Ready { incarnation, next, features }, .. } =
+            serde_json::from_value(ready).unwrap()
+        else {
+            panic!("expected ready")
+        };
+        assert!(features.iter().any(|f| f == "dialog_multi"), "{features:?}");
+        Self { sock, keys, channel, incarnation, next }
+    }
+
+    fn ws_write(sock: &mut TcpStream, text: &str) {
+        let payload = text.as_bytes();
+        let n = payload.len();
+        let mut frame = Vec::with_capacity(14 + n);
+        frame.push(0x81);
+        if n < 126 {
+            frame.push(0x80 | n as u8);
+        } else if n < 65536 {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(n as u16).to_be_bytes());
+        } else {
+            frame.push(0x80 | 127);
+            frame.extend_from_slice(&(n as u64).to_be_bytes());
+        }
+        frame.extend_from_slice(&[0, 0, 0, 0]);
+        frame.extend_from_slice(payload);
+        sock.write_all(&frame).unwrap();
+        sock.flush().unwrap();
+    }
+
+    fn ws_read(sock: &mut TcpStream) -> String {
+        loop {
+            let mut h = [0u8; 2];
+            sock.read_exact(&mut h).unwrap();
+            let opcode = h[0] & 0x0f;
+            let masked = (h[1] & 0x80) != 0;
+            let mut len = (h[1] & 0x7f) as usize;
+            if len == 126 {
+                let mut b = [0u8; 2];
+                sock.read_exact(&mut b).unwrap();
+                len = u16::from_be_bytes(b) as usize;
+            } else if len == 127 {
+                let mut b = [0u8; 8];
+                sock.read_exact(&mut b).unwrap();
+                len = u64::from_be_bytes(b) as usize;
+            }
+            let mut mask = [0u8; 4];
+            if masked {
+                sock.read_exact(&mut mask).unwrap();
+            }
+            let mut data = vec![0u8; len];
+            sock.read_exact(&mut data).unwrap();
+            if masked {
+                for (i, b) in data.iter_mut().enumerate() {
+                    *b ^= mask[i & 3];
+                }
+            }
+            match opcode {
+                0x1 => return String::from_utf8(data).unwrap(),
+                0x9 => {
+                    let mut pong = vec![0x8A, 0x80 | (data.len() as u8), 0, 0, 0, 0];
+                    pong.extend_from_slice(&data);
+                    sock.write_all(&pong).unwrap();
+                    sock.flush().unwrap();
+                }
+                0xA => {}
+                other => panic!("unexpected ws opcode {other}"),
+            }
+        }
+    }
+
+    fn call(&mut self, request: api::Request) -> (u64, Reply) {
+        let id = self.next;
+        self.next += 1;
+        let cmd = api::Command { incarnation: self.incarnation.clone(), id, request };
+        let record = self.channel.seal(&self.keys, serde_json::to_value(&cmd).unwrap()).unwrap();
+        let pkt = Wire::Packet { peer: String::new(), record };
+        Self::ws_write(&mut self.sock, &serde_json::to_string(&pkt).unwrap());
+        loop {
+            let Wire::Packet { record, .. } =
+                serde_json::from_str(&Self::ws_read(&mut self.sock)).unwrap()
+            else {
+                continue;
+            };
+            let ans: Answer = serde_json::from_value(self.channel.open(&record).unwrap()).unwrap();
+            if ans.id == id {
+                return (id, ans.reply);
+            }
+        }
+    }
+
+    fn agent(&mut self, ticket: ulid::Ulid) -> api::Agent {
+        let (_, Reply::Board { tickets, .. }) = self.call(api::Request::Snapshot) else {
+            panic!("snapshot")
+        };
+        let want = ticket.to_string();
+        tickets.into_iter().find(|t| t.id == want).and_then(|t| t.agent).expect("ticket agent")
+    }
+
+    fn await_permission(&mut self, ticket: ulid::Ulid, label: &str) -> api::Permission {
+        let mut found = None;
+        wait_until(Duration::from_secs(10), label, || {
+            found = self.agent(ticket).permission;
+            found.is_some()
+        });
+        found.unwrap()
+    }
+
+    fn await_dialog(&mut self, ticket: ulid::Ulid, label: &str) -> api::Dialog {
+        let mut found = None;
+        wait_until(Duration::from_secs(10), label, || {
+            let a = self.agent(ticket);
+            if a.dialog.is_some() {
+                assert_eq!(a.card_answers, Some(true), "agy dialogs are card-answerable");
+            }
+            found = a.dialog;
+            found.is_some()
+        });
+        found.unwrap()
+    }
+
+    fn settle(&mut self, request: api::Request) -> (String, Option<String>) {
+        let (cmd_id, first) = self.call(request);
+        match first {
+            Reply::Delivery { status, reason, .. } if status != "awaiting_delivery" => {
+                return (status, reason);
+            }
+            Reply::Delivery { .. } => {}
+            other => panic!("expected delivery receipt, got {other:?}"),
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            std::thread::sleep(Duration::from_millis(40));
+            let (_, reply) = self.call(api::Request::Status { command: cmd_id });
+            let Reply::Delivery { status, reason, .. } = reply else {
+                panic!("expected status delivery, got {reply:?}");
+            };
+            if status != "awaiting_delivery" {
+                return (status, reason);
+            }
+            assert!(std::time::Instant::now() < deadline, "delivery {cmd_id} never settled");
+        }
+    }
+}
+
+/// T-1235: a paired phone walks every captured agy confirmation and question
+/// dialog shape over the sealed control channel, binds each card to its
+/// `PreToolUse` call, confirms by the title feed's `working` edge, never
+/// walks Option 3 (`Persist to settings.json`) or `always` / `Auto mode`,
+/// and `mesimon hook` prints zero bytes on `PreToolUse`.
+#[test]
+fn an_agy_phone_approves_denies_and_answers_every_captured_dialog_shape() {
+    let Some((bed, http_port)) = Bed::boot_with_relay("agy-phone") else { return };
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
+    agy_board(&mut c);
+    let mut phone = TestPhone::pair(&mut c, http_port);
+    let t = ticket(&mut c, "Drive agy from the phone");
+    let Response::Spawned { id, .. } = start(&mut c, t, true) else { panic!("spawn agy") };
+    bed.await_prompt(0, "turn", "Drive agy from the phone");
+    c.await_state(id, "agy working", |s| *s == SessionState::Running);
+
+    let decide = |phone: &mut TestPhone, req: &str, decision: PermissionDecision| {
+        phone.settle(api::Request::Permission {
+            ticket: t.to_string(),
+            session: id.to_string(),
+            request: req.into(),
+            decision,
+        })
+    };
+    let answer_q = |phone: &mut TestPhone, req: &str, response: DialogAnswer| {
+        phone.settle(api::Request::Dialog {
+            ticket: t.to_string(),
+            session: id.to_string(),
+            request: req.into(),
+            response,
+        })
+    };
+
+    // 1. File creation (`write_to_file`).
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-create-1",
+        "name": "write_to_file",
+        "args": { "TargetFile": "/tmp/work/created.txt", "CodeContent": "hello" },
+    }));
+    let p = phone.await_permission(t, "write_to_file card");
+    assert_eq!((p.request.as_str(), p.tool.as_str()), ("call-create-1", "write_to_file"));
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+    c.await_state(id, "running after create", |s| *s == SessionState::Running);
+
+    // 2. File edits (`replace_file_content`, `multi_replace_file_content`, `sed_file`),
+    // including `Auto mode` standing between Yes and No.
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-edit-1",
+        "name": "replace_file_content",
+        "auto_mode_choice": true,
+        "args": { "TargetFile": "/tmp/work/lib.rs" },
+    }));
+    let p = phone.await_permission(t, "replace_file_content card");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+
+    // Fire the next confirmation immediately inside the 1500 ms settle window:
+    // `tool_confirmation_pending` cancels the settle and offers the new card.
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-edit-2",
+        "name": "multi_replace_file_content",
+        "auto_mode_choice": true,
+        "initial_cursor": 1,
+        "args": { "TargetFile": "/tmp/work/mod.rs" },
+    }));
+    let p = phone.await_permission(t, "multi_replace_file_content card");
+    assert_eq!(p.request, "call-edit-2");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Deny), ("answered".into(), None));
+    c.await_state(id, "running after multi_replace deny", |s| *s == SessionState::Running);
+
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-sed-1",
+        "name": "sed_file",
+        "args": { "File": "/tmp/work/sed.txt" },
+    }));
+    let p = phone.await_permission(t, "sed_file card");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+    c.await_state(id, "running after sed", |s| *s == SessionState::Running);
+
+    // 3. Command (`run_command`, `args.CommandLine`): Allow on row 1, and Deny
+    // walking past Option 2 and Option 3 (`Persist to settings.json`) to row 4.
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-cmd-allow",
+        "name": "run_command",
+        "args": { "CommandLine": "cargo test -p mesimon-core", "WaitMsBeforeAsync": 5000 },
+    }));
+    let p = phone.await_permission(t, "run_command allow card");
+    assert_eq!(p.tool, "run_command");
+    assert_eq!(p.input["CommandLine"], "cargo test -p mesimon-core");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+    c.await_state(id, "running after cmd allow", |s| *s == SessionState::Running);
+
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-cmd-deny",
+        "name": "run_command",
+        "initial_cursor": 2,
+        "args": { "CommandLine": "rm -rf /tmp/scratch", "BypassSandbox": true },
+    }));
+    let p = phone.await_permission(t, "run_command deny card");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Deny), ("answered".into(), None));
+    c.await_state(id, "running after cmd deny", |s| *s == SessionState::Running);
+
+    // 4. File access (`view_file`, cursor starting on `always allow`).
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-view-1",
+        "name": "view_file",
+        "initial_cursor": 1,
+        "args": { "AbsolutePath": "/tmp/outside/notes.md" },
+    }));
+    let p = phone.await_permission(t, "view_file card");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+    c.await_state(id, "running after view_file", |s| *s == SessionState::Running);
+
+    // 5. MCP tool (`call_mcp_tool`, cursor starting on `Persist to settings.json`).
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-mcp-1",
+        "name": "call_mcp_tool",
+        "initial_cursor": 2,
+        "args": { "ServerName": "vercel", "ToolName": "deploy_preview", "Arguments": {} },
+    }));
+    let p = phone.await_permission(t, "call_mcp_tool card");
+    assert_eq!(decide(&mut phone, &p.request, PermissionDecision::Allow), ("answered".into(), None));
+    c.await_state(id, "running after call_mcp_tool", |s| *s == SessionState::Running);
+
+    // 6. Questions (`ask_question`): single choice, write-in, multi-select batch, and decline.
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-q-choice",
+        "name": "ask_question",
+        "args": {
+            "questions": [{
+                "question": "Which color?",
+                "options": ["Blue", "Green"],
+                "is_multi_select": false,
+            }]
+        },
+    }));
+    let d = phone.await_dialog(t, "single question card");
+    assert_eq!(d.request, "call-q-choice");
+    assert_eq!(
+        answer_q(&mut phone, &d.request, DialogAnswer::Choice { index: 1 }),
+        ("answered".into(), None)
+    );
+    c.await_state(id, "running after single choice", |s| *s == SessionState::Running);
+
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-q-text",
+        "name": "ask_question",
+        "args": {
+            "questions": [{
+                "question": "Which color?",
+                "options": ["Blue", "Green"],
+                "is_multi_select": false,
+            }]
+        },
+    }));
+    let d = phone.await_dialog(t, "write-in question card");
+    assert_eq!(
+        answer_q(&mut phone, &d.request, DialogAnswer::Text { text: "Violet".into() }),
+        ("answered".into(), None)
+    );
+    c.await_state(id, "running after write-in", |s| *s == SessionState::Running);
+
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-q-batch",
+        "name": "ask_question",
+        "args": {
+            "questions": [
+                { "question": "Pick toppings", "options": ["Cheese", "Olives"], "is_multi_select": true },
+                { "question": "Crust?", "options": ["Thin", "Thick"], "is_multi_select": false },
+            ]
+        },
+    }));
+    let d = phone.await_dialog(t, "batch question card");
+    assert_eq!(
+        answer_q(
+            &mut phone,
+            &d.request,
+            DialogAnswer::Answers {
+                answers: vec![
+                    QuestionAnswer::Choices { indices: vec![1] },
+                    QuestionAnswer::Choice { index: 1 },
+                ],
+            },
+        ),
+        ("answered".into(), None)
+    );
+    c.await_state(id, "running after batch", |s| *s == SessionState::Running);
+
+    bed.cue_dialog(serde_json::json!({
+        "id": "call-q-skip",
+        "name": "ask_question",
+        "args": {
+            "questions": [
+                { "question": "First?", "options": ["A", "B"], "is_multi_select": false },
+                { "question": "Second?", "options": ["C", "D"], "is_multi_select": false },
+            ]
+        },
+    }));
+    let d = phone.await_dialog(t, "decline batch card");
+    assert_eq!(answer_q(&mut phone, &d.request, DialogAnswer::Reject), ("answered".into(), None));
+    c.await_state(id, "running after skip", |s| *s == SessionState::Running);
+
+    // Verify every decision landed on the exact intended row, Option 3 was
+    // never touched, and `mesimon hook` printed zero bytes on `PreToolUse`.
+    let decisions: Vec<(String, serde_json::Value)> = bed
+        .decisions()
+        .into_iter()
+        .map(|v| {
+            let key = v["id"].as_str().unwrap().to_string();
+            let val = if v.get("choice").is_some() { v["choice"].clone() } else { v["answers"].clone() };
+            (key, val)
+        })
+        .collect();
+    assert_eq!(
+        decisions,
+        vec![
+            ("call-create-1".into(), serde_json::json!("Yes, allow creation")),
+            ("call-edit-1".into(), serde_json::json!("Yes, accept this change")),
+            ("call-edit-2".into(), serde_json::json!("No, reject this change")),
+            ("call-sed-1".into(), serde_json::json!("Yes, accept this change")),
+            ("call-cmd-allow".into(), serde_json::json!("Yes, run command")),
+            ("call-cmd-deny".into(), serde_json::json!("No, cancel")),
+            ("call-view-1".into(), serde_json::json!("Yes, allow access")),
+            ("call-mcp-1".into(), serde_json::json!("Yes, allow tool call")),
+            ("call-q-choice".into(), serde_json::json!(["Green"])),
+            ("call-q-text".into(), serde_json::json!(["Violet"])),
+            ("call-q-batch".into(), serde_json::json!(["Olives", "Thick"])),
+            ("call-q-skip".into(), serde_json::json!(["User Skipped", "User Skipped"])),
+        ]
+    );
+    let agy_settings =
+        std::fs::read_to_string(bed.h.dir.join("agy-home/settings.json")).unwrap();
+    assert!(!agy_settings.contains("poisoned_by_option_3"), "{agy_settings}");
+    assert!(
+        bed.printed().iter().all(|(ev, _)| ev != "PreToolUse"),
+        "PreToolUse must print nothing: {:?}",
+        bed.printed()
+    );
+}
+
+/// T-1235: an autonomous crown answers an agy worker's `ask_question` stops
+/// (single and multi-select/write-in batch) via `get_ticket` + `answer_agent`,
+/// and is refused on a permission stop, which stays the person's alone.
+#[test]
+fn an_autonomous_crown_answers_agy_questions_and_never_approvals() {
+    let Some(bed) = Bed::boot("agy-crown", true, true) else { return };
+    let mut c = TestClient::connect(&bed.h.paths.orch_sock());
+    assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    assert!(matches!(
+        c.request(Command::SetCrownMode { mode: CrownMode::Autonomous }),
+        Response::Ok
+    ));
+
+    let crown_t = ticket(&mut c, "Coordinate the work");
+    assert!(matches!(c.request(Command::CrownTicket { id: crown_t }), Response::Ok));
+    // Spawn the sleep stub (`AgentProvider::Claude`) on the crown ticket first,
+    // then switch the board's provider to `Agy` so only the worker runs `fake_agy.py`.
+    let Response::Spawned { id: crown_session, .. } = c.request(Command::SpawnSession {
+        ticket: crown_t,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+        plan: false,
+    }) else {
+        panic!("spawn crown")
+    };
+    agy_board(&mut c);
+    let crown = Principal::Agent { session: crown_session };
+
+    let worker_t = ticket(&mut c, "Build the parser");
+    let worker_key = c.board().ticket(worker_t).unwrap().short_key.clone();
+    let Response::AgentTicket { ticket: initial } = c.send(
+        crown.clone(),
+        Command::AgentReadTicket { key: worker_key.clone(), full: false, plan: false },
+    ) else {
+        panic!("read worker")
+    };
+    let Response::AgentStarted { session_started: true, .. } = c.send(
+        crown.clone(),
+        Command::AgentStartTicket {
+            key: worker_key.clone(),
+            seen: initial.seen,
+            plan: false,
+            tier: None,
+            workspace: Some("shared_checkout".into()),
+            expect_secs: None,
+        },
+    ) else {
+        panic!("crown start worker")
+    };
+    let worker_id = c.board().live_agent(worker_t).unwrap().id;
+    bed.await_prompt(0, "turn", "Build the parser");
+    c.await_state(worker_id, "worker running", |s| *s == SessionState::Running);
+
+    // 1. Single `ask_question` answered by the crown.
+    bed.cue_dialog(serde_json::json!({
+        "id": "crown-q-1",
+        "name": "ask_question",
+        "args": {
+            "questions": [{
+                "question": "Target edition?",
+                "options": ["2021", "2024"],
+                "is_multi_select": false,
+            }]
+        },
+    }));
+    c.await_state(worker_id, "worker asking crown", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Question }
+    });
+    let Response::AgentTicket { ticket: view } = c.send(
+        crown.clone(),
+        Command::AgentReadTicket { key: worker_key.clone(), full: false, plan: false },
+    ) else {
+        panic!("crown read question")
+    };
+    let needs = view.needs_you.expect("needs_you on question");
+    assert_eq!(needs.reason, "question");
+    assert_eq!(needs.answerable, Some(true));
+    assert_eq!(needs.request.as_deref(), Some("crown-q-1"));
+    assert_eq!(needs.questions.len(), 1);
+    let Response::AgentAnswered { outcome, answer, .. } = c.send(
+        crown.clone(),
+        Command::AgentAnswerTicket {
+            key: worker_key.clone(),
+            seen: view.seen,
+            request: "crown-q-1".into(),
+            index: Some(1),
+            text: None,
+            answers: None,
+        },
+    ) else {
+        panic!("crown answer single")
+    };
+    assert_eq!((outcome.as_str(), answer.as_str()), ("answered", "2024"));
+    c.await_state(worker_id, "worker running after crown answer", |s| *s == SessionState::Running);
+
+    // 2. Multi-select + write-in batch answered by the crown.
+    bed.cue_dialog(serde_json::json!({
+        "id": "crown-q-2",
+        "name": "ask_question",
+        "args": {
+            "questions": [
+                { "question": "Targets?", "options": ["macOS", "Linux"], "is_multi_select": true },
+                { "question": "Flag?", "options": ["--fast", "--strict"], "is_multi_select": false },
+            ]
+        },
+    }));
+    c.await_state(worker_id, "worker asking batch", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Question }
+    });
+    let Response::AgentTicket { ticket: view } = c.send(
+        crown.clone(),
+        Command::AgentReadTicket { key: worker_key.clone(), full: false, plan: false },
+    ) else {
+        panic!("crown read batch")
+    };
+    let Response::AgentAnswered { outcome, .. } = c.send(
+        crown.clone(),
+        Command::AgentAnswerTicket {
+            key: worker_key.clone(),
+            seen: view.seen,
+            request: "crown-q-2".into(),
+            index: None,
+            text: None,
+            answers: Some(vec![
+                QuestionAnswer::Choices { indices: vec![0, 1] },
+                QuestionAnswer::Text { text: "--custom".into() },
+            ]),
+        },
+    ) else {
+        panic!("crown answer batch")
+    };
+    assert_eq!(outcome, "answered");
+    c.await_state(worker_id, "worker running after batch", |s| *s == SessionState::Running);
+
+    // 3. Permission stop (`run_command`) is never the crown's to answer.
+    bed.cue_dialog(serde_json::json!({
+        "id": "crown-perm-1",
+        "name": "run_command",
+        "args": { "CommandLine": "cargo publish" },
+    }));
+    c.await_state(worker_id, "worker asking permission", |s| {
+        *s == SessionState::RequiresAction { reason: Reason::Permission }
+    });
+    let Response::AgentTicket { ticket: view } = c.send(
+        crown.clone(),
+        Command::AgentReadTicket { key: worker_key.clone(), full: false, plan: false },
+    ) else {
+        panic!("crown read permission")
+    };
+    let needs = view.needs_you.expect("needs_you on permission");
+    assert_eq!(needs.reason, "permission");
+    assert!(needs.request.is_none(), "no crown request id on a permission stop");
+    let refused = c.send(
+        crown,
+        Command::AgentAnswerTicket {
+            key: worker_key,
+            seen: view.seen,
+            request: "crown-perm-1".into(),
+            index: Some(0),
+            text: None,
+            answers: None,
+        },
+    );
+    err_containing(refused, "permission");
+
+    let decisions: Vec<(String, serde_json::Value)> = bed
+        .decisions()
+        .into_iter()
+        .map(|v| (v["id"].as_str().unwrap().to_string(), v["answers"].clone()))
+        .collect();
+    assert_eq!(
+        decisions,
+        vec![
+            ("crown-q-1".into(), serde_json::json!(["2024"])),
+            ("crown-q-2".into(), serde_json::json!(["macOS, Linux", "--custom"])),
+        ]
+    );
+    assert!(bed.printed().iter().all(|(ev, _)| ev != "PreToolUse"), "{:?}", bed.printed());
 }

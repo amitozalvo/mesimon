@@ -6430,6 +6430,7 @@ impl Daemon {
             }
         }
         let now = now_ms();
+        let agy_lead = self.board.session(id).and_then(|s| s.agy_conversation_id.clone());
         let mut observation = self
             .board
             .sessions
@@ -6482,6 +6483,7 @@ impl Daemon {
             self.control_release_permission(id, &frame);
         }
         self.control_observe_dialog(id, &frame);
+        self.control_observe_agy(id, &frame, agy_lead.as_deref());
         let answered = self.dialog_answered(id, &frame);
         // An answer read against the held call (T-988): a sibling still to be
         // answered re-affirms its dialog, which cancels a leave to `Running`
@@ -6690,6 +6692,7 @@ impl Daemon {
         if let Some(plan) = observation.plan {
             dirty |= self.record_plan(id, plan);
         }
+        self.control_offer_agy_permission(id);
         if dirty {
             self.persist_sessions();
             self.broadcast();

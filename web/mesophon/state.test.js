@@ -492,6 +492,30 @@ test("a permission card shows the command, then every other field as its own nam
   assert.deepEqual(requestFields({ input: { file_path: "/a" } }), { fields: [{ name: "file_path", kind: "", value: "/a" }] });
   assert.deepEqual(requestFields({ input: { command: 7 } }), { fields: [{ name: "command", kind: "number", value: "7" }] });
   assert.deepEqual(requestFields({}), { fields: [{ name: "input", kind: "empty", value: "null" }] });
+  // agy's `run_command` spells its shell line `CommandLine` (T-1235); every
+  // other parameter stays a named field, and a `command` beside it wins so
+  // neither can hide the other.
+  assert.deepEqual(
+    requestFields({ tool: "run_command", input: { CommandLine: "echo hi", WaitMsBeforeAsync: 5000, BypassSandbox: true } }),
+    {
+      command: "echo hi",
+      fields: [
+        { name: "WaitMsBeforeAsync", kind: "number", value: "5000" },
+        { name: "BypassSandbox", kind: "yes/no", value: "true" },
+      ],
+    },
+  );
+  assert.deepEqual(requestFields({ tool: "run_command", input: { CommandLine: "echo hi" } }), {
+    command: "echo hi",
+    fields: [],
+  });
+  assert.deepEqual(requestFields({ tool: "write_to_file", input: { CommandLine: "echo hi" } }), {
+    fields: [{ name: "CommandLine", kind: "", value: "echo hi" }],
+  });
+  assert.deepEqual(requestFields({ tool: "run_command", input: { command: "echo safe", CommandLine: "rm -rf /" } }), {
+    command: "echo safe",
+    fields: [{ name: "CommandLine", kind: "", value: "rm -rf /" }],
+  });
 });
 
 test("the keys rest only while the page answers the dialog on a card (T-1218)", () => {

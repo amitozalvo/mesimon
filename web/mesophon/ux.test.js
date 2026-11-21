@@ -5460,7 +5460,29 @@ async function navigationFlow(browser, engineName, size, viewport, fullThemes) {
     assert.equal(await fieldsCard.getByRole("button", { name: "Approve once" }).count(), 0);
     await fieldsCard.locator(".need-more").click();
     await until(page, () => document.querySelectorAll("#attention .request-field").length === 2 && document.querySelector("#attention").textContent.includes("Approve once"));
+    // T-1235: an agy `run_command` permission shows `CommandLine` in the
+    // command box and keeps its extra fields visible above Approve once.
     await page.evaluate(() => {
+      fixture.tickets[0].agent.provider = "agy";
+      fixture.tickets[0].agent.permission = {
+        request: "agy-perm-1",
+        tool: "run_command",
+        input: { CommandLine: "echo agy-ok", WaitMsBeforeAsync: 5000 },
+        expires_at: Date.now() + 40000,
+      };
+      fixture.update();
+    });
+    await until(page, () =>
+      document.querySelector("#attention")?.textContent.includes("echo agy-ok") &&
+      document.querySelectorAll("#attention .request-field").length === 1,
+    );
+    await attention("Approve once").click();
+    assert.deepEqual(
+      await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
+      { op: "permission", request: "agy-perm-1", decision: "allow", ticket: "m2", session: "m2-session" },
+    );
+    await page.evaluate(() => {
+      fixture.tickets[0].agent.provider = "claude";
       fixture.tickets[0].agent.permission = null;
       fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",
         multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };

@@ -81,9 +81,14 @@ export function requestFields(permission) {
   const input = permission?.input;
   if (!input || typeof input !== "object" || Array.isArray(input))
     return { fields: [{ name: "input", kind: kindOf(input ?? null), value: JSON.stringify(input ?? null, null, 2) }] };
-  const command = typeof input.command === "string" ? input.command : undefined;
+  const commandKey = typeof input.command === "string"
+    ? "command"
+    : permission?.tool === "run_command" && typeof input.CommandLine === "string"
+      ? "CommandLine"
+      : undefined;
+  const command = commandKey ? input[commandKey] : undefined;
   const fields = Object.entries(input)
-    .filter(([name]) => command === undefined || name !== "command")
+    .filter(([name]) => name !== commandKey)
     .map(([name, value]) => typeof value === "string"
       ? { name, kind: "", value }
       : { name, kind: kindOf(value), value: JSON.stringify(value, null, 2) });

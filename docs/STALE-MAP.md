@@ -49300,3 +49300,66 @@ two-road gate at default threads.
 Those runs refuted the need for a host-wide precaution. Six jobs guarded one slow
 test. Release preparation now leaves parallelism to Cargo and nextest by default
 and accepts `--jobs N` as an override. The next release measures the new default.
+## agy approvals from the phone and questions from the phone and the crown (T-1235, 2026-11-21)
+
+**Measured on agy 1.5.13 (`ToolConfirmationModel`, `AskQuestionModel`, and live panes).**
+- **`PreToolUse` registration and silence.** agy matches `PreToolUse` in the grouped
+  `[{"matcher": "*", "hooks": [...]}]` shape and sends `toolCall {id, name, args}` right before
+  opening a confirmation or `ask_question` dialog. Any stdout on `PreToolUse`, `{}` and
+  `{"decision":""}` included, denies the call; `mesimon hook` prints nothing, and the frame
+  travels as `AgyPreToolUse` so no Claude hook reader mistakes it for Claude's `PreToolUse`.
+- **`ask_question` on the title feed.** `ask_question` never sets `tool_confirmation_pending`:
+  about 280 ms after `PreToolUse(ask_question)`, `AgyTitle` reports `{"agent_state": "tool_use"}`
+  with `tool_confirmation_pending` absent while the dialog stands, and answering or skipping it
+  reports `{"agent_state": "working"}` followed ~9 ms later by `PreInvocation`. `agy.rs` therefore
+  emits `Signal::Attention { reason: Reason::Question }` on `AgyPreToolUse(ask_question)` and holds
+  `Reason::Question` across `agent_state == "tool_use"` (active background tasks included), clearing
+  it on `"working" | "thinking"` (or `"idle"` without `Stop`, an Escape interrupt).
+- **Screen shapes.** Confirmation screens draw `> N. <choice>` (`Command`: `Requesting permission
+  for:` + indented `CommandLine`, `Run this command?` or `🔓 Allow sandbox bypass for command
+  execution?`, and four rows whose third is `Persist to settings.json`; `Create file` for
+  `write_to_file`/`write_file`; `Pending edit` for `replace_file_content`,
+  `multi_replace_file_content`, `sed_file`, `edit_file`, with an optional `Auto mode` row between
+  Yes and No and Escape disabled; `File access` for `view_file`/`read_file`; `MCP` for
+  `call_mcp_tool`, also carrying `Persist to settings.json`). `ask_question` draws `Question K/N:
+  <text>`, `[ ]`/`[x]` on multi-select rows, `N+1. Write-in...` opening `Your answer:`, and per-tab
+  Escape (`User Skipped`), so declining a batch walks Escape per question (`DialogStep::EscapeNext`
+  until `K == N`).
+
+**What shipped.**
+- **Bound permission and question cards.** `control_observe_agy` and `control_offer_agy_permission`
+  in `mesophon.rs` record the lead conversation's latest `AgyPreToolUse` (`control.agy_calls`,
+  child subagent `conversationId`s ignored), project `ask_question` into `control.dialogs` for both
+  the paired phone and the autonomous crown (`get_ticket` `needs_you` + `answer_agent`), and offer
+  `PermissionRoad::Agy` once `AgyTitle(tool_confirmation_pending: true)` puts the session on
+  `RequiresAction { Permission }`. An auto-approved tool's `AgyPreToolUse` inside the attention
+  machine's 1500 ms `RequiresAction -> Running` settle (`pending.is_some()`) offers no card, whereas
+  a genuine second `tool_confirmation_pending` cancels the settle and offers its card at once.
+- **Screen-verified key walks.** `agy_approval_step` binds each permission card to the exact
+  command (multi-line truncation `⋮`, sandbox-bypass upgrades, and Tab-amend inputs refused),
+  exact file path (prefix matches refused), or exact `tool (server: name)` line, and walks only to
+  the single-call `Yes, …` or `No, …` row — never `Persist to settings.json`, `Persist to remote
+  settings`, `always`, or `Auto mode`. `agy_dialog_step` walks single choices, multi-select Space
+  toggles, `Write-in...` pastes into an untouched `Your answer:` field, multi-question batches, and
+  Escape declines, settling `"answered"` on the title feed's return to work.
+- **Phone command field.** `requestFields` in `web/mesophon/dialogs.js` extracts `input.CommandLine`
+  as the command box on `run_command` when `input.command` is absent, keeping all remaining fields
+  (`WaitMsBeforeAsync`, `BypassSandbox`, `toolSummary`, etc.) rendered above `Approve once`.
+
+**Verification and reruns.**
+- `cargo ut`: 1st run inside the standard sandbox failed 6 `mesimon-backend-tmux` socket tests
+  (`Operation not permitted`); 2nd run outside the sandbox passed across the workspace (0 failed).
+- `python3 -B ci/test-run.py -- cargo test -p mesimon --test agents -- agy_e2e:: approve_bridge`:
+  1st attempt missed `--` before the second filter and hit sandbox `ps` denial; 2nd run failed the
+  two new `agy_e2e` cases because LibreSSL's `-newkey ec` wrote explicit curve parameters `rustls`
+  rejects and the crown fixture spawned `fake_agy.py` on both seats; 3rd run (with named-curve
+  `ecparam -name prime256v1` in `fake_relay.py`, `Answer` unwrap in `TestPhone::pair`, and the
+  crown seat spawned before switching the board to `Agy`) passed 12/12, fixture audit clean.
+- `web/mesophon`: `node --test state.test.js assets.test.js` passed 73/73; `ux.test.js` (`navigation`
+  first hit sandbox loopback `ERR_ACCESS_DENIED`, then passed on Chromium phone; full `ux.test.js`
+  matrix first hit the 5 GiB free-space check before removing temporary `target/wasm32-unknown-unknown`,
+  then passed 102/102 across Chromium and WebKit, fixture audit clean).
+- Live phone approval on `agy` 1.5.13: disposable daemon + `mesimon_web` Wasm E2EE + Playwright
+  phone (`390x844`) approved a live `run_command` (`printf AGY_LIVE_PHONE_APPROVED >
+  live_approved.txt`), `agy` wrote the file and finished its turn cleanly, and
+  `~/.gemini/antigravity-cli/settings.json` kept its exact SHA-256 before and after.
