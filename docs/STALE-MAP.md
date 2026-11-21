@@ -49269,3 +49269,21 @@ The live case passed on Codex 0.169.0, gpt-6.2-astra at high effort. It
 withholds the worker's heartbeat file until the daemon records observation
 loss. An earlier fixture tried pausing the runtime and timed out before
 establishing that precondition. All 139 crown e2es and `cargo ut` passed.
+## Split the crown ask receipt e2e at its independent scenarios (T-1107, 2026-11-21)
+
+The old mod test took 112.9 s alone. Its activity feed showed 30 Stop hooks
+spending 58.1 s between Stop and async-hook release. Two submits outlived the
+10 s acknowledgement window. The worker's late refusal needs its own expiry.
+The other was the crown's finish wake after a daemon restart. The fixture left
+that wake unanswered while waiting for the next one.
+
+The one-word receipt and second-ask refusal, restart persistence, mod refusals,
+and pane replacement with paste fallback now run as four nextest cases.
+The fixture acknowledges the restart wake when it reaches the crown's pane,
+applies the fake mod's holds to the worker, and waits for the worker's prompt
+decision before interpreting a second prompt. On hooks it takes the finish
+wake before the crown's keyed read can consume it. The late-refusal case still
+waits for the worker's own new `submit_unacked` feed entry.
+
+T-1148 had already raised this test's individual timeout to 180 s. All four
+cases now use the ordinary 120 s limit.
